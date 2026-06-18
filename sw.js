@@ -1,5 +1,8 @@
-const CACHE = 'absurdchef-v1'
-const SHELL = ['./', './index.html', './style.css', './app.js', './manifest.json']
+const CACHE = 'absurdchef-v2'
+const SHELL = [
+  './', './index.html', './style.css', './app.js', './manifest.json',
+  './screens/plan.js', './screens/chat.js', './screens/recipes.js', './screens/pantry.js',
+]
 
 self.addEventListener('install', e => {
   e.waitUntil(
