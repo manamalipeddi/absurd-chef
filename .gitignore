@@ -22,3 +22,4 @@ venv/
 # Node / Deno
 node_modules/
 .deno/
+.vercel

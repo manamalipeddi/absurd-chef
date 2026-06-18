@@ -282,6 +282,97 @@ body {
   to   { opacity: 1; transform: translateY(0); }
 }
 
+/* ── Plan screen ────────────────────────────────────────── */
+.plan-week { padding: 0 12px 4px; }
+.plan-week:first-child { padding-top: 4px; }
+.plan-week:last-child  { padding-bottom: 16px; }
+
+.plan-card { overflow: visible; }
+
+.plan-day {
+  display: grid;
+  grid-template-columns: 44px 1fr auto;
+  align-items: center;
+  gap: 0 12px;
+  padding: 11px 14px;
+  transition: background 0.12s;
+  -webkit-tap-highlight-color: transparent;
+}
+.plan-day--ruled { border-bottom: 1px solid var(--border); }
+.plan-day:active { background: var(--bg); }
+
+/* Today highlight */
+.plan-day--today { background: var(--primary-bg); }
+.plan-day--today .plan-day__dow,
+.plan-day--today .plan-day__date { color: var(--primary); font-weight: 700; }
+
+/* Past days — faded */
+.plan-day--past { opacity: 0.45; }
+
+/* Commute day — subtle left accent */
+.plan-day--commute { border-left: 3px solid var(--primary); padding-left: 11px; }
+
+/* Day left: DOW + date stacked */
+.plan-day__left {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  flex-shrink: 0;
+}
+.plan-day__dow  { font-size: 11px; font-weight: 500; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; }
+.plan-day__date { font-size: 19px; font-weight: 600; color: var(--text); line-height: 1; }
+
+/* Centre: name + subline */
+.plan-day__centre { min-width: 0; }
+.plan-day__name {
+  display: block;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.plan-day__name--empty { color: var(--text-muted); font-weight: 400; font-style: italic; }
+.plan-day__sub { display: block; font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+
+/* Right: source badge */
+.plan-day__right { flex-shrink: 0; }
+
+.plan-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  font-size: 14px;
+}
+.badge--ice  { background: #e8f4fd; }
+.badge--slow { background: #fef3e2; }
+.badge--buy  { background: #f0fdf4; }
+
+/* Primary button (used in empty state) */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 12px 24px;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 8px;
+  transition: opacity 0.15s;
+}
+.btn-primary:active { opacity: 0.85; }
+.btn-primary:disabled { opacity: 0.5; cursor: default; }
+
 /* ── Utility ────────────────────────────────────────────── */
 .sr-only {
   position: absolute; width: 1px; height: 1px;
