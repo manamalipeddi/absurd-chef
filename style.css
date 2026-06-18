@@ -4,14 +4,15 @@
 :root {
   --bg:           #faf9f7;
   --surface:      #ffffff;
-  --border:       #e8e4df;
-  --primary:      #c94f2c;
-  --primary-bg:   #f8ede8;
+  --border:       #e5e1dc;
+  --primary:      #1d5c3a;
+  --primary-bg:   #e8f3ed;
+  --accent:       #cf4488;
   --text:         #1a1a1a;
-  --text-muted:   #6b6b6b;
-  --nav-inactive: #9e9e9e;
-  --nav-active:   #c94f2c;
-  --nav-chat-bg:  #c94f2c;
+  --text-muted:   #746e6d;
+  --nav-inactive: #9b7585;
+  --nav-active:   #1d5c3a;
+  --nav-chat-bg:  #cf4488;
   --nav-chat-fg:  #ffffff;
   --radius:       12px;
   --radius-sm:    8px;
@@ -154,7 +155,7 @@ body {
   align-items: center;
   justify-content: center;
   margin-top: -10px;
-  box-shadow: 0 2px 8px rgba(201, 79, 44, 0.35);
+  box-shadow: 0 2px 8px rgba(207, 68, 136, 0.35);
   transition: transform 0.15s, box-shadow 0.15s;
 }
 .nav-btn--chat .nav-icon {
@@ -165,7 +166,7 @@ body {
 .nav-btn--chat.nav-btn--active .nav-icon-wrap,
 .nav-btn--chat:active .nav-icon-wrap {
   transform: scale(0.94);
-  box-shadow: 0 1px 4px rgba(201, 79, 44, 0.25);
+  box-shadow: 0 1px 4px rgba(207, 68, 136, 0.2);
 }
 .nav-btn--chat { color: var(--nav-inactive); }
 .nav-btn--chat.nav-btn--active { color: var(--nav-active); }
