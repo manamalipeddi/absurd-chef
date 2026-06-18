@@ -145,28 +145,34 @@ body {
   letter-spacing: 0.2px;
 }
 
-/* Chat button — visually prominent */
+/* Chat button — prominent ring, inactive = outline, active = filled */
 .nav-btn--chat .nav-icon-wrap {
   width: 44px;
   height: 44px;
   border-radius: 50%;
-  background: var(--nav-chat-bg);
+  background: transparent;
+  border: 2px solid var(--border);
   display: flex;
   align-items: center;
   justify-content: center;
   margin-top: -10px;
-  box-shadow: 0 2px 8px rgba(207, 68, 136, 0.35);
-  transition: transform 0.15s, box-shadow 0.15s;
+  transition: transform 0.15s, background 0.15s, border-color 0.15s, box-shadow 0.15s;
 }
 .nav-btn--chat .nav-icon {
   width: 22px;
   height: 22px;
+  color: var(--nav-inactive);
+}
+.nav-btn--chat.nav-btn--active .nav-icon-wrap {
+  background: var(--nav-chat-bg);
+  border-color: var(--nav-chat-bg);
+  box-shadow: 0 2px 8px rgba(207, 68, 136, 0.35);
+}
+.nav-btn--chat.nav-btn--active .nav-icon {
   color: var(--nav-chat-fg);
 }
-.nav-btn--chat.nav-btn--active .nav-icon-wrap,
 .nav-btn--chat:active .nav-icon-wrap {
-  transform: scale(0.94);
-  box-shadow: 0 1px 4px rgba(207, 68, 136, 0.2);
+  transform: scale(0.92);
 }
 .nav-btn--chat { color: var(--nav-inactive); }
 .nav-btn--chat.nav-btn--active { color: var(--nav-active); }
@@ -394,9 +400,8 @@ body {
 .pill--muted   { background: var(--border); color: var(--text-muted); }
 
 /* ── Chat screen ────────────────────────────────────────── */
+/* Only override overflow — display is handled by .screen / .screen--active */
 .chat-screen {
-  display: flex !important;
-  flex-direction: column;
   overflow: hidden;
 }
 
