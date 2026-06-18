@@ -1,0 +1,24 @@
+# Environment & secrets
+.env
+*-service-account.json
+
+# Migration output (large data dumps, not source)
+*_seed.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Claude Code
+.claude/
+
+# macOS
+.DS_Store
+
+# Node / Deno
+node_modules/
+.deno/

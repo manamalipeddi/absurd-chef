@@ -1,0 +1,105 @@
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+
+// ── Supabase client ──────────────────────────────────────
+export const supabase = createClient(
+  'https://tsigszlaklspuankhztx.supabase.co',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRzaWdzemxha2xzcHVhbmtoenR4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE1OTQ0NTYsImV4cCI6MjA5NzE3MDQ1Nn0.i3M3rETJTYPgHdomAQmAyp0v2uxqVBF__8FUhPVbHhw'
+)
+
+export const FUNCTIONS_URL = 'https://tsigszlaklspuankhztx.supabase.co/functions/v1'
+
+// ── Screen registry ──────────────────────────────────────
+const SCREENS = {
+  plan:    { title: 'This Week',      module: './screens/plan.js' },
+  chat:    { title: 'AbsurdChef',     module: './screens/chat.js' },
+  recipes: { title: 'Recipes',        module: './screens/recipes.js' },
+  pantry:  { title: 'Pantry & Setup', module: './screens/pantry.js' },
+}
+
+const loaded = new Set()
+
+// ── DOM refs ─────────────────────────────────────────────
+const screenTitle  = document.getElementById('screen-title')
+const headerLeft   = document.getElementById('header-left')
+const headerRight  = document.getElementById('header-right')
+const navBtns      = document.querySelectorAll('.nav-btn')
+
+// ── Navigation ───────────────────────────────────────────
+let currentScreen = 'plan'
+
+export async function navigateTo(id) {
+  if (id === currentScreen) return
+
+  // swap active screen
+  document.getElementById(`screen-${currentScreen}`).classList.remove('screen--active')
+  document.getElementById(`screen-${id}`).classList.add('screen--active')
+
+  // swap active nav btn
+  navBtns.forEach(b => b.classList.toggle('nav-btn--active', b.dataset.screen === id))
+
+  // update header title
+  screenTitle.textContent = SCREENS[id].title
+
+  // clear header slots — each screen populates them on mount
+  headerLeft.innerHTML = ''
+  headerRight.innerHTML = ''
+
+  currentScreen = id
+
+  // lazy-load screen module on first visit
+  if (!loaded.has(id)) {
+    loaded.add(id)
+    try {
+      const mod = await import(SCREENS[id].module)
+      if (mod.init) await mod.init({ headerLeft, headerRight })
+    } catch (e) {
+      console.warn(`Screen ${id} not yet implemented`, e)
+    }
+  }
+}
+
+navBtns.forEach(btn =>
+  btn.addEventListener('click', () => navigateTo(btn.dataset.screen))
+)
+
+// ── Toast ─────────────────────────────────────────────────
+const toastContainer = document.createElement('div')
+toastContainer.id = 'toast-container'
+document.body.appendChild(toastContainer)
+
+export function toast(msg, { error = false, duration = 3000 } = {}) {
+  const el = document.createElement('div')
+  el.className = 'toast' + (error ? ' toast--error' : '')
+  el.textContent = msg
+  toastContainer.prepend(el)
+  setTimeout(() => el.remove(), duration)
+}
+
+// ── Boot ──────────────────────────────────────────────────
+async function boot() {
+  // wrap the chat icon in its highlight ring
+  const chatBtn = document.querySelector('.nav-btn--chat')
+  if (chatBtn) {
+    const icon = chatBtn.querySelector('.nav-icon')
+    const wrap = document.createElement('div')
+    wrap.className = 'nav-icon-wrap'
+    icon.replaceWith(wrap)
+    wrap.appendChild(icon)
+  }
+
+  // load initial screen
+  loaded.add('plan')
+  try {
+    const mod = await import('./screens/plan.js')
+    if (mod.init) await mod.init({ headerLeft, headerRight })
+  } catch (e) {
+    console.warn('Plan screen not yet implemented', e)
+  }
+
+  // register service worker
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js').catch(() => {})
+  }
+}
+
+boot()
