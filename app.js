@@ -16,46 +16,49 @@ const SCREENS = {
   pantry:  { title: 'Pantry & Setup', module: './screens/pantry.js' },
 }
 
-const loaded = new Set()
+const loaded        = new Set()
+const screenModules = {}
 
 // ── DOM refs ─────────────────────────────────────────────
-const screenTitle  = document.getElementById('screen-title')
-const headerLeft   = document.getElementById('header-left')
-const headerRight  = document.getElementById('header-right')
-const navBtns      = document.querySelectorAll('.nav-btn')
+const screenTitle = document.getElementById('screen-title')
+const headerLeft  = document.getElementById('header-left')
+const headerRight = document.getElementById('header-right')
+const navBtns     = document.querySelectorAll('.nav-btn')
 
 // ── Navigation ───────────────────────────────────────────
 let currentScreen = 'plan'
 
 export async function navigateTo(id) {
-  if (id === currentScreen) return
+  if (id === currentScreen && loaded.has(id)) {
+    // Already here — just re-activate (refresh data)
+    const mod = screenModules[id]
+    if (mod?.activate) await mod.activate({ headerLeft, headerRight })
+    return
+  }
 
-  // swap active screen
   document.getElementById(`screen-${currentScreen}`).classList.remove('screen--active')
   document.getElementById(`screen-${id}`).classList.add('screen--active')
-
-  // swap active nav btn
   navBtns.forEach(b => b.classList.toggle('nav-btn--active', b.dataset.screen === id))
-
-  // update header title
   screenTitle.textContent = SCREENS[id].title
-
-  // clear header slots — each screen populates them on mount
-  headerLeft.innerHTML = ''
+  headerLeft.innerHTML  = ''
   headerRight.innerHTML = ''
-
   currentScreen = id
 
-  // lazy-load screen module on first visit
   if (!loaded.has(id)) {
     loaded.add(id)
     try {
       const mod = await import(SCREENS[id].module)
-      if (mod.init) await mod.init({ headerLeft, headerRight })
+      screenModules[id] = mod
+      // init: one-time DOM setup (create elements, register listeners)
+      if (mod.init) await mod.init(document.getElementById(`screen-${id}`))
     } catch (e) {
-      console.warn(`Screen ${id} not yet implemented`, e)
+      console.warn(`Screen ${id} failed to load`, e)
     }
   }
+
+  // activate: called every visit — sets header buttons + refreshes data
+  const mod = screenModules[id]
+  if (mod?.activate) await mod.activate({ headerLeft, headerRight })
 }
 
 navBtns.forEach(btn =>
@@ -77,7 +80,7 @@ export function toast(msg, { error = false, duration = 3000 } = {}) {
 
 // ── Boot ──────────────────────────────────────────────────
 async function boot() {
-  // wrap the chat icon in its highlight ring
+  // Wrap chat icon in its highlight ring
   const chatBtn = document.querySelector('.nav-btn--chat')
   if (chatBtn) {
     const icon = chatBtn.querySelector('.nav-icon')
@@ -87,16 +90,9 @@ async function boot() {
     wrap.appendChild(icon)
   }
 
-  // load initial screen
-  loaded.add('plan')
-  try {
-    const mod = await import('./screens/plan.js')
-    if (mod.init) await mod.init({ headerLeft, headerRight })
-  } catch (e) {
-    console.warn('Plan screen not yet implemented', e)
-  }
+  // Load initial screen
+  await navigateTo('plan')
 
-  // register service worker
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(() => {})
   }
