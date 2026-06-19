@@ -34,6 +34,10 @@ function getMondayOf(dateStr: string): string {
   return d.toISOString().slice(0, 10)
 }
 
+const DOW_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+function dayName(dow: number): string { return DOW_NAMES[dow] ?? `day_${dow}` }
+function dayNameFromDate(dateStr: string): string { return dayName(new Date(dateStr + 'T12:00:00Z').getUTCDay()) }
+
 function buildSystem(): string {
   return `You are AbsurdChef, a meal planning assistant for the Malipeddi household.
 
@@ -47,6 +51,8 @@ BEHAVIOR:
 - After any plan edit, confirm the change in plain text and ask if anything else needs adjusting.
 - Mid-cook urgent messages ("out of X", "no Y") → direct one-line answer, skip all preamble.
 - When citing inventory for substitutions, add a brief hedge — inventory may not be fully current.
+- Day-of-week convention used throughout: 0=Sunday, 1=Monday, 2=Tuesday, 3=Wednesday, 4=Thursday, 5=Friday, 6=Saturday. Tool results include pre-computed day_name fields — always use day_name directly, never convert day_of_week integers yourself.
+- stash_still_valid: false in a tool result means a meal planned from freezer_stash has no matching valid stash entry — always flag this to the user.
 - Today: ${today()}`
 }
 
@@ -236,19 +242,63 @@ async function toolGetPlan(input: Record<string, unknown>, db: DB) {
   const days  = Number(input.days) || 14
   const end   = addDays(start, days - 1)
   const { data } = await db.from('meal_plans')
-    .select('plan_date, meal_type, cook_source, is_commute_day, is_holiday, guest_count, slot_locked, notes, recipes(id, name, emoji, protein, cooking_method, template_slot)')
+    .select('plan_date, meal_type, cook_source, is_commute_day, is_holiday, guest_count, slot_locked, notes, stash_item_id, recipes(id, name, emoji, protein, cooking_method, template_slot)')
     .gte('plan_date', start).lte('plan_date', end)
     .order('plan_date').order('meal_type')
-  return { range: { start, end }, entries: data || [] }
+
+  const entries = (data || []) as Record<string, unknown>[]
+
+  // Cross-check any freezer_stash assignments — verify the row still exists
+  // (plan-generator marks items used=true at write time, so we only check existence)
+  const stashIds = entries
+    .filter(e => e.cook_source === 'freezer_stash' && e.stash_item_id)
+    .map(e => e.stash_item_id as string)
+  const validStashIds = new Set<string>()
+  if (stashIds.length > 0) {
+    const { data: valid } = await db.from('freezer_stash')
+      .select('id').in('id', stashIds).eq('active', true)
+    ;(valid || []).forEach((s: Record<string, unknown>) => validStashIds.add(s.id as string))
+  }
+
+  return {
+    range: { start, end },
+    entries: entries.map(e => ({
+      ...e,
+      day_name: dayNameFromDate(e.plan_date as string),
+      ...(e.cook_source === 'freezer_stash' ? {
+        stash_still_valid: e.stash_item_id ? validStashIds.has(e.stash_item_id as string) : null,
+      } : {}),
+    })),
+  }
 }
 
 async function toolGetTodayRecipe(db: DB) {
   const t = today()
   const { data } = await db.from('meal_plans')
-    .select('plan_date, meal_type, cook_source, guest_count, recipes(id, name, emoji, protein, serves_base, original_instructions, night_before, morning_of, when_cooking, hacks_and_shortcuts, recipe_ingredients(name, quantity, unit, notes, order_index))')
+    .select('plan_date, meal_type, cook_source, guest_count, stash_item_id, recipes(id, name, emoji, protein, serves_base, original_instructions, night_before, morning_of, when_cooking, hacks_and_shortcuts, recipe_ingredients(name, quantity, unit, notes, order_index))')
     .eq('plan_date', t).in('meal_type', ['dinner', 'lunch']).order('meal_type')
   if (!data?.length) return { message: 'No meal planned for today.' }
-  return { today: t, meals: data }
+
+  const entries = data as Record<string, unknown>[]
+  const stashIds = entries
+    .filter(e => e.cook_source === 'freezer_stash' && e.stash_item_id)
+    .map(e => e.stash_item_id as string)
+  const validStashIds = new Set<string>()
+  if (stashIds.length > 0) {
+    const { data: valid } = await db.from('freezer_stash')
+      .select('id').in('id', stashIds).eq('active', true)
+    ;(valid || []).forEach((s: Record<string, unknown>) => validStashIds.add(s.id as string))
+  }
+
+  return {
+    today: t,
+    meals: entries.map(e => ({
+      ...e,
+      ...(e.cook_source === 'freezer_stash' ? {
+        stash_still_valid: e.stash_item_id ? validStashIds.has(e.stash_item_id as string) : null,
+      } : {}),
+    })),
+  }
 }
 
 async function toolSearchRecipes(input: Record<string, unknown>, db: DB) {
@@ -323,21 +373,36 @@ async function toolGetFamilyContext(db: DB) {
 
 async function toolGetWeeklyTemplate(db: DB) {
   const { data } = await db.from('weekly_template').select('*').eq('active', true).order('day_of_week')
-  return { template: data || [] }
+  return {
+    template: (data || []).map((row: Record<string, unknown>) => ({
+      ...row,
+      day_name: dayName(row.day_of_week as number),
+    })),
+  }
 }
 
 async function toolGetSpecialDays(input: Record<string, unknown>, db: DB) {
   const start = (input.start_date as string) || today()
   const end   = (input.end_date as string)   || addDays(start, 14)
   const { data } = await db.from('special_days').select('*').gte('day', start).lte('day', end).order('day')
-  return { special_days: data || [] }
+  return {
+    special_days: (data || []).map((row: Record<string, unknown>) => ({
+      ...row,
+      day_name: dayNameFromDate(row.day as string),
+    })),
+  }
 }
 
 async function toolGetCommuteDays(db: DB) {
   const { data } = await db.from('commute_days')
     .select('day_of_week, label, notes, family_members(name)')
     .eq('active', true).order('day_of_week')
-  return { commute_days: data || [] }
+  return {
+    commute_days: (data || []).map((row: Record<string, unknown>) => ({
+      ...row,
+      day_name: dayName(row.day_of_week as number),
+    })),
+  }
 }
 
 async function toolUpdatePlanSlot(input: Record<string, unknown>, db: DB, userMsg: string) {

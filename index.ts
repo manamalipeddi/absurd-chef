@@ -393,8 +393,29 @@ async function writePlan(
   mode: string
 ) {
   // For rolling_7: only upsert days 8–14 (don't touch existing days 1–7)
-  const toWrite =
+  let toWrite =
     mode === "rolling_7" ? plan.slice(7) : plan;
+
+  // Verify stash references are still live before committing
+  const stashPlanItems = toWrite.filter(p => p.cook_source === "freezer_stash" && p.stash_item_id)
+  if (stashPlanItems.length > 0) {
+    const { data: validStash } = await supabase.from("freezer_stash")
+      .select("id")
+      .in("id", stashPlanItems.map(p => p.stash_item_id!))
+      .eq("used", false).eq("active", true).gt("portions", 0)
+    const validIds = new Set((validStash || []).map((s: { id: string }) => s.id))
+    toWrite = toWrite.map(p => {
+      if (p.cook_source === "freezer_stash" && p.stash_item_id && !validIds.has(p.stash_item_id)) {
+        return {
+          ...p,
+          cook_source: "home" as const,
+          stash_item_id: null,
+          notes: (p.notes ? p.notes + " | " : "") + "[stash ref invalidated at write time — reverted to home]",
+        }
+      }
+      return p
+    })
+  }
 
   // Delete existing plan entries for these dates
   const dates = toWrite.map((p) => p.date);
