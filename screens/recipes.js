@@ -9,10 +9,12 @@ const SECTIONS = [
 ]
 
 // ── State ─────────────────────────────────────────────────
-let allRecipes  = []
-let stashMap    = {}   // recipe_id → total available portions
-let screenEl    = null
-const openState = {}   // meal_type → boolean
+let allRecipes      = []
+let inactiveRecipes = []
+let stashMap        = {}
+let screenEl        = null
+let showInactive    = false
+const openState     = {}
 
 // ── Lifecycle ─────────────────────────────────────────────
 export function init(el) {
@@ -36,19 +38,19 @@ export async function activate({ headerLeft, headerRight }) {
 
 // ── Data ──────────────────────────────────────────────────
 async function loadData() {
-  const [recipeRes, stashRes] = await Promise.all([
-    supabase
-      .from('recipes')
+  const [recipeRes, inactiveRes, stashRes] = await Promise.all([
+    supabase.from('recipes')
       .select('id, name, meal_type, cooking_method, is_preferred, ease_descriptor, emoji, active')
-      .eq('active', true)
-      .order('name'),
-    supabase
-      .from('freezer_stash')
-      .select('recipe_id, portions')
-      .eq('used', false),
+      .eq('active', true).order('name'),
+    supabase.from('recipes')
+      .select('id, name, meal_type, emoji')
+      .eq('active', false).order('name'),
+    supabase.from('freezer_stash')
+      .select('recipe_id, portions').eq('used', false),
   ])
 
-  allRecipes = recipeRes.data || []
+  allRecipes      = recipeRes.data   || []
+  inactiveRecipes = inactiveRes.data || []
 
   stashMap = {}
   for (const row of (stashRes.data || [])) {
@@ -79,6 +81,47 @@ function render() {
       <p class="placeholder-sub">Tap + to add your first recipe</p>`
     screenEl.appendChild(wrap)
   }
+
+  renderFooter()
+}
+
+function renderFooter() {
+  if (!screenEl) return
+  screenEl.querySelector('#recipes-footer')?.remove()
+  if (inactiveRecipes.length === 0) return
+
+  const footer = document.createElement('div')
+  footer.id = 'recipes-footer'
+
+  const toggleBtn = document.createElement('button')
+  toggleBtn.className = 'pn-hidden-toggle'
+  toggleBtn.textContent = showInactive
+    ? 'Hide inactive recipes'
+    : `Show inactive recipes (${inactiveRecipes.length})`
+  toggleBtn.addEventListener('click', () => {
+    showInactive = !showInactive
+    renderFooter()
+  })
+  footer.appendChild(toggleBtn)
+
+  if (showInactive) {
+    const label = document.createElement('div')
+    label.className = 'section-label'
+    label.textContent = `Inactive (${inactiveRecipes.length})`
+    footer.appendChild(label)
+
+    const card = document.createElement('div')
+    card.className = 'card'
+    card.style.margin = '0 16px 8px'
+    inactiveRecipes.forEach((recipe, i) => {
+      const row = buildInactiveRow(recipe)
+      if (i < inactiveRecipes.length - 1) row.classList.add('recipe-row--ruled')
+      card.appendChild(row)
+    })
+    footer.appendChild(card)
+  }
+
+  screenEl.appendChild(footer)
 }
 
 function buildSection(section, recipes) {
@@ -88,6 +131,7 @@ function buildSection(section, recipes) {
   const header = document.createElement('button')
   header.className = 'recipe-section__header'
   header.setAttribute('aria-expanded', String(openState[section.type]))
+  header.dataset.mealType = section.type
   header.innerHTML = `
     <span class="recipe-section__label">
       ${section.label}
@@ -128,26 +172,22 @@ function buildRow(recipe, fallbackEmoji) {
   const row = document.createElement('div')
   row.className = 'recipe-row'
 
-  // Emoji slot
   const emojiEl = document.createElement('div')
   emojiEl.className = 'recipe-row__emoji'
   emojiEl.setAttribute('aria-hidden', 'true')
   emojiEl.textContent = recipe.emoji || fallbackEmoji
 
-  // Centre text
   const centre = document.createElement('div')
   centre.className = 'recipe-row__centre'
-
   const name = document.createElement('span')
   name.className = 'recipe-row__name'
   name.textContent = recipe.name
   centre.appendChild(name)
 
   const subParts = []
-  if (recipe.ease_descriptor)  subParts.push(recipe.ease_descriptor)
-  if (recipe.cooking_method)   subParts.push(fmtMethod(recipe.cooking_method))
-  if (portions > 0)            subParts.push(`🧊 ${portions}`)
-
+  if (recipe.ease_descriptor) subParts.push(recipe.ease_descriptor)
+  if (recipe.cooking_method)  subParts.push(fmtMethod(recipe.cooking_method))
+  if (portions > 0)           subParts.push(`🧊 ${portions}`)
   if (subParts.length) {
     const sub = document.createElement('span')
     sub.className = 'recipe-row__sub'
@@ -155,12 +195,11 @@ function buildRow(recipe, fallbackEmoji) {
     centre.appendChild(sub)
   }
 
-  // Heart toggle
   const heart = buildHeart(recipe)
+  const dots  = buildDots(recipe, row)
 
-  row.append(emojiEl, centre, heart)
+  row.append(emojiEl, centre, heart, dots)
 
-  // Tap body → recipe detail
   row.addEventListener('click', () => {
     navState.recipeId = recipe.id
     navigateTo('recipe-detail')
@@ -169,6 +208,134 @@ function buildRow(recipe, fallbackEmoji) {
   return row
 }
 
+function buildInactiveRow(recipe) {
+  const row = document.createElement('div')
+  row.className = 'recipe-row recipe-row--inactive'
+
+  const emojiEl = document.createElement('div')
+  emojiEl.className = 'recipe-row__emoji'
+  emojiEl.setAttribute('aria-hidden', 'true')
+  emojiEl.textContent = recipe.emoji || '🍽️'
+
+  const centre = document.createElement('div')
+  centre.className = 'recipe-row__centre'
+  const name = document.createElement('span')
+  name.className = 'recipe-row__name'
+  name.textContent = recipe.name
+  centre.appendChild(name)
+  const sectionLabel = SECTIONS.find(s => s.type === recipe.meal_type)?.label
+  if (sectionLabel) {
+    const sub = document.createElement('span')
+    sub.className = 'recipe-row__sub'
+    sub.textContent = sectionLabel
+    centre.appendChild(sub)
+  }
+
+  const btn = document.createElement('button')
+  btn.className = 'pn-unhide-btn'
+  btn.textContent = 'Reactivate'
+  btn.addEventListener('click', e => {
+    e.stopPropagation()
+    reactivateRecipe(recipe, row)
+  })
+
+  row.append(emojiEl, centre, btn)
+  return row
+}
+
+// ── Dots / dropdown ───────────────────────────────────────
+let activeDropdown = null
+
+function closeDropdown() {
+  if (activeDropdown) { activeDropdown.remove(); activeDropdown = null }
+}
+
+function openDropdown(anchorBtn, items) {
+  closeDropdown()
+
+  const menu = document.createElement('div')
+  menu.className = 'recipe-dropdown'
+  items.forEach(({ label, danger, onClick }) => {
+    const btn = document.createElement('button')
+    btn.className = 'recipe-dropdown__item' + (danger ? ' recipe-dropdown__item--danger' : '')
+    btn.textContent = label
+    btn.addEventListener('click', e => { e.stopPropagation(); closeDropdown(); onClick() })
+    menu.appendChild(btn)
+  })
+
+  document.body.appendChild(menu)
+  activeDropdown = menu
+
+  const rect = anchorBtn.getBoundingClientRect()
+  menu.style.top   = (rect.bottom + 4) + 'px'
+  menu.style.right = (window.innerWidth - rect.right) + 'px'
+
+  // close on next outside tap
+  setTimeout(() => document.addEventListener('click', closeDropdown, { once: true }), 0)
+}
+
+function buildDots(recipe, row) {
+  const btn = document.createElement('button')
+  btn.className = 'recipe-row__dots'
+  btn.setAttribute('aria-label', 'More options')
+  btn.innerHTML = `<svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" width="16" height="16">
+    <circle cx="4" cy="10" r="1.5"/><circle cx="10" cy="10" r="1.5"/><circle cx="16" cy="10" r="1.5"/>
+  </svg>`
+  btn.addEventListener('click', e => {
+    e.stopPropagation()
+    openDropdown(btn, [
+      { label: 'Deactivate', danger: true, onClick: () => deactivateRecipe(recipe, row) },
+    ])
+  })
+  return btn
+}
+
+// ── Deactivate / Reactivate ───────────────────────────────
+async function deactivateRecipe(recipe, row) {
+  row.style.opacity = '0.4'
+  row.style.pointerEvents = 'none'
+
+  const { error } = await supabase.from('recipes').update({ active: false }).eq('id', recipe.id)
+  if (error) {
+    row.style.opacity = ''
+    row.style.pointerEvents = ''
+    return
+  }
+
+  allRecipes      = allRecipes.filter(r => r.id !== recipe.id)
+  inactiveRecipes = [...inactiveRecipes, { id: recipe.id, name: recipe.name, meal_type: recipe.meal_type, emoji: recipe.emoji }]
+    .sort((a, b) => a.name.localeCompare(b.name))
+
+  // Update the section count badge without re-rendering the section
+  const sectionHeader = screenEl?.querySelector(`[data-meal-type="${recipe.meal_type}"]`)
+  const countEl = sectionHeader?.querySelector('.recipe-section__count')
+  if (countEl) {
+    const n = parseInt(countEl.textContent.replace(/[()]/g, '')) || 0
+    countEl.textContent = `(${Math.max(0, n - 1)})`
+  }
+
+  // Animate out then remove
+  row.style.transition = 'opacity 0.15s'
+  row.style.opacity = '0'
+  setTimeout(() => { row.remove(); renderFooter() }, 150)
+}
+
+async function reactivateRecipe(recipe, row) {
+  row.style.opacity = '0.4'
+  row.style.pointerEvents = 'none'
+
+  const { error } = await supabase.from('recipes').update({ active: true }).eq('id', recipe.id)
+  if (error) {
+    row.style.opacity = ''
+    row.style.pointerEvents = ''
+    return
+  }
+
+  await loadData()
+  render()
+}
+
+// ── Heart ─────────────────────────────────────────────────
 function buildHeart(recipe) {
   const btn = document.createElement('button')
   btn.className = 'recipe-row__heart' + (recipe.is_preferred ? ' recipe-row__heart--on' : '')
