@@ -20,7 +20,7 @@ const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 interface PlanRequest {
   mode: "full_14" | "rolling_7" | "targeted";
-  start_date: string;
+  start_date?: string;
   days?: number;
 }
 
@@ -141,6 +141,13 @@ function dayOfWeek(dateStr: string): number {
   return new Date(dateStr + "T12:00:00Z").getUTCDay();
 }
 
+// Monday of the week containing dateStr (week runs Mon–Sun; Sunday belongs to
+// the week that just ended). Used to default start_date for scheduled rolling.
+function getMondayOf(dateStr: string): string {
+  const dow = dayOfWeek(dateStr); // 0=Sun
+  return addDays(dateStr, dow === 0 ? -6 : 1 - dow);
+}
+
 function isoWeek(dateStr: string): string {
   const d = new Date(dateStr + "T12:00:00Z");
   const jan4 = new Date(Date.UTC(d.getUTCFullYear(), 0, 4));
@@ -173,6 +180,7 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
     specialRes,
     stashRes,
     existingPlanRes,
+    lockedSlotsRes,
     familyRes,
   ] = await Promise.all([
     supabase
@@ -213,6 +221,14 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
       .select("plan_date, meal_type, recipe_id, recipes(name, protein, style)")
       .gte("plan_date", addDays(startDate, -14))
       .lt("plan_date", startDate),
+    // Locked slots WITHIN the planning window — immovable; the planner must keep
+    // them as-is and count their recipe against the no-repeat window.
+    supabase
+      .from("meal_plans")
+      .select("plan_date, meal_type, recipe_id, slot_locked, recipes(name, protein, style)")
+      .gte("plan_date", startDate)
+      .lte("plan_date", endDate)
+      .eq("slot_locked", true),
     supabase
       .from("family_members")
       .select("id, name, role, allergies, preferences")
@@ -228,6 +244,7 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
     specialDays: specialRes.data || [],
     stash: stashRes.data || [],
     existingPlan: existingPlanRes.data || [],
+    lockedSlots: lockedSlotsRes.data || [],
     family: familyRes.data || [],
   };
 }
@@ -327,6 +344,15 @@ function buildPrompt(
     name: p.recipes?.name || null,
   }));
 
+  // Locked slots inside the planning window — immovable. Surface them so the
+  // model keeps them and counts their recipe against the no-repeat window.
+  const lockedList = (ctx.lockedSlots || []).map((p: {plan_date: string; meal_type: string; recipe_id: string; recipes: {name: string} | null}) => ({
+    date: p.plan_date,
+    meal_type: p.meal_type,
+    recipe_id: p.recipe_id,
+    name: p.recipes?.name || null,
+  }));
+
   const recipeList = safeRecipes.map((r: Recipe) => ({
     id: r.id,
     name: r.name,
@@ -391,6 +417,13 @@ PLANNING RULES
 12. GUEST ALLERGENS: if a date entry has guest_allergens, those substances
     are forbidden for that specific date only. Filter accordingly when
     selecting a recipe for that day — even if the recipe is otherwise safe.
+13. LOCKED SLOTS (see LOCKED below) are immovable user choices. For any
+    date+meal_type in LOCKED: output that exact recipe unchanged — do NOT
+    substitute, swap, or remap it. Treat its recipe as already-used for the
+    no-repeat (rule 2) and same-protein-in-a-row (rule 3) checks, so you
+    never schedule that same recipe again nearby. If honouring the locked
+    recipe makes another rule impossible to satisfy, work around it by
+    changing the OTHER (unlocked) days — never the locked one.
 
 WEEKLY TEMPLATE
 ${JSON.stringify(ctx.template.filter((t: TemplateRule) => t.meal_type === "dinner"), null, 2)}
@@ -406,6 +439,9 @@ ${JSON.stringify(stashList, null, 2)}
 
 RECENTLY USED (last 14 days — do not repeat)
 ${JSON.stringify(recentlyUsed, null, 2)}
+
+LOCKED (immovable — keep these exactly; see rule 13)
+${JSON.stringify(lockedList, null, 2)}
 
 OUTPUT FORMAT
 Return ONLY valid JSON. No markdown. No explanation. No wrapper text.
@@ -480,13 +516,42 @@ async function writePlan(
     })
   }
 
-  // Delete existing plan entries for these dates
   const dates = toWrite.map((p) => p.date);
-  await supabase
+
+  // ── HARD RULE: never overwrite a manually-locked slot ──────────────────────
+  // Any meal_plans row with slot_locked = true is a deliberate user assignment
+  // (manual Plan-card pick, or chat update_plan_slot). The planner — scheduled
+  // OR manual — must leave it exactly as-is: skip the delete AND the insert for
+  // that date+meal_type. This is absolute and independent of date-range logic.
+  const { data: lockedRows } = await supabase
     .from("meal_plans")
-    .delete()
+    .select("plan_date, meal_type")
     .in("plan_date", dates)
-    .eq("meal_type", "dinner");
+    .eq("meal_type", "dinner")
+    .eq("slot_locked", true);
+  const lockedKey = (d: string, m: string) => `${d}|${m}`;
+  const lockedSet = new Set(
+    (lockedRows || []).map((r: { plan_date: string; meal_type: string }) =>
+      lockedKey(r.plan_date, r.meal_type)
+    )
+  );
+  if (lockedSet.size > 0) {
+    console.log(`Skipping ${lockedSet.size} locked slot(s): ${[...lockedSet].join(", ")}`);
+  }
+
+  // Only delete/insert slots that are NOT locked.
+  toWrite = toWrite.filter((p) => !lockedSet.has(lockedKey(p.date, p.meal_type)));
+  const deletableDates = toWrite.map((p) => p.date);
+
+  // Delete existing (unlocked) plan entries for these dates
+  if (deletableDates.length > 0) {
+    await supabase
+      .from("meal_plans")
+      .delete()
+      .in("plan_date", deletableDates)
+      .eq("meal_type", "dinner")
+      .or("slot_locked.is.null,slot_locked.eq.false");
+  }
 
   // Insert new plan
   const rows = toWrite.map((p) => ({
@@ -506,8 +571,10 @@ async function writePlan(
       : null,
   }));
 
-  const { error } = await supabase.from("meal_plans").insert(rows);
-  if (error) throw new Error(`Failed to write plan: ${error.message}`);
+  if (rows.length > 0) {
+    const { error } = await supabase.from("meal_plans").insert(rows);
+    if (error) throw new Error(`Failed to write plan: ${error.message}`);
+  }
 
   // Mark used stash items
   const usedStashIds = toWrite
@@ -537,14 +604,22 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const { mode, start_date, days: reqDays }: PlanRequest = await req.json();
+    const body: PlanRequest = await req.json();
+    const { mode, days: reqDays } = body;
 
-    if (!mode || !start_date) {
+    if (!mode) {
       return new Response(
-        JSON.stringify({ error: "mode and start_date are required" }),
+        JSON.stringify({ error: "mode is required" }),
         { status: 400, headers: { "Content-Type": "application/json" } }
       );
     }
+
+    // start_date is optional: when omitted (e.g. the scheduled Sunday rolling
+    // run) default to the Monday of the current week. With rolling_7 the
+    // generator writes days 8–14, i.e. it extends the plan into next week.
+    const start_date =
+      body.start_date ||
+      getMondayOf(new Date().toISOString().slice(0, 10));
 
     const days = reqDays && reqDays >= 1 && reqDays <= 14 ? reqDays : 14;
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);

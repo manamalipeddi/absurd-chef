@@ -1,12 +1,12 @@
 {
-  "name": "AbsurdChef",
-  "short_name": "AbsurdChef",
+  "name": "Absurd Chef",
+  "short_name": "Absurd Chef",
   "description": "Meal planning agent for your family",
   "start_url": "./",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#faf9f7",
-  "theme_color": "#1d5c3a",
+  "background_color": "#5e2536",
+  "theme_color": "#557d5f",
   "icons": [
     { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
     { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }

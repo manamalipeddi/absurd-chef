@@ -16,7 +16,7 @@ const SCREENS = {
   pantry:                  { title: 'Pantry',           module: './screens/pantry.js' },
   recipes:                 { title: 'Recipes',          module: './screens/recipes.js' },
   plan:                    { title: 'This Week',        module: './screens/plan.js' },
-  chat:                    { title: 'AbsurdChef',       module: './screens/chat.js' },
+  chat:                    { title: 'Absurd Chef',      module: './screens/chat.js' },
   setup:                   { title: 'Setup',            module: './screens/setup.js' },
   'setup-family':          { title: 'Family',           module: './screens/setup-family.js' },
   'setup-weekly-template': { title: 'Weekly Template',  module: './screens/setup-weekly-template.js' },

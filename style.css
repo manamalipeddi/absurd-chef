@@ -699,6 +699,8 @@ body {
   padding: 0 0 32px;
   display: flex;
   flex-direction: column;
+  background: var(--surface);
+  flex: 1 0 auto;
 }
 
 /* Info row (emoji + serves) */
@@ -1489,6 +1491,8 @@ body {
   padding: 0 0 40px;
   display: flex;
   flex-direction: column;
+  background: var(--surface);
+  flex: 1 0 auto;
 }
 
 /* Paste step */
@@ -1806,7 +1810,7 @@ body {
   letter-spacing: 0.02em;
 }
 .su-add-btn:active { opacity: 0.88; transform: scale(0.99); }
-.su-empty { padding: 16px; color: var(--text-muted); font-size: 14px; }
+.su-empty { padding: 16px; color: var(--text-on-page-muted); font-size: 14px; font-weight: 500; text-align: center; }
 .su-card { margin: 0 16px 16px; }
 
 /* List rows ──────────────────────────────────────────────── */
@@ -2062,13 +2066,20 @@ body {
 }
 .pm-week-header {
   padding: 12px 16px 4px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  color: var(--text-muted);
+  color: var(--text-on-page);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.07em;
 }
-.pm-table { margin: 0 16px 8px; }
+.pm-table {
+  margin: 0 16px 8px;
+  background: var(--surface);
+  border: 1px solid rgba(232, 221, 210, 0.7);
+  border-radius: 16px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.05);
+  padding: 4px 14px;
+}
 .pm-row {
   display: flex;
   align-items: flex-start;
@@ -2141,7 +2152,7 @@ body {
 }
 .pm-inline-save:disabled { opacity: 0.5; }
 .pm-paste-section { padding: 12px 16px; }
-.pm-paste-label { font-size: 13px; color: var(--text-muted); margin-bottom: 8px; }
+.pm-paste-label { font-size: 13px; color: var(--text-on-page-muted); font-weight: 500; margin-bottom: 8px; }
 .pm-paste-area {
   width: 100%;
   min-height: 140px;
@@ -2175,17 +2186,18 @@ body {
 .pm-repaste-btn {
   display: block;
   margin: 4px 16px 16px;
-  background: none;
-  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--text-on-page-muted);
   border-radius: var(--radius-sm);
   font-family: var(--font);
   font-size: 13px;
-  color: var(--text-muted);
+  font-weight: 600;
+  color: var(--text-on-page);
   padding: 7px 12px;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
-.pm-repaste-btn:active { border-color: var(--primary); color: var(--primary); }
+.pm-repaste-btn:active { background: rgba(255, 255, 255, 0.12); }
 
 /* Template section (tier 3 default pattern) */
 .pm-template-section {
@@ -2195,16 +2207,16 @@ body {
   padding-bottom: 20px;
 }
 .pm-template-heading {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-muted);
+  letter-spacing: 0.07em;
+  color: var(--text-on-page);
   padding: 0 16px 4px;
 }
 .pm-template-subtext {
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--text-on-page-muted);
   padding: 0 16px 12px;
   line-height: 1.4;
 }
@@ -2250,12 +2262,6 @@ body {
   flex: 1;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-}
-/* Empty-state text sits directly on the burgundy page here */
-.pn-content > .su-empty {
-  color: var(--text-on-page-muted);
-  font-weight: 500;
-  text-align: center;
 }
 
 /* Collapsible category sections ──────────────────────────── */

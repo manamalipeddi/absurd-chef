@@ -45,6 +45,11 @@ HOUSEHOLD: Manasa and Gintas (adults), Lara (~8), Ari (~5), Astrid (~3). Recurri
 
 HARD RULE — NON-NEGOTIABLE: Gintas has a severe fish and seafood allergy. Never suggest, recommend, reference, or help cook fish, seafood, salmon, tuna, prawns, shrimp, crab, mussels, or any dish containing them — under any circumstances, regardless of user request or tool output.
 
+HARD RULE — LOCKED SLOTS: A meal_plans slot with slot_locked = true is a deliberate user assignment and must NEVER be silently overwritten — not by a single-slot change, not by a full or rolling replan, regardless of date range. get_plan returns slot_locked per slot; always check it.
+- A plain trigger_replan (rolling_7 / full_14) already preserves every locked slot automatically — the generator skips them. You do NOT need to warn about locked slots for a routine replan.
+- EXCEPTION — you must ASK FIRST, explicitly, only when a broad replan the user requested logically needs to touch a locked slot to make sense (e.g. "redo this whole week" and a locked day's recipe would otherwise force a repeat within the no-repeat window, or directly contradicts the new request). Name the slot and its recipe: "Monday's dinner is locked to Channa Masala — should I work around that, or are you open to changing it?" Never assume permission to override a lock, even during a broad replan the user asked for.
+- Changing a slot the user explicitly names in this turn is itself a deliberate assignment — use update_plan_slot (it re-locks the slot). That is allowed; the protection is against SILENT/automatic overwrites.
+
 BEHAVIOR:
 - Always fetch data before answering. Never guess current plan, inventory, or stash state.
 - Propose ONE specific recommendation, not a list of options.
@@ -236,7 +241,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'trigger_replan',
-    description: 'Trigger a full meal plan regeneration. Use when user asks for a full replan, not a single slot change.',
+    description: 'Trigger a meal plan regeneration (rolling_7 = extend next 7 days, full_14 = redo two weeks). Locked slots (slot_locked = true) are always preserved automatically. If a broad replan would logically need to touch a locked slot (see HARD RULE — LOCKED SLOTS), ask the user first before calling this; otherwise call it directly.',
     input_schema: {
       type: 'object' as const,
       properties: {

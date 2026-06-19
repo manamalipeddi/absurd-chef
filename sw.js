@@ -1,4 +1,4 @@
-const CACHE = 'absurdchef-v17'
+const CACHE = 'absurdchef-v18'
 const SHELL = [
   './', './index.html', './style.css', './app.js', './manifest.json',
   './screens/plan.js', './screens/chat.js', './screens/recipes.js',
