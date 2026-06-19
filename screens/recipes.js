@@ -22,6 +22,13 @@ export function init(el) {
 
 export async function activate({ headerLeft, headerRight }) {
   if (!screenEl) return
+  headerRight.innerHTML = `
+    <button class="header-btn" id="btn-add-recipe" aria-label="Add recipe">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/>
+      </svg>
+    </button>`
+  document.getElementById('btn-add-recipe').addEventListener('click', () => navigateTo('add-recipe'))
   screenEl.innerHTML = `<div class="loading-row"><div class="spinner"></div>Loading recipes…</div>`
   await loadData()
   render()

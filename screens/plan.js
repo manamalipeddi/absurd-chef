@@ -17,9 +17,10 @@ const RECIPE_CATEGORY = {
 }
 
 // ── State ─────────────────────────────────────────────────
-let screenEl    = null
-let allRecipes  = []   // for the recipe picker
-let generating  = false
+let screenEl       = null
+let allRecipes     = []   // for the recipe picker
+let generating     = false
+let householdCount = 0
 
 // ── Date helpers ──────────────────────────────────────────
 function addDays(s, n) {
@@ -81,10 +82,10 @@ async function loadAndRender() {
 
   const { startDate, endDate } = await getPlanWindow()
 
-  const [planRes, specialRes, recipeRes] = await Promise.all([
+  const [planRes, specialRes, recipeRes, householdRes] = await Promise.all([
     supabase
       .from('meal_plans')
-      .select('plan_date, meal_type, recipe_id, slot_locked, is_commute_day, is_holiday, is_preschool_closed, guest_count, recipes(id, name, emoji)')
+      .select('plan_date, meal_type, recipe_id, slot_locked, is_commute_day, is_holiday, is_preschool_closed, guest_count, recipes(id, name, emoji, serves_base)')
       .gte('plan_date', startDate).lte('plan_date', endDate)
       .order('plan_date'),
     supabase
@@ -96,7 +97,14 @@ async function loadAndRender() {
       .select('id, name, meal_type, emoji')
       .eq('active', true)
       .order('name'),
+    supabase
+      .from('family_members')
+      .select('id', { count: 'exact', head: true })
+      .eq('is_default_household', true)
+      .eq('active', true),
   ])
+
+  householdCount = householdRes.count ?? 0
 
   allRecipes = recipeRes.data || []
 
@@ -173,7 +181,7 @@ function buildDayCard(day) {
 
   card.appendChild(buildContextStrip(day))
   card.appendChild(hr())
-  MEAL_SLOTS.forEach(slot => card.appendChild(buildSlotRow(day.date, slot, day.slots[slot.type])))
+  MEAL_SLOTS.forEach(slot => card.appendChild(buildSlotRow(day.date, slot, day.slots[slot.type], day.meta)))
   card.appendChild(hr())
   card.appendChild(buildFooter(day.date))
 
@@ -205,7 +213,7 @@ function buildContextStrip(day) {
   return strip
 }
 
-function buildSlotRow(date, slot, entry) {
+function buildSlotRow(date, slot, entry, dayMeta) {
   const row = document.createElement('div')
   row.className = 'day-slot'
 
@@ -233,6 +241,17 @@ function buildSlotRow(date, slot, entry) {
       ai.className = 'day-slot__ai'
       ai.textContent = 'AI'
       val.appendChild(ai)
+    }
+
+    // Serving mismatch warning
+    const serves   = entry.recipes.serves_base
+    const needed   = householdCount + (dayMeta?.guestCount || 0)
+    if (householdCount > 0 && serves != null && serves < needed) {
+      const warn = document.createElement('span')
+      warn.className = 'day-slot__serves-warn'
+      warn.title = `Recipe serves ${serves}, need ${needed}`
+      warn.textContent = `⚠ ${serves}/${needed}`
+      val.appendChild(warn)
     }
 
     row.classList.add('day-slot--tap')

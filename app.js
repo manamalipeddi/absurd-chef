@@ -19,6 +19,7 @@ const SCREENS = {
   chat:           { title: 'AbsurdChef',    module: './screens/chat.js' },
   setup:          { title: 'Setup',         module: './screens/setup.js' },
   'recipe-detail':{ title: '',              module: './screens/recipe-detail.js' },
+  'add-recipe':   { title: 'Add Recipe',   module: './screens/add-recipe.js' },
 }
 
 const loaded        = new Set()
