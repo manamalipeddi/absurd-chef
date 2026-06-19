@@ -2,24 +2,28 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg:           #fdf8f2;
-  --surface:      #ffffff;
-  --border:       #e8ddd2;
-  --primary:      #166534;
-  --primary-light: #1e8a4a;
-  --primary-bg:   #d1fae5;
-  --accent:       #cf4488;
-  --accent-warm:  #ea580c;
-  --text:         #1c1917;
-  --text-muted:   #78716c;
-  --nav-inactive: #a8a29e;
-  --nav-active:   #166534;
-  --radius:       14px;
-  --radius-sm:    10px;
-  --header-h:     60px;
-  --nav-h:        64px;
-  --safe-bottom:  env(safe-area-inset-bottom, 0px);
-  --font:         'Quicksand', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --page:               #5e2536;   /* deep burgundy — the app background */
+  --page-deep:          #4c1d2c;
+  --bg:                 #e7f0e1;   /* soft green fill inside cards / inputs / active rows */
+  --surface:            #f3f8ef;   /* super light green — card surfaces */
+  --border:             #d3e3cd;   /* gentle green border */
+  --primary:            #557d5f;   /* sage green — the contrast / action colour */
+  --primary-light:      #6e9778;
+  --primary-bg:         #dcecd6;   /* sage tint for icon backgrounds, badges */
+  --accent:             #8c3a55;   /* burgundy accent */
+  --accent-warm:        #b5485f;
+  --text:               #2c1a22;   /* dark, readable on light-green surfaces */
+  --text-muted:         #6f6168;
+  --text-on-page:       #f6e8da;   /* cream text directly on the burgundy page */
+  --text-on-page-muted: #d6b3bf;
+  --nav-inactive:       #a89aa0;
+  --nav-active:         #557d5f;
+  --radius:             14px;
+  --radius-sm:          10px;
+  --header-h:           60px;
+  --nav-h:              64px;
+  --safe-bottom:        env(safe-area-inset-bottom, 0px);
+  --font:               'Quicksand', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
 }
 
 html { height: 100%; }
@@ -27,7 +31,7 @@ html { height: 100%; }
 body {
   height: 100%;
   font-family: var(--font);
-  background: var(--bg);
+  background: var(--page);
   color: var(--text);
   -webkit-font-smoothing: antialiased;
   overscroll-behavior: none;
@@ -54,7 +58,7 @@ body {
   padding: 0 16px;
   background: linear-gradient(135deg, var(--primary) 0%, var(--primary-light) 100%);
   border-bottom: none;
-  box-shadow: 0 2px 16px rgba(22, 101, 52, 0.22);
+  box-shadow: 0 2px 16px rgba(85, 125, 95, 0.22);
   padding-top: env(safe-area-inset-top, 0px);
 }
 
@@ -102,7 +106,7 @@ body {
   overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
   display: none;
-  background: var(--bg);
+  background: var(--page);
 }
 
 .screen--active { display: flex; flex-direction: column; }
@@ -166,12 +170,12 @@ body {
   height: 72px;
   border-radius: 22px;
   background: linear-gradient(135deg, var(--primary-bg) 0%, #f0fdf4 100%);
-  border: 1.5px solid rgba(22, 101, 52, 0.18);
+  border: 1.5px solid rgba(85, 125, 95, 0.18);
   display: flex;
   align-items: center;
   justify-content: center;
   margin-bottom: 6px;
-  box-shadow: 0 4px 16px rgba(22, 101, 52, 0.1);
+  box-shadow: 0 4px 16px rgba(85, 125, 95, 0.1);
 }
 .placeholder-icon svg {
   width: 34px;
@@ -182,13 +186,13 @@ body {
 .placeholder-label {
   font-size: 22px;
   font-weight: 700;
-  color: var(--text);
+  color: var(--text-on-page);
   letter-spacing: -0.3px;
 }
 
 .placeholder-sub {
   font-size: 15px;
-  color: var(--text-muted);
+  color: var(--text-on-page-muted);
   max-width: 260px;
   line-height: 1.5;
   font-weight: 500;
@@ -209,7 +213,7 @@ body {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.7px;
-  color: var(--primary);
+  color: var(--text-on-page);
   padding: 20px 16px 8px;
 }
 
@@ -231,8 +235,9 @@ body {
   justify-content: center;
   gap: 10px;
   padding: 32px 16px;
-  color: var(--text-muted);
+  color: var(--text-on-page-muted);
   font-size: 14px;
+  font-weight: 500;
 }
 
 /* ── Toasts ─────────────────────────────────────────────── */
@@ -283,7 +288,7 @@ body {
 }
 .day-card--today {
   border-color: var(--primary);
-  box-shadow: 0 3px 14px rgba(22, 101, 52, 0.14);
+  box-shadow: 0 3px 14px rgba(85, 125, 95, 0.14);
 }
 .day-card--past  { opacity: 0.5; }
 
@@ -544,25 +549,25 @@ body {
   border: none;
   cursor: pointer;
   font-family: var(--font);
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-on-page);
   -webkit-tap-highlight-color: transparent;
   text-align: left;
 }
-.recipe-section__header:active { background: var(--bg); }
+.recipe-section__header:active { opacity: 0.7; }
 
 .recipe-section__label { flex: 1; }
 
 .recipe-section__count {
-  font-weight: 400;
-  color: var(--text-muted);
+  font-weight: 500;
+  color: var(--text-on-page-muted);
 }
 
 .recipe-section__chevron {
   width: 18px;
   height: 18px;
-  color: var(--text-muted);
+  color: var(--text-on-page-muted);
   flex-shrink: 0;
   transition: transform 0.2s ease;
 }
@@ -1233,7 +1238,7 @@ body {
   align-items: center;
   justify-content: center;
   transition: opacity 0.15s, transform 0.1s;
-  box-shadow: 0 3px 10px rgba(22, 101, 52, 0.3);
+  box-shadow: 0 3px 10px rgba(85, 125, 95, 0.3);
 }
 #chat-send svg { width: 18px; height: 18px; }
 #chat-send:active  { transform: scale(0.92); }
@@ -1266,7 +1271,7 @@ body {
   background: linear-gradient(135deg, var(--primary) 0%, var(--primary-light) 100%);
   color: #fff;
   border-bottom-right-radius: 4px;
-  box-shadow: 0 2px 8px rgba(22, 101, 52, 0.22);
+  box-shadow: 0 2px 8px rgba(85, 125, 95, 0.22);
 }
 
 .chat-bubble--assistant .chat-bubble__inner {
@@ -1797,7 +1802,7 @@ body {
   font-weight: 700;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
-  box-shadow: 0 3px 12px rgba(22, 101, 52, 0.28);
+  box-shadow: 0 3px 12px rgba(85, 125, 95, 0.28);
   letter-spacing: 0.02em;
 }
 .su-add-btn:active { opacity: 0.88; transform: scale(0.99); }
@@ -2246,6 +2251,12 @@ body {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
 }
+/* Empty-state text sits directly on the burgundy page here */
+.pn-content > .su-empty {
+  color: var(--text-on-page-muted);
+  font-weight: 500;
+  text-align: center;
+}
 
 /* Collapsible category sections ──────────────────────────── */
 .pn-section { margin-bottom: 2px; }
@@ -2265,7 +2276,7 @@ body {
   font-family: var(--font);
   font-size: 12px;
   font-weight: 700;
-  color: var(--primary);
+  color: var(--text-on-page);
   text-transform: uppercase;
   letter-spacing: 0.08em;
   cursor: pointer;
@@ -2274,10 +2285,10 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 .pn-section-label { flex: 1; }
-.pn-section-count { font-weight: 500; color: var(--text-muted); }
+.pn-section-count { font-weight: 500; color: var(--text-on-page-muted); }
 .pn-section-chev {
   width: 14px; height: 14px;
-  color: var(--text-muted);
+  color: var(--text-on-page-muted);
   transition: transform 0.2s;
 }
 .pn-section-chev--open { transform: rotate(180deg); }
@@ -2343,17 +2354,18 @@ body {
   width: calc(100% - 32px);
   margin: 0 16px 4px;
   padding: 10px 16px;
-  background: none;
-  border: 1px dashed var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px dashed var(--text-on-page-muted);
   border-radius: var(--radius);
   font-family: var(--font);
   font-size: 13px;
-  color: var(--text-muted);
+  font-weight: 600;
+  color: var(--text-on-page);
   cursor: pointer;
   text-align: center;
   -webkit-tap-highlight-color: transparent;
 }
-.pn-tell-btn:active { background: var(--bg); }
+.pn-tell-btn:active { background: rgba(255, 255, 255, 0.12); }
 
 .pn-hidden-toggle {
   display: block;
@@ -2363,7 +2375,8 @@ body {
   border: none;
   font-family: var(--font);
   font-size: 13px;
-  color: var(--text-muted);
+  font-weight: 600;
+  color: var(--text-on-page-muted);
   cursor: pointer;
   text-align: center;
   text-decoration: underline;
@@ -2420,15 +2433,16 @@ body {
   justify-content: space-between;
   align-items: baseline;
   padding: 14px 16px 6px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-muted);
+  letter-spacing: 0.07em;
+  color: var(--text-on-page);
 }
 .pn-grocery-count {
-  font-weight: 400;
+  font-weight: 500;
   font-size: 11px;
+  color: var(--text-on-page-muted);
 }
 .pn-grocery-row {
   display: flex;
@@ -2473,7 +2487,8 @@ body {
   border: none;
   font-family: var(--font);
   font-size: 13px;
-  color: var(--text-muted);
+  font-weight: 600;
+  color: var(--text-on-page-muted);
   cursor: pointer;
   text-align: center;
   text-decoration: underline;
