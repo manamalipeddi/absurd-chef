@@ -1,20 +1,53 @@
-// Setup screen — placeholder
-// Future sprints: Family members, Weekly template editor,
-// Commute days, Special days calendar, Preschool menu paste
+import { navigateTo } from '../app.js'
 
-export function init(el) {
-  el.innerHTML = `
-    <div class="placeholder-wrap">
-      <div class="placeholder-icon">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path stroke-linecap="round" stroke-linejoin="round"
-            d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28Z"/>
-          <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/>
-        </svg>
-      </div>
-      <p class="placeholder-label">Setup</p>
-      <p class="placeholder-sub">Family, weekly template, commute days, and special occasions — coming soon</p>
-    </div>`
+const SECTIONS = [
+  { id: 'setup-family',          emoji: '👨‍👩‍👧‍👦', label: 'Family',          sub: 'Members, allergies & preferences' },
+  { id: 'setup-weekly-template', emoji: '📅', label: 'Weekly Template', sub: 'Meal constraints by day' },
+  { id: 'setup-commute-days',    emoji: '🚗', label: 'Commute Days',    sub: "Who's out and when" },
+  { id: 'setup-special-days',    emoji: '🎉', label: 'Special Days',    sub: 'Holidays, guests, closures' },
+  { id: 'setup-preschool-menu',  emoji: '🏫', label: 'Preschool Menu',  sub: "This week's lunch menu" },
+]
+
+let screenEl = null
+
+export function init(el) { screenEl = el }
+
+export function activate({ headerLeft, headerRight }) {
+  headerLeft.innerHTML = ''
+  headerRight.innerHTML = ''
+  if (!screenEl) return
+  screenEl.innerHTML = ''
+
+  const card = document.createElement('div')
+  card.className = 'card su-hub-card'
+
+  SECTIONS.forEach((sec, i) => {
+    const row = document.createElement('button')
+    row.className = 'su-hub-row' + (i < SECTIONS.length - 1 ? ' su-hub-row--ruled' : '')
+
+    const emoji = document.createElement('span')
+    emoji.className = 'su-hub-emoji'
+    emoji.textContent = sec.emoji
+
+    const centre = document.createElement('div')
+    centre.className = 'su-hub-centre'
+    const lbl = document.createElement('span')
+    lbl.className = 'su-hub-label'
+    lbl.textContent = sec.label
+    const sub = document.createElement('span')
+    sub.className = 'su-hub-sub'
+    sub.textContent = sec.sub
+    centre.append(lbl, sub)
+
+    const chevWrap = document.createElement('span')
+    chevWrap.innerHTML = `<svg class="su-hub-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="m9 18 6-6-6-6"/>
+    </svg>`
+
+    row.append(emoji, centre, chevWrap)
+    row.addEventListener('click', () => navigateTo(sec.id))
+    card.appendChild(row)
+  })
+
+  screenEl.appendChild(card)
 }
-
-export function activate({ headerLeft, headerRight }) {}

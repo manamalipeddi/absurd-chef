@@ -13,13 +13,18 @@ export const navState = {}
 
 // ── Screen registry ──────────────────────────────────────
 const SCREENS = {
-  pantry:         { title: 'Pantry',        module: './screens/pantry.js' },
-  recipes:        { title: 'Recipes',       module: './screens/recipes.js' },
-  plan:           { title: 'This Week',     module: './screens/plan.js' },
-  chat:           { title: 'AbsurdChef',    module: './screens/chat.js' },
-  setup:          { title: 'Setup',         module: './screens/setup.js' },
-  'recipe-detail':{ title: '',              module: './screens/recipe-detail.js' },
-  'add-recipe':   { title: 'Add Recipe',   module: './screens/add-recipe.js' },
+  pantry:                  { title: 'Pantry',           module: './screens/pantry.js' },
+  recipes:                 { title: 'Recipes',          module: './screens/recipes.js' },
+  plan:                    { title: 'This Week',        module: './screens/plan.js' },
+  chat:                    { title: 'AbsurdChef',       module: './screens/chat.js' },
+  setup:                   { title: 'Setup',            module: './screens/setup.js' },
+  'setup-family':          { title: 'Family',           module: './screens/setup-family.js' },
+  'setup-weekly-template': { title: 'Weekly Template',  module: './screens/setup-weekly-template.js' },
+  'setup-commute-days':    { title: 'Commute Days',     module: './screens/setup-commute-days.js' },
+  'setup-special-days':    { title: 'Special Days',     module: './screens/setup-special-days.js' },
+  'setup-preschool-menu':  { title: 'Preschool Menu',   module: './screens/setup-preschool-menu.js' },
+  'recipe-detail':         { title: '',                 module: './screens/recipe-detail.js' },
+  'add-recipe':            { title: 'Add Recipe',       module: './screens/add-recipe.js' },
 }
 
 const loaded        = new Set()

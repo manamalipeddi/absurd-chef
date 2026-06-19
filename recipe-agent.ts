@@ -29,8 +29,9 @@ Deno.serve(async (req) => {
     case 'add_more_hacks':       return handleAddMoreHacks(body)
     case 'check_substitute':     return handleCheckSubstitute(body)
     case 'suggest_easier':       return handleSuggestEasier(body)
-    case 'scale_recipe':         return handleScaleRecipe(body)
-    default:                     return json({ error: 'Unknown action' }, 400)
+    case 'scale_recipe':           return handleScaleRecipe(body)
+    case 'parse_preschool_menu':  return handleParsePreschoolMenu(body)
+    default:                      return json({ error: 'Unknown action' }, 400)
   }
 })
 
@@ -208,6 +209,43 @@ async function handleSuggestEasier({ recipe_name, current_serves, ingredients, i
     }],
   })
 
+  try {
+    const text = msg.content[0].type === 'text' ? msg.content[0].text : '{}'
+    return json(parseJSON(text))
+  } catch {
+    return json({ error: 'Failed to parse AI response' }, 500)
+  }
+}
+
+// ── parse_preschool_menu ──────────────────────────────────
+async function handleParsePreschoolMenu({ raw_text, iso_week }: { raw_text: string; iso_week: string }) {
+  const msg = await anthropic.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 1500,
+    system: `Parse weekly preschool lunch menus into structured JSON. Return ONLY valid JSON, no markdown.`,
+    messages: [{
+      role: 'user',
+      content: `Parse this preschool menu (translated to English) for week ${iso_week}.
+
+Format: main dish, ingredients in parens, vegetarian alt in second parens prefixed "Veg:", then sides.
+Ignore "Salad & Fruit" — it appears every day and has no signal.
+
+Extract one record per weekday (Mon–Fri) with:
+- day_of_week: 1=Mon 2=Tue 3=Wed 4=Thu 5=Fri
+- meal_description: clean main dish description
+- protein: chicken|beef|pork|fish|vegetarian|egg (infer from dish; no clear meat = vegetarian)
+- style: soup|stew|curry|pasta|rice_dish|casserole|other
+- lunch_weight: light (soup+bread or explicitly light) | heavy (stew/curry with rice or couscous) | medium (everything else)
+- raw_text: that day's original line, unmodified
+
+Omit days that are blank, missing, or explicitly closed/holiday.
+
+MENU:
+${raw_text}
+
+Return: {"meals": [{"day_of_week": 1, "meal_description": "...", "protein": "...", "style": "...", "lunch_weight": "...", "raw_text": "..."}]}`,
+    }],
+  })
   try {
     const text = msg.content[0].type === 'text' ? msg.content[0].text : '{}'
     return json(parseJSON(text))
