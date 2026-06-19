@@ -2234,3 +2234,21 @@ body {
 }
 .pn-danger-btn:active { background: #fee2e2; }
 .pn-danger-btn:disabled { opacity: 0.5; cursor: default; }
+
+
+/* ── Chat — load more button ─────────────────────────────── */
+.chat-load-more {
+  display: block;
+  width: 100%;
+  padding: 10px 16px;
+  background: none;
+  border: none;
+  font-family: var(--font);
+  font-size: 13px;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-align: center;
+  text-decoration: underline;
+  -webkit-tap-highlight-color: transparent;
+}
+.chat-load-more:disabled { opacity: 0.5; cursor: default; }

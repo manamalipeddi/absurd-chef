@@ -1,24 +1,22 @@
 import { supabase, FUNCTIONS_URL, toast, navState } from '../app.js'
 
 // ── State (persists across tab switches) ──────────────────
-const messages   = []   // { role, content }  — sent to API
-const bubbles    = []   // rendered DOM nodes — parallel array
-let   greeted    = false
-let   busy       = false
-let   listEl     = null
-let   inputEl    = null
-let   sendBtn    = null
+let listEl          = null
+let inputEl         = null
+let sendBtn         = null
+let busy            = false
+let historyLoaded   = false
+let oldestCreatedAt = null
+let loadMoreBtn     = null
 
 // ── Lifecycle ─────────────────────────────────────────────
 export function init(el) {
   el.classList.add('chat-screen')
 
-  // Message list
   listEl = document.createElement('div')
   listEl.id = 'chat-list'
   el.appendChild(listEl)
 
-  // Input area
   const inputArea = document.createElement('div')
   inputArea.id = 'chat-input-area'
   inputArea.innerHTML = `
@@ -35,22 +33,20 @@ export function init(el) {
   inputEl = document.getElementById('chat-input')
   sendBtn = document.getElementById('chat-send')
 
-  // Auto-resize textarea
   inputEl.addEventListener('input', () => {
     inputEl.style.height = 'auto'
     inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px'
   })
-
-  // Send on Enter (Shift+Enter = newline)
   inputEl.addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage() }
   })
-
   sendBtn.addEventListener('click', sendMessage)
 }
 
 export async function activate({ headerLeft, headerRight }) {
-  // Pre-fill input when arriving from Plan "Discuss this day" button
+  headerLeft.innerHTML  = ''
+  headerRight.innerHTML = ''
+
   if (navState.chatPrefill && inputEl) {
     inputEl.value = navState.chatPrefill
     inputEl.style.height = 'auto'
@@ -58,13 +54,92 @@ export async function activate({ headerLeft, headerRight }) {
     navState.chatPrefill = null
     requestAnimationFrame(() => inputEl.focus())
   }
-  if (!greeted) {
-    greeted = true
-    await showGreeting()
+
+  if (!historyLoaded) {
+    historyLoaded = true
+    await loadHistory()
   }
 }
 
-// ── Greeting ──────────────────────────────────────────────
+// ── History loading ───────────────────────────────────────
+async function loadHistory() {
+  listEl.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`
+
+  const { data } = await supabase
+    .from('chat_history')
+    .select('id, role, content, created_at')
+    .in('role', ['user', 'assistant'])
+    .order('created_at', { ascending: false })
+    .limit(25)
+
+  listEl.innerHTML = ''
+
+  if (!data?.length) {
+    showGreeting()
+    return
+  }
+
+  const msgs = [...data].reverse()
+  oldestCreatedAt = msgs[0].created_at
+
+  // Check if there are older messages
+  const { count } = await supabase
+    .from('chat_history')
+    .select('id', { count: 'exact', head: true })
+    .in('role', ['user', 'assistant'])
+    .lt('created_at', oldestCreatedAt)
+
+  if ((count || 0) > 0) {
+    loadMoreBtn = document.createElement('button')
+    loadMoreBtn.className = 'chat-load-more'
+    loadMoreBtn.textContent = 'Load earlier messages'
+    loadMoreBtn.addEventListener('click', loadOlderMessages)
+    listEl.appendChild(loadMoreBtn)
+  }
+
+  msgs.forEach(msg => appendBubble(msg.role, msg.content))
+  scrollToBottom()
+}
+
+async function loadOlderMessages() {
+  if (!oldestCreatedAt || !loadMoreBtn) return
+  loadMoreBtn.textContent = 'Loading…'
+  loadMoreBtn.disabled = true
+
+  const { data } = await supabase
+    .from('chat_history')
+    .select('id, role, content, created_at')
+    .in('role', ['user', 'assistant'])
+    .lt('created_at', oldestCreatedAt)
+    .order('created_at', { ascending: false })
+    .limit(25)
+
+  if (!data?.length) { loadMoreBtn.remove(); loadMoreBtn = null; return }
+
+  const msgs = [...data].reverse()
+  oldestCreatedAt = msgs[0].created_at
+
+  const anchor = listEl.querySelector('.chat-bubble')
+  msgs.forEach(msg => {
+    listEl.insertBefore(createBubble(msg.role, msg.content), anchor)
+  })
+
+  const { count } = await supabase
+    .from('chat_history')
+    .select('id', { count: 'exact', head: true })
+    .in('role', ['user', 'assistant'])
+    .lt('created_at', oldestCreatedAt)
+
+  if ((count || 0) > 0) {
+    loadMoreBtn.textContent = 'Load earlier messages'
+    loadMoreBtn.disabled = false
+  } else {
+    loadMoreBtn.remove()
+    loadMoreBtn = null
+  }
+}
+
+// ── Greeting (shown only when there is no prior history) ──
 async function showGreeting() {
   const today = new Date().toISOString().slice(0, 10)
   const { data } = await supabase
@@ -82,7 +157,6 @@ async function showGreeting() {
   } else {
     greeting = `Hi! No plan yet — tap the ✨ on the Plan tab to generate one, then come back and ask me anything.`
   }
-
   appendBubble('assistant', greeting)
 }
 
@@ -96,25 +170,19 @@ async function sendMessage() {
   busy = true
   setSendState(false)
 
-  messages.push({ role: 'user', content: text })
   appendBubble('user', text)
-
   const typingEl = showTyping()
 
   try {
     const res  = await fetch(`${FUNCTIONS_URL}/chat-agent`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ messages }),
+      body:    JSON.stringify({ message: text }),
     })
     const json = await res.json()
     typingEl.remove()
-
-    messages.push({ role: 'assistant', content: json.message })
-    const bubble = appendBubble('assistant', json.message)
-
-    if (json.action) await handleAction(json.action, bubble)
-  } catch (e) {
+    appendBubble('assistant', json.reply || json.message || 'Something went wrong.')
+  } catch {
     typingEl.remove()
     appendBubble('assistant', 'Sorry, something went wrong. Try again.')
     toast('Chat error', { error: true })
@@ -125,38 +193,20 @@ async function sendMessage() {
   }
 }
 
-// ── Action handling ───────────────────────────────────────
-async function handleAction(action, afterEl) {
-  if (action.type === 'override_day') {
-    // Plan was already updated server-side — notify Plan screen to refresh
-    document.dispatchEvent(new CustomEvent('plan-updated'))
-    // Show change card
-    const card = buildChangeCard(action)
-    afterEl.insertAdjacentElement('afterend', card)
-    scrollToBottom()
-  }
-
-  if (action.type === 'show_recipe') {
-    const card = await buildRecipeCard(action)
-    if (card) {
-      afterEl.insertAdjacentElement('afterend', card)
-      scrollToBottom()
-    }
-  }
-}
-
 // ── Bubble DOM ────────────────────────────────────────────
-function appendBubble(role, text) {
-  const wrap = document.createElement('div')
+function createBubble(role, text) {
+  const wrap  = document.createElement('div')
   wrap.className = `chat-bubble chat-bubble--${role}`
-
   const inner = document.createElement('div')
   inner.className = 'chat-bubble__inner'
-  inner.textContent = text
-
+  inner.innerHTML = renderText(text)
   wrap.appendChild(inner)
+  return wrap
+}
+
+function appendBubble(role, text) {
+  const wrap = createBubble(role, text)
   listEl.appendChild(wrap)
-  bubbles.push(wrap)
   scrollToBottom()
   return wrap
 }
@@ -172,58 +222,14 @@ function showTyping() {
   return wrap
 }
 
-// ── Action cards ──────────────────────────────────────────
-function buildChangeCard(action) {
-  const el = document.createElement('div')
-  el.className = 'chat-card chat-card--change'
-  const day = action.date ? fmtDay(action.date) : ''
-  el.innerHTML = `
-    <span class="chat-card__icon">✓</span>
-    <div class="chat-card__body">
-      <span class="chat-card__title">${day ? day + ' changed' : 'Plan updated'}</span>
-      <span class="chat-card__sub">${action.recipe_name || ''}</span>
-    </div>`
-  return el
-}
-
-async function buildRecipeCard(action) {
-  if (!action.recipe_id) return null
-  const { data } = await supabase
-    .from('recipes')
-    .select('night_before, morning_of, when_cooking, the_scary_bit')
-    .eq('id', action.recipe_id)
-    .single()
-  if (!data) return null
-
-  const el = document.createElement('div')
-  el.className = 'chat-card chat-card--recipe'
-
-  const sections = [
-    { key: 'night_before', label: 'Night before', icon: '🌙' },
-    { key: 'morning_of',   label: 'Morning of',   icon: '☀️' },
-    { key: 'when_cooking', label: 'When cooking',  icon: '🍳' },
-  ]
-
-  let html = `<div class="chat-card__recipe-title">${action.recipe_name}</div>`
-
-  for (const { key, label, icon } of sections) {
-    const steps = data[key]
-    if (!steps?.length) continue
-    html += `<div class="chat-card__recipe-section">
-      <span class="chat-card__recipe-label">${icon} ${label}</span>
-      <ul>${steps.map((s) => `<li>${s}</li>`).join('')}</ul>
-    </div>`
-  }
-
-  if (data.the_scary_bit) {
-    html += `<div class="chat-card__scary">
-      <span>⚠️ The scary bit</span>
-      <p>${data.the_scary_bit}</p>
-    </div>`
-  }
-
-  el.innerHTML = html
-  return el
+// ── Text rendering ────────────────────────────────────────
+function renderText(text) {
+  if (!text) return ''
+  return text
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.*?)\*/g, '<em>$1</em>')
+    .replace(/\n/g, '<br>')
 }
 
 // ── UI helpers ────────────────────────────────────────────
@@ -241,9 +247,4 @@ function scrollToBottom() {
 function fmtShort(dateStr) {
   const d = new Date(dateStr + 'T12:00:00Z')
   return d.toLocaleString('en', { month: 'short', day: 'numeric', timeZone: 'UTC' })
-}
-
-function fmtDay(dateStr) {
-  const d = new Date(dateStr + 'T12:00:00Z')
-  return d.toLocaleString('en', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' })
 }
