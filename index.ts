@@ -9,6 +9,13 @@ const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY")!;
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
+// ── Planning rules ─────────────────────────────────────────────────────────
+// BREAKFAST IS NEVER PLANNED BY THE AI.
+// Breakfast is decided same-day by the user based on energy/mood/freezer stash.
+// This planner writes meal_plans rows for 'dinner' only.
+// 'lunch' rows are written only on weekends (day_of_week IN [0,6]) or special_days
+// where type IN ('holiday', 'preschool_closed').
+
 // ── Types ──────────────────────────────────────────────────────────────────
 
 interface PlanRequest {

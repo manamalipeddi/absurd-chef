@@ -8,12 +8,17 @@ export const supabase = createClient(
 
 export const FUNCTIONS_URL = 'https://tsigszlaklspuankhztx.supabase.co/functions/v1'
 
+// Shared state for passing data between screens (e.g. recipe detail target)
+export const navState = {}
+
 // ── Screen registry ──────────────────────────────────────
 const SCREENS = {
-  plan:    { title: 'This Week',      module: './screens/plan.js' },
-  chat:    { title: 'AbsurdChef',     module: './screens/chat.js' },
-  recipes: { title: 'Recipes',        module: './screens/recipes.js' },
-  pantry:  { title: 'Pantry & Setup', module: './screens/pantry.js' },
+  pantry:         { title: 'Pantry',        module: './screens/pantry.js' },
+  recipes:        { title: 'Recipes',       module: './screens/recipes.js' },
+  plan:           { title: 'This Week',     module: './screens/plan.js' },
+  chat:           { title: 'AbsurdChef',    module: './screens/chat.js' },
+  setup:          { title: 'Setup',         module: './screens/setup.js' },
+  'recipe-detail':{ title: '',              module: './screens/recipe-detail.js' },
 }
 
 const loaded        = new Set()
@@ -38,7 +43,10 @@ export async function navigateTo(id) {
 
   document.getElementById(`screen-${currentScreen}`).classList.remove('screen--active')
   document.getElementById(`screen-${id}`).classList.add('screen--active')
-  navBtns.forEach(b => b.classList.toggle('nav-btn--active', b.dataset.screen === id))
+  // Only flip nav highlight for top-level screens that have a nav button
+  if (document.querySelector(`.nav-btn[data-screen="${id}"]`)) {
+    navBtns.forEach(b => b.classList.toggle('nav-btn--active', b.dataset.screen === id))
+  }
   screenTitle.textContent = SCREENS[id].title
   headerLeft.innerHTML  = ''
   headerRight.innerHTML = ''
