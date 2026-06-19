@@ -53,11 +53,20 @@ interface CommuteDayRule {
 }
 
 interface PreschoolMeal {
+  iso_week: string;
   day_of_week: number;
   protein: string | null;
   style: string | null;
   lunch_weight: string;
   meal_description: string;
+}
+
+interface PreschoolTemplate {
+  day_of_week: number;
+  typical_description: string | null;
+  protein: string | null;
+  style: string | null;
+  lunch_weight: string;
 }
 
 interface SpecialDay {
@@ -160,6 +169,7 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
     templateRes,
     commuteRes,
     preschoolRes,
+    preschoolTemplateRes,
     specialRes,
     stashRes,
     existingPlanRes,
@@ -181,7 +191,13 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
     supabase
       .from("preschool_meals")
       .select("*")
-      .in("iso_week", [isoWeek(startDate), isoWeek(addDays(startDate, 7))]),
+      .order("iso_week", { ascending: false })
+      .limit(20),
+    supabase
+      .from("preschool_template")
+      .select("*")
+      .eq("active", true)
+      .order("day_of_week"),
     supabase
       .from("special_days")
       .select("*")
@@ -208,6 +224,7 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
     template: templateRes.data || [],
     commuteDays: commuteRes.data || [],
     preschoolMeals: preschoolRes.data || [],
+    preschoolTemplate: preschoolTemplateRes.data || [],
     specialDays: specialRes.data || [],
     stash: stashRes.data || [],
     existingPlan: existingPlanRes.data || [],
@@ -256,10 +273,19 @@ function buildPrompt(
     const special = ctx.specialDays.find(
       (s: SpecialDay) => s.day === date
     );
-    const preschoolMeal = ctx.preschoolMeals.find(
-      (p: PreschoolMeal) =>
-        p.day_of_week === dow && dow >= 1 && dow <= 5
-    );
+    // 3-tier preschool lookup for this date
+    const dateWeek = isoWeek(date);
+    const t1 = dow >= 1 && dow <= 5
+      ? (ctx.preschoolMeals as PreschoolMeal[]).find(p => p.iso_week === dateWeek && p.day_of_week === dow)
+      : undefined;
+    const t2 = (!t1 && dow >= 1 && dow <= 5)
+      ? (ctx.preschoolMeals as PreschoolMeal[]).find(p => p.iso_week < dateWeek && p.day_of_week === dow)
+      : undefined;
+    const t3 = (!t1 && !t2 && dow >= 1 && dow <= 5)
+      ? (ctx.preschoolTemplate as PreschoolTemplate[]).find(t => t.day_of_week === dow)
+      : undefined;
+    const preschoolMeal = t1 || t2 || t3;
+    const preschoolSource = t1 ? "specific" : t2 ? `stale:${t2.iso_week}` : t3 ? "template_default" : null;
     const templateRule = ctx.template.find(
       (t: TemplateRule) =>
         t.day_of_week === dow && t.meal_type === "dinner"
@@ -288,6 +314,7 @@ function buildPrompt(
       guest_allergens: guestAllergens.length > 0 ? guestAllergens : undefined,
       preschool_protein: preschoolMeal?.protein || null,
       preschool_weight: preschoolMeal?.lunch_weight || "medium",
+      preschool_source: preschoolSource,
       preschool_closed: special?.type === "kids_home" || special?.type === "preschool_closed",
       template_constraint_type: templateRule?.constraint_type || null,
       template_constraint_value: templateRule?.constraint_value || null,
@@ -360,6 +387,7 @@ PLANNING RULES
 10. Prefer dump recipes on days adjacent to commute days too
     (less prep the day before helps).
 11. Do not repeat the same protein that the preschool served that day.
+    preschool_source values: "specific" = confirmed this week's menu; "stale:YYYY-WXX" = most recent past menu (different week); "template_default" = generic observed pattern, no specific week data. All tiers apply equally to the protein conflict check. In display/notes, label template_default as "typical pattern" not "confirmed menu".
 12. GUEST ALLERGENS: if a date entry has guest_allergens, those substances
     are forbidden for that specific date only. Filter accordingly when
     selecting a recipe for that day — even if the recipe is otherwise safe.

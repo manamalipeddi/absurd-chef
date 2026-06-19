@@ -2,6 +2,7 @@ import { supabase, FUNCTIONS_URL, navigateTo, toast } from '../app.js'
 
 const DAY_LABELS = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri']
 const PROTEINS   = ['chicken','beef','pork','fish','vegetarian','egg']
+const STYLES     = ['pasta','meatball','curry','soup','stew','rice','casserole','salad','wrap','other']
 const WEIGHTS    = [['light','Light'],['medium','Medium'],['heavy','Heavy']]
 
 let screenEl   = null
@@ -24,23 +25,17 @@ async function renderDisplay() {
   screenEl.innerHTML = `<div class="loading-row"><div class="spinner"></div>Loading…</div>`
 
   const currentWeek = getISOWeek()
-  const { data: currentRows } = await supabase
-    .from('preschool_meals').select('*')
-    .eq('iso_week', currentWeek).order('day_of_week')
-
-  if (currentRows?.length) {
-    showTable(currentRows, currentWeek, false)
-    return
-  }
-
-  // Find most recent past week
-  const { data: pastRows } = await supabase
-    .from('preschool_meals').select('*')
-    .lt('iso_week', currentWeek).order('iso_week', { ascending: false }).limit(5)
+  const [{ data: currentRows }, { data: pastRows }, { data: templateRows }] = await Promise.all([
+    supabase.from('preschool_meals').select('*').eq('iso_week', currentWeek).order('day_of_week'),
+    supabase.from('preschool_meals').select('*').lt('iso_week', currentWeek).order('iso_week', { ascending: false }).limit(5),
+    supabase.from('preschool_template').select('*').eq('active', true).order('day_of_week'),
+  ])
 
   screenEl.innerHTML = ''
 
-  if (pastRows?.length) {
+  if (currentRows?.length) {
+    showTable(currentRows, currentWeek, false)
+  } else if (pastRows?.length) {
     const staleWeek = pastRows[0].iso_week
     const staleData = pastRows.filter(r => r.iso_week === staleWeek)
     const banner = document.createElement('div')
@@ -48,6 +43,7 @@ async function renderDisplay() {
     banner.textContent = `⚠ Showing last week's menu (${staleWeek}) — paste this week's if you have it.`
     screenEl.appendChild(banner)
     showTable(staleData, staleWeek, true)
+    showPasteBox()
   } else {
     const empty = document.createElement('div')
     empty.className = 'pm-empty-state'
@@ -55,6 +51,8 @@ async function renderDisplay() {
     screenEl.appendChild(empty)
     showPasteBox()
   }
+
+  renderTemplateSection(templateRows || [])
 }
 
 function showTable(rows, isoWeek, stale) {
@@ -289,6 +287,109 @@ function showParsedReview() {
 
   actions.append(discardBtn, saveBtn)
   screenEl.appendChild(actions)
+}
+
+// ── Default template section ──────────────────────────────
+function renderTemplateSection(rows) {
+  const section = document.createElement('div')
+  section.className = 'pm-template-section'
+
+  const heading = document.createElement('div')
+  heading.className = 'pm-template-heading'
+  heading.textContent = 'Default weekly pattern'
+
+  const sub = document.createElement('p')
+  sub.className = 'pm-template-subtext'
+  sub.textContent = 'Used as a fallback when no specific week\'s menu has been pasted. Edit as you learn the rhythm.'
+
+  section.append(heading, sub)
+
+  const table = document.createElement('div')
+  table.className = 'pm-table'
+
+  rows.forEach(r => {
+    const row = document.createElement('div')
+    row.className = 'pm-row'
+
+    const day = document.createElement('span')
+    day.className = 'pm-day'
+    day.textContent = DAY_LABELS[r.day_of_week] || String(r.day_of_week)
+
+    const centre = document.createElement('div')
+    centre.className = 'pm-centre'
+
+    const desc = document.createElement('div')
+    desc.className = 'pm-desc'
+    desc.textContent = r.typical_description || '—'
+
+    const meta = document.createElement('div')
+    meta.className = 'pm-meta'
+    if (r.protein)      meta.appendChild(mkBadge(r.protein,      'pm-badge pm-badge-protein'))
+    if (r.style)        meta.appendChild(mkBadge(r.style,        'pm-badge pm-badge-style'))
+    if (r.lunch_weight) meta.appendChild(mkBadge(r.lunch_weight, `pm-badge pm-badge-weight-${r.lunch_weight}`))
+
+    centre.append(desc, meta)
+
+    const editBtn = document.createElement('button')
+    editBtn.className = 'pm-edit-btn'
+    editBtn.textContent = 'Edit'
+    editBtn.addEventListener('click', () => openTemplateEdit(row, r))
+
+    row.append(day, centre, editBtn)
+    table.appendChild(row)
+  })
+
+  section.appendChild(table)
+  screenEl.appendChild(section)
+}
+
+function openTemplateEdit(rowEl, r) {
+  const centre  = rowEl.querySelector('.pm-centre')
+  const descEl  = rowEl.querySelector('.pm-desc')
+  const metaEl  = rowEl.querySelector('.pm-meta')
+  const editBtn = rowEl.querySelector('.pm-edit-btn')
+
+  editBtn.style.display = 'none'
+  descEl.style.display  = 'none'
+  metaEl.style.display  = 'none'
+
+  const descInp = document.createElement('input')
+  descInp.className = 'pm-desc-input'
+  descInp.value = r.typical_description || ''
+
+  const proteinSel = document.createElement('select')
+  proteinSel.className = 'pm-sel-small'
+  PROTEINS.forEach(p => { const o = document.createElement('option'); o.value = p; o.textContent = p; if (p === r.protein) o.selected = true; proteinSel.appendChild(o) })
+
+  const styleSel = document.createElement('select')
+  styleSel.className = 'pm-sel-small'
+  STYLES.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; if (s === r.style) o.selected = true; styleSel.appendChild(o) })
+
+  const weightSel = document.createElement('select')
+  weightSel.className = 'pm-sel-small'
+  WEIGHTS.forEach(([v, l]) => { const o = document.createElement('option'); o.value = v; o.textContent = l; if (v === r.lunch_weight) o.selected = true; weightSel.appendChild(o) })
+
+  const selRow = document.createElement('div')
+  selRow.className = 'pm-sel-row'
+  selRow.append(proteinSel, styleSel, weightSel)
+
+  const saveInline = document.createElement('button')
+  saveInline.className = 'pm-inline-save'
+  saveInline.textContent = 'Save'
+  saveInline.addEventListener('click', async () => {
+    saveInline.disabled = true; saveInline.textContent = '…'
+    const { error } = await supabase.from('preschool_template').update({
+      typical_description: descInp.value.trim(),
+      protein:             proteinSel.value,
+      style:               styleSel.value,
+      lunch_weight:        weightSel.value,
+    }).eq('id', r.id)
+    if (error) { toast('Save failed', { error: true }); saveInline.disabled = false; saveInline.textContent = 'Save'; return }
+    toast('Saved')
+    await renderDisplay()
+  })
+
+  centre.append(descInp, selRow, saveInline)
 }
 
 // ── ISO week helpers ──────────────────────────────────────
