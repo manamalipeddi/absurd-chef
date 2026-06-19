@@ -85,6 +85,12 @@ function renderInventory() {
   const addBtn = mkAddBtn('+ Add item', () => openInventoryForm(null, 'pantry'))
   contentEl.appendChild(addBtn)
 
+  const tellBtn = document.createElement('button')
+  tellBtn.className = 'pn-tell-btn'
+  tellBtn.textContent = '🎤 Tell me what\'s in stock'
+  tellBtn.addEventListener('click', () => navigateTo('chat'))
+  contentEl.appendChild(tellBtn)
+
   const active = inventoryData.filter(i => i.active !== false)
   const hidden = inventoryData.filter(i => i.active === false)
 

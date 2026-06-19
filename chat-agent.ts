@@ -54,6 +54,7 @@ BEHAVIOR:
 - Day-of-week convention used throughout: 0=Sunday, 1=Monday, 2=Tuesday, 3=Wednesday, 4=Thursday, 5=Friday, 6=Saturday. Tool results include pre-computed day_name fields — always use day_name directly, never convert day_of_week integers yourself.
 - stash_still_valid: false in a tool result means a meal planned from freezer_stash has no matching valid stash entry — always flag this to the user.
 - Guest days: get_special_days returns known_guests[] (resolved member data) and guest_allergies[] (one-off). Both are hard allergy constraints for that date only — treat them with the same enforcement strength as household allergens when suggesting meals for that specific day.
+- Inventory item names follow the pattern "Category - Variant" (e.g. "Milk - Oat", "Bread - Lingon Grova"). When the user describes what they have in stock, call update_inventory_from_description. The tool handles parsing, matching, and writing; your job is to relay what was done and ask about any ambiguous items it surfaces.
 - Today: ${today()}`
 }
 
@@ -149,6 +150,17 @@ const TOOLS: Anthropic.Tool[] = [
     name: 'get_commute_days',
     description: 'Get active commute day configuration.',
     input_schema: { type: 'object' as const, properties: {} },
+  },
+  {
+    name: 'update_inventory_from_description',
+    description: 'Parse a free-text description of what the user has in stock and update inventory accordingly. Handles name normalisation ("Category - Variant" format), matching against existing entries, inserting new items, and flagging ambiguous cases for the user to resolve.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        description: { type: 'string', description: 'Natural language description of what\'s in stock, e.g. "we have oat milk, 3 eggs, and some frozen chicken".' },
+      },
+      required: ['description'],
+    },
   },
   {
     name: 'update_plan_slot',
@@ -425,6 +437,99 @@ async function toolGetCommuteDays(db: DB) {
   }
 }
 
+async function toolUpdateInventoryFromDescription(input: Record<string, unknown>, db: DB) {
+  const description = (input.description as string) || ''
+
+  const { data: existing } = await db.from('inventory')
+    .select('id, name, quantity, unit, category')
+    .eq('active', true).order('name')
+
+  const parsePrompt = `You are an inventory parser. Parse the user's description into structured items and match them against existing inventory.
+
+NAMING CONVENTION: Inventory names use "Category - Variant" format.
+Examples: "Bread - Råg Levain", "Milk - Oat", "Milk - Lactose Free", "Chicken - Frozen"
+Simple items with no meaningful variant use just the item name: "Eggs", "Butter"
+
+CATEGORY INFERENCE (infer from context):
+- fridge: dairy, eggs, fresh produce, opened items, fresh meat, leftovers
+- freezer: anything described as frozen or for the freezer
+- pantry: bread (unless frozen), dry goods, pasta, rice, canned items, oils, spices, shelf-stable
+
+EXISTING INVENTORY:
+${JSON.stringify(existing || [])}
+
+USER DESCRIPTION: "${description}"
+
+For each item in the description:
+1. Build the canonical name using "Category - Variant" (or just item name if no variant)
+2. Extract quantity (number or null) and unit (string or null) if mentioned
+3. Infer category (fridge/freezer/pantry)
+4. Set match_type:
+   - "new": no similar entry in existing inventory
+   - "update": clearly the same as exactly one existing entry — provide that entry's matched_id
+   - "ambiguous": multiple entries could plausibly match, OR item is similar but not clearly the same as an existing one (different brand/variant name, unclear if duplicate or new variant)
+   For "ambiguous", list the candidate existing names in ambiguous_candidates.
+
+Return ONLY valid JSON, no other text:
+{"items":[{"name":"string","quantity":number|null,"unit":"string|null","category":"fridge|freezer|pantry","match_type":"new|update|ambiguous","matched_id":"uuid|null","ambiguity_note":"string|null","ambiguous_candidates":["name1"]}]}`
+
+  type ParsedItem = {
+    name: string
+    quantity: number | null
+    unit: string | null
+    category: string
+    match_type: 'new' | 'update' | 'ambiguous'
+    matched_id: string | null
+    ambiguity_note: string | null
+    ambiguous_candidates: string[]
+  }
+
+  let items: ParsedItem[] = []
+  try {
+    const resp = await ac.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1000,
+      messages: [{ role: 'user', content: parsePrompt }],
+    })
+    const raw = ((resp.content[0] as Anthropic.TextBlock).text || '').trim()
+    const jsonStr = raw.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '')
+    items = (JSON.parse(jsonStr) as { items: ParsedItem[] }).items || []
+  } catch (e) {
+    return { error: `Failed to parse description: ${String(e)}`, description }
+  }
+
+  const newItems       = items.filter(i => i.match_type === 'new')
+  const updateItems    = items.filter(i => i.match_type === 'update' && i.matched_id)
+  const ambiguousItems = items.filter(i => i.match_type === 'ambiguous')
+
+  const inserted: string[] = []
+  if (newItems.length) {
+    const { error } = await db.from('inventory').insert(
+      newItems.map(i => ({ name: i.name, quantity: i.quantity ?? null, unit: i.unit ?? null, category: i.category, active: true }))
+    )
+    if (!error) inserted.push(...newItems.map(i => i.name))
+  }
+
+  type UpdatedEntry = { name: string; quantity: number | null; unit: string | null }
+  const updated: UpdatedEntry[] = []
+  for (const item of updateItems) {
+    const { error } = await db.from('inventory')
+      .update({ quantity: item.quantity ?? null, unit: item.unit ?? null })
+      .eq('id', item.matched_id!)
+    if (!error) updated.push({ name: item.name, quantity: item.quantity, unit: item.unit })
+  }
+
+  return {
+    inserted,
+    updated,
+    ambiguous: ambiguousItems.map(i => ({
+      described_as: i.name,
+      note: i.ambiguity_note,
+      candidates: i.ambiguous_candidates,
+    })),
+  }
+}
+
 async function toolUpdatePlanSlot(input: Record<string, unknown>, db: DB, userMsg: string) {
   const { plan_date, meal_type, recipe_id, instruction_text } = input
   const cook_source = (input.cook_source as string) || 'home'
@@ -669,8 +774,9 @@ async function dispatch(name: string, input: Record<string, unknown>, db: DB, us
       case 'get_family_context':     result = await toolGetFamilyContext(db); break
       case 'get_weekly_template':    result = await toolGetWeeklyTemplate(db); break
       case 'get_special_days':       result = await toolGetSpecialDays(input, db); break
-      case 'get_commute_days':       result = await toolGetCommuteDays(db); break
-      case 'update_plan_slot':       result = await toolUpdatePlanSlot(input, db, userMsg); break
+      case 'get_commute_days':                   result = await toolGetCommuteDays(db); break
+      case 'update_inventory_from_description':  result = await toolUpdateInventoryFromDescription(input, db); break
+      case 'update_plan_slot':                   result = await toolUpdatePlanSlot(input, db, userMsg); break
       case 'use_stash_item':         result = await toolUseStashItem(input, db); break
       case 'add_recipe':             result = await toolAddRecipe(input, db); break
       case 'log_plan_edit':          result = await toolLogPlanEdit(input, db); break

@@ -101,7 +101,7 @@ async function loadForEdit() {
 
   editSnapshot = {
     instructions: r.original_instructions || '',
-    ingHash:      JSON.stringify(ings.map(i => `${i.quantity}${i.unit}${i.name}`)),
+    ingHash:      JSON.stringify(ingredientRows.map(r => r.qtyUnit + r.name)),
   }
 }
 
@@ -147,7 +147,21 @@ function buildPasteStep() {
     await runExtract(text)
   })
 
-  wrap.append(hint, area, btn)
+  const manualLink = document.createElement('button')
+  manualLink.className   = 'ar-paste__manual'
+  manualLink.textContent = 'Or skip the AI and enter it manually'
+  manualLink.addEventListener('click', () => {
+    formData = {
+      name: '', emoji: '', meal_type: 'lunch_dinner', cuisine: '', protein: '',
+      style: '', cooking_method: '', serves_base: 4, prep_time_min: '', cook_time_min: '',
+      is_freezable: false, can_double: false, tags: [], original_instructions: '',
+    }
+    ingredientRows = [{ qtyUnit: '', name: '' }]
+    step = 'review'
+    render()
+  })
+
+  wrap.append(hint, area, btn, manualLink)
   return wrap
 }
 
