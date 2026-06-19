@@ -1,18 +1,25 @@
 import { supabase, navigateTo, toast } from '../app.js'
 
 const TYPE_OPTS = [
-  ['holiday',          'Holiday'],
-  ['preschool_closed', 'Preschool closed'],
-  ['guests',           'Guests visiting'],
-  ['gintas_away',      'Gintas away'],
+  ['kids_home',   'Kid(s) home'],
+  ['guests',      'Guests visiting'],
+  ['gintas_away', 'Gintas away'],
 ]
 const TYPE_BADGE = {
-  holiday:          'su-sd-badge su-sd-holiday',
-  preschool_closed: 'su-sd-badge su-sd-preschool',
+  kids_home:        'su-sd-badge su-sd-kids',
+  // legacy values — kept for any rows not yet migrated
+  holiday:          'su-sd-badge su-sd-kids',
+  preschool_closed: 'su-sd-badge su-sd-kids',
   guests:           'su-sd-badge su-sd-guests',
   gintas_away:      'su-sd-badge su-sd-gintas',
 }
-const TYPE_LABEL = Object.fromEntries(TYPE_OPTS)
+const TYPE_LABEL = {
+  kids_home:        'Kid(s) home',
+  holiday:          'Kid(s) home',
+  preschool_closed: 'Kid(s) home',
+  guests:           'Guests visiting',
+  gintas_away:      'Gintas away',
+}
 
 let screenEl  = null
 let days      = []
@@ -135,7 +142,7 @@ function openForm(id) {
     form.appendChild(mkField('Date', singleDateInp))
   }
 
-  const typeSelEl = mkSelect(TYPE_OPTS, d?.type || 'holiday')
+  const typeSelEl = mkSelect(TYPE_OPTS, (d?.type === 'holiday' || d?.type === 'preschool_closed') ? 'kids_home' : (d?.type || 'kids_home'))
   form.appendChild(mkField('Type', typeSelEl))
 
   // Guest fields — only shown when type = guests

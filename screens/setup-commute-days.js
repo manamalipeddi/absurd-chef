@@ -51,6 +51,11 @@ function renderList() {
     sub.className = 'su-list-row__sub'
     const parts = []
     if (c.member_id && memberMap[c.member_id]) parts.push(memberMap[c.member_id])
+    if (c.valid_from || c.valid_until) {
+      const from  = c.valid_from  ? fmtDateShort(c.valid_from)  : '…'
+      const until = c.valid_until ? fmtDateShort(c.valid_until) : '…'
+      parts.push(`${from} – ${until}`)
+    }
     if (c.notes) parts.push(c.notes)
     sub.textContent = parts.join(' · ')
     centre.append(main, sub)
@@ -75,12 +80,20 @@ function openForm(id) {
   const daySelEl    = mkSelect(dayOpts,    c ? String(c.day_of_week) : '1')
   const memberSelEl = mkSelect(memberOpts, c?.member_id || '')
   const labelInp    = mkInput('text',  c?.label || '',  'e.g. Manasa WFH')
+  const fromInp     = mkInput('date',  c?.valid_from  || '', '')
+  const untilInp    = mkInput('date',  c?.valid_until || '', '')
   const notesInp    = mkInput('text',  c?.notes || '',  'Optional notes')
+
+  // Date range row
+  const dateRangeRow = document.createElement('div')
+  dateRangeRow.className = 'su-range-row'
+  dateRangeRow.append(fromInp, document.createTextNode(' → '), untilInp)
 
   form.append(
     mkField('Day', daySelEl),
     mkField('Person', memberSelEl),
     mkField('Label (optional)', labelInp),
+    mkField('Active dates (optional)', dateRangeRow),
     mkField('Notes (optional)', notesInp),
   )
   form.appendChild(mkCheckboxRow('Active', c?.active ?? true, 'activeCheck'))
@@ -89,11 +102,13 @@ function openForm(id) {
   cancel.addEventListener('click', async () => { await load(); renderList() })
   save.addEventListener('click', async () => {
     const payload = {
-      day_of_week: parseInt(daySelEl.value),
-      member_id:   memberSelEl.value || null,
-      label:       labelInp.value.trim() || null,
-      notes:       notesInp.value.trim() || null,
-      active:      form.querySelector('#activeCheck').checked,
+      day_of_week:  parseInt(daySelEl.value),
+      member_id:    memberSelEl.value || null,
+      label:        labelInp.value.trim() || null,
+      valid_from:   fromInp.value  || null,
+      valid_until:  untilInp.value || null,
+      notes:        notesInp.value.trim() || null,
+      active:       form.querySelector('#activeCheck').checked,
     }
     save.disabled = true; save.textContent = 'Saving…'
     const op = editId
@@ -113,6 +128,10 @@ function openForm(id) {
 }
 
 // ── Helpers ───────────────────────────────────────────────
+function fmtDateShort(iso) {
+  return new Date(iso + 'T12:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit', timeZone: 'UTC' })
+}
+
 function mkInput(type, value, placeholder) {
   const el = document.createElement('input')
   el.type = type; el.className = 'su-input'; el.value = value
