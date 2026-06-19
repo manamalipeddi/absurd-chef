@@ -11,6 +11,7 @@ let loadMoreBtn     = null
 
 // ── Lifecycle ─────────────────────────────────────────────
 export function init(el) {
+  el.innerHTML = ''
   el.classList.add('chat-screen')
 
   listEl = document.createElement('div')
