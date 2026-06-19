@@ -14,13 +14,14 @@ const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 // Breakfast is decided same-day by the user based on energy/mood/freezer stash.
 // This planner writes meal_plans rows for 'dinner' only.
 // 'lunch' rows are written only on weekends (day_of_week IN [0,6]) or special_days
-// where type IN ('holiday', 'preschool_closed').
+// where type = 'kids_home'.
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
 interface PlanRequest {
-  mode: "full_14" | "rolling_7";
-  start_date: string; // ISO date, always a Monday
+  mode: "full_14" | "rolling_7" | "targeted";
+  start_date: string;
+  days?: number;
 }
 
 interface Recipe {
@@ -63,6 +64,15 @@ interface SpecialDay {
   day: string;
   type: string;
   guest_count?: number;
+  guest_family_member_ids?: string[];
+  guest_allergies?: Array<{ substance: string; severity: string }>;
+}
+
+interface FamilyMember {
+  id: string;
+  name: string;
+  role: string;
+  allergies: Array<{ substance: string }> | null;
 }
 
 interface StashItem {
@@ -189,7 +199,7 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
       .lt("plan_date", startDate),
     supabase
       .from("family_members")
-      .select("name, role, allergies, preferences")
+      .select("id, name, role, allergies, preferences")
       .eq("active", true),
   ]);
 
@@ -214,15 +224,20 @@ function buildPrompt(
 ): string {
   const endDate = addDays(startDate, days - 1);
 
-  // Collect all allergens across family
+  // Collect allergens from household members only — guests are date-scoped, not global
   const allergens: string[] = [];
-  for (const member of ctx.family) {
-    const allergy_list = member.allergies as {substance: string}[] || [];
-    for (const a of allergy_list) {
-      if (a.substance && !allergens.includes(a.substance)) {
-        allergens.push(a.substance);
-      }
+  for (const member of ctx.family as FamilyMember[]) {
+    if (member.role === "guest") continue;
+    for (const a of member.allergies || []) {
+      if (a.substance && !allergens.includes(a.substance)) allergens.push(a.substance);
     }
+  }
+
+  // Build guest member ID → allergens map for date-scoped guest constraints
+  const guestMemberAllergens: Record<string, string[]> = {};
+  for (const member of ctx.family as FamilyMember[]) {
+    if (member.role !== "guest") continue;
+    guestMemberAllergens[member.id] = (member.allergies || []).map(a => a.substance).filter(Boolean);
   }
 
   // Filter recipes: remove anything with a household allergen
@@ -250,6 +265,19 @@ function buildPrompt(
         t.day_of_week === dow && t.meal_type === "dinner"
     );
 
+    // Compute date-scoped guest allergens from known guests + one-off entries
+    const guestAllergens: string[] = [];
+    if (special?.type === "guests") {
+      for (const memberId of (special.guest_family_member_ids || [])) {
+        for (const a of (guestMemberAllergens[memberId] || [])) {
+          if (!guestAllergens.includes(a)) guestAllergens.push(a);
+        }
+      }
+      for (const a of (special.guest_allergies || [])) {
+        if (a.substance && !guestAllergens.includes(a.substance)) guestAllergens.push(a.substance);
+      }
+    }
+
     return {
       date,
       day_of_week: dow,
@@ -257,9 +285,10 @@ function buildPrompt(
       is_commute: isCommute,
       special_type: special?.type || null,
       guest_count: special?.guest_count || 0,
+      guest_allergens: guestAllergens.length > 0 ? guestAllergens : undefined,
       preschool_protein: preschoolMeal?.protein || null,
       preschool_weight: preschoolMeal?.lunch_weight || "medium",
-      preschool_closed: special?.type === "preschool_closed",
+      preschool_closed: special?.type === "kids_home" || special?.type === "preschool_closed",
       template_constraint_type: templateRule?.constraint_type || null,
       template_constraint_value: templateRule?.constraint_value || null,
       template_label: templateRule?.label || null,
@@ -306,7 +335,7 @@ PLANNING PERIOD
 - Days to plan: ${days}
 
 PLANNING RULES
-1. Plan dinner for every day. Add lunch only on preschool_closed or holiday days.
+1. Plan dinner for every day. Add lunch only on kids_home days (special_type = 'kids_home').
 2. No recipe repeat within 14 days (check recently_used below).
 3. No same protein two days in a row.
 4. Match each day's template constraint (protein or style).
@@ -321,13 +350,19 @@ PLANNING RULES
    protein that day, silently swap to another day in the same week.
    Log the swap in remap_log.
 7. On guest days: pick a recipe from template_slot = 'special' or
-   a crowd-pleasing recipe. Increase implied portions.
-8. On holiday days: plan a lunch too (light, quick).
+   a crowd-pleasing recipe. Increase implied portions. If the day has
+   guest_allergens, those are HARD constraints for that date only —
+   treat them exactly like household allergens (do not suggest any
+   recipe whose contains_allergen list intersects with guest_allergens).
+8. On kids_home days: plan a lunch too (light, quick).
 9. Mark one dinner per week as batch_cook if recipe is freezable —
    this builds the freezer stash.
 10. Prefer dump recipes on days adjacent to commute days too
     (less prep the day before helps).
 11. Do not repeat the same protein that the preschool served that day.
+12. GUEST ALLERGENS: if a date entry has guest_allergens, those substances
+    are forbidden for that specific date only. Filter accordingly when
+    selecting a recipe for that day — even if the recipe is otherwise safe.
 
 WEEKLY TEMPLATE
 ${JSON.stringify(ctx.template.filter((t: TemplateRule) => t.meal_type === "dinner"), null, 2)}
@@ -474,7 +509,7 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const { mode, start_date }: PlanRequest = await req.json();
+    const { mode, start_date, days: reqDays }: PlanRequest = await req.json();
 
     if (!mode || !start_date) {
       return new Response(
@@ -483,7 +518,7 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const days = 14;
+    const days = reqDays && reqDays >= 1 && reqDays <= 14 ? reqDays : 14;
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
     console.log(`Planning ${mode} from ${start_date}`);

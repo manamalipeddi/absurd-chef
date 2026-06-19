@@ -76,7 +76,7 @@ function openForm(id) {
   form.className = 'su-form'
 
   const nameInp  = mkInput('text',   m?.name || '',       'e.g. Manasa')
-  const roleSelEl = mkSelect([['adult','Adult'],['child','Child'],['guest_regular','Guest']], m?.role || 'adult')
+  const roleSelEl = mkSelect([['adult','Adult'],['child','Child'],['guest','Guest']], m?.role || 'adult')
   const byInp    = mkInput('number', m?.birth_year || '', 'e.g. 2019')
   byInp.min = 1940; byInp.max = new Date().getFullYear()
 
@@ -230,5 +230,5 @@ function backBtn(id) {
   </button>`
 }
 function fmtRole(r) {
-  return { adult: 'Adult', child: 'Child', guest_regular: 'Guest' }[r] || r || ''
+  return { adult: 'Adult', child: 'Child', guest: 'Guest' }[r] || r || ''
 }

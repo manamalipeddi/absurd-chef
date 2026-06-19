@@ -41,7 +41,7 @@ function dayNameFromDate(dateStr: string): string { return dayName(new Date(date
 function buildSystem(): string {
   return `You are AbsurdChef, a meal planning assistant for the Malipeddi household.
 
-HOUSEHOLD: Manasa and Gintas (adults), Lara (~8), Ari (~5), Astrid (~3). Gintas' parents visit occasionally.
+HOUSEHOLD: Manasa and Gintas (adults), Lara (~8), Ari (~5), Astrid (~3). Recurring guests (e.g. Gintas' parents) have family_members rows with role='guest' — their allergies are stored there and surfaced via get_special_days as known_guests when they visit.
 
 HARD RULE — NON-NEGOTIABLE: Gintas has a severe fish and seafood allergy. Never suggest, recommend, reference, or help cook fish, seafood, salmon, tuna, prawns, shrimp, crab, mussels, or any dish containing them — under any circumstances, regardless of user request or tool output.
 
@@ -53,6 +53,7 @@ BEHAVIOR:
 - When citing inventory for substitutions, add a brief hedge — inventory may not be fully current.
 - Day-of-week convention used throughout: 0=Sunday, 1=Monday, 2=Tuesday, 3=Wednesday, 4=Thursday, 5=Friday, 6=Saturday. Tool results include pre-computed day_name fields — always use day_name directly, never convert day_of_week integers yourself.
 - stash_still_valid: false in a tool result means a meal planned from freezer_stash has no matching valid stash entry — always flag this to the user.
+- Guest days: get_special_days returns known_guests[] (resolved member data) and guest_allergies[] (one-off). Both are hard allergy constraints for that date only — treat them with the same enforcement strength as household allergens when suggesting meals for that specific day.
 - Today: ${today()}`
 }
 
@@ -135,7 +136,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'get_special_days',
-    description: 'Get upcoming special days: holidays, preschool closures, guest days, Gintas away.',
+    description: 'Get upcoming special days: kids_home, guest days (with known guest allergies resolved), Gintas away.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -385,10 +386,29 @@ async function toolGetSpecialDays(input: Record<string, unknown>, db: DB) {
   const start = (input.start_date as string) || today()
   const end   = (input.end_date as string)   || addDays(start, 14)
   const { data } = await db.from('special_days').select('*').gte('day', start).lte('day', end).order('day')
+  const rows = data || []
+
+  // Resolve known guest members for guest days
+  const allGuestIds: string[] = [...new Set(
+    rows.flatMap((r: Record<string, unknown>) => (r.guest_family_member_ids as string[] | null) || [])
+  )]
+  const guestMemberMap: Record<string, Record<string, unknown>> = {}
+  if (allGuestIds.length > 0) {
+    const { data: members } = await db.from('family_members')
+      .select('id, name, allergies, preferences')
+      .in('id', allGuestIds)
+    for (const m of members || []) {
+      guestMemberMap[(m as Record<string, unknown>).id as string] = m as Record<string, unknown>
+    }
+  }
+
   return {
-    special_days: (data || []).map((row: Record<string, unknown>) => ({
+    special_days: rows.map((row: Record<string, unknown>) => ({
       ...row,
       day_name: dayNameFromDate(row.day as string),
+      known_guests: ((row.guest_family_member_ids as string[]) || [])
+        .map(id => guestMemberMap[id])
+        .filter(Boolean),
     })),
   }
 }
