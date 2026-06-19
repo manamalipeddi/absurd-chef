@@ -10,6 +10,7 @@ let inventoryData = []
 let freezerData   = []
 let preppedData   = []
 let recipeList    = []   // for freezer link-to-recipe select
+let groceryData   = { outOfStock: [], needed: [] }
 
 let showHiddenInventory = false
 let showHiddenFreezer   = false
@@ -26,7 +27,7 @@ export function init(el) {
 
   tabBarEl = document.createElement('div')
   tabBarEl.className = 'pn-tabbar'
-  ;[['inventory','Inventory'],['freezer','Freezer'],['prepped','Prepped']].forEach(([id, label]) => {
+  ;[['inventory','Inventory'],['freezer','Freezer'],['prepped','Prepped'],['grocery','Grocery']].forEach(([id, label]) => {
     const btn = document.createElement('button')
     btn.className = 'pn-tab'
     btn.dataset.tab = id
@@ -67,6 +68,7 @@ async function loadAndShow(tab) {
   contentEl.innerHTML = `<div class="loading-row"><div class="spinner"></div>Loading…</div>`
   if (tab === 'inventory') { await loadInventory(); renderInventory() }
   else if (tab === 'freezer') { await loadFreezer(); renderFreezer() }
+  else if (tab === 'grocery') { await loadGrocery(); renderGrocery() }
   else { await loadPrepped(); renderPrepped() }
 }
 
@@ -586,6 +588,222 @@ function renderPrepped() {
     card.appendChild(row)
   })
   contentEl.appendChild(card)
+}
+
+// ═══════════════════════════════════════════════════════════
+// GROCERY LIST
+// ═══════════════════════════════════════════════════════════
+
+async function loadGrocery() {
+  const today = new Date().toISOString().split('T')[0]
+  const end   = new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0]
+
+  const [{ data: invData }, { data: planData }] = await Promise.all([
+    supabase.from('inventory').select('*').eq('active', true),
+    supabase.from('meal_plans')
+      .select('plan_date, recipe_id, cook_source, recipes(id, name, emoji, default_variant_id)')
+      .gte('plan_date', today).lte('plan_date', end)
+      .not('recipe_id', 'is', null)
+      .order('plan_date'),
+  ])
+
+  const allInventory = invData || []
+
+  // Source 1: items explicitly out of stock
+  const outOfStock = allInventory.filter(i => i.quantity == null || Number(i.quantity) === 0)
+  const outOfStockById = new Map(outOfStock.map(i => [i.id, i]))
+
+  // Filter plan: skip freezer_stash and store_bought
+  const planRows = (planData || []).filter(p =>
+    p.cook_source !== 'freezer_stash' && p.cook_source !== 'store_bought' && p.recipe_id
+  )
+
+  // Separate recipes needing variant ingredients vs base ingredients
+  const noVariantCtx = []   // { recipe_id, recipeName, emoji, date, dateLabel }
+  const variantCtx   = []   // { variant_id, recipe_id, recipeName, emoji, date, dateLabel }
+  for (const row of planRows) {
+    const r = row.recipes
+    if (!r) continue
+    const ctx = { recipe_id: r.id, recipeName: r.name, emoji: r.emoji, date: row.plan_date, dateLabel: fmtPlanDate(row.plan_date) }
+    if (r.default_variant_id) variantCtx.push({ ...ctx, variant_id: r.default_variant_id })
+    else                       noVariantCtx.push(ctx)
+  }
+
+  const uniqueRecipeIds  = [...new Set(noVariantCtx.map(r => r.recipe_id))]
+  const uniqueVariantIds = [...new Set(variantCtx.map(r => r.variant_id))]
+
+  const [ingRes, varIngRes] = await Promise.all([
+    uniqueRecipeIds.length
+      ? supabase.from('recipe_ingredients').select('name, recipe_id').in('recipe_id', uniqueRecipeIds)
+      : Promise.resolve({ data: [] }),
+    uniqueVariantIds.length
+      ? supabase.from('recipe_variant_ingredients').select('name, variant_id').in('variant_id', uniqueVariantIds)
+      : Promise.resolve({ data: [] }),
+  ])
+
+  // Build map: normalised ingredient name → { displayName, usages[] }
+  const ingMap = {}
+  function addIngredient(rawName, ctx) {
+    const key = rawName.toLowerCase().trim()
+    if (!ingMap[key]) ingMap[key] = { displayName: rawName, usages: [] }
+    if (!ingMap[key].usages.some(u => u.recipe_id === ctx.recipe_id && u.date === ctx.date))
+      ingMap[key].usages.push(ctx)
+  }
+  for (const ing of ingRes.data || [])
+    noVariantCtx.filter(c => c.recipe_id === ing.recipe_id).forEach(c => addIngredient(ing.name, c))
+  for (const ing of varIngRes.data || [])
+    variantCtx.filter(c => c.variant_id === ing.variant_id).forEach(c => addIngredient(ing.name, c))
+
+  // Match each ingredient against inventory; build combined lists
+  const annotatedOOS = outOfStock.map(i => ({ ...i, neededFor: [] }))
+  const oosIdxById   = new Map(annotatedOOS.map((i, idx) => [i.id, idx]))
+  const needed       = []
+
+  for (const [key, data] of Object.entries(ingMap)) {
+    const match = findInventoryMatch(key, allInventory)
+    if (match && match.quantity != null && Number(match.quantity) > 0) continue  // covered
+    if (match && outOfStockById.has(match.id)) {
+      // Appears in both — annotate the OOS row instead of duplicating
+      const idx = oosIdxById.get(match.id)
+      if (idx != null) annotatedOOS[idx].neededFor.push(...data.usages)
+    } else {
+      needed.push({ name: data.displayName, usages: data.usages, matchedInventoryId: match?.id || null })
+    }
+  }
+
+  groceryData = { outOfStock: annotatedOOS, needed }
+}
+
+function findInventoryMatch(ingNorm, inventoryItems) {
+  return inventoryItems.find(item => {
+    const itemNorm = item.name.toLowerCase()
+    if (itemNorm === ingNorm) return true
+    if (itemNorm.includes(ingNorm) || ingNorm.includes(itemNorm)) return true
+    const ingWords  = ingNorm.split(/\s+/).filter(w => w.length >= 4)
+    const itemWords = itemNorm.split(/\s+/)
+    return ingWords.some(w => itemWords.includes(w))
+  })
+}
+
+function renderGrocery() {
+  contentEl.innerHTML = ''
+
+  const { outOfStock, needed } = groceryData
+  if (!outOfStock.length && !needed.length) {
+    contentEl.appendChild(mkEmpty('Nothing needed — you\'re all set!'))
+    return
+  }
+
+  if (outOfStock.length) {
+    contentEl.appendChild(buildGrocerySection('Out of stock', outOfStock.length))
+    const card = document.createElement('div')
+    card.className = 'card pn-section-card'
+    outOfStock.forEach((item, i) => card.appendChild(buildGroceryOOSRow(item, i < outOfStock.length - 1)))
+    contentEl.appendChild(card)
+  }
+
+  if (needed.length) {
+    contentEl.appendChild(buildGrocerySection('Needed for upcoming meals', needed.length))
+    const card = document.createElement('div')
+    card.className = 'card pn-section-card'
+    needed.forEach((item, i) => card.appendChild(buildGroceryNeededRow(item, i < needed.length - 1)))
+    contentEl.appendChild(card)
+  }
+}
+
+function buildGrocerySection(title, count) {
+  const h = document.createElement('div')
+  h.className = 'pn-grocery-heading'
+  h.innerHTML = `<span>${title}</span><span class="pn-grocery-count">${count}</span>`
+  return h
+}
+
+function buildGroceryOOSRow(item, ruled) {
+  const row = document.createElement('div')
+  row.className = 'pn-grocery-row' + (ruled ? ' pn-row--ruled' : '')
+
+  const check = mkGroceryCheck(() => gotItOOS(item.id))
+  const body = document.createElement('div')
+  body.className = 'pn-grocery-body'
+
+  const name = document.createElement('div')
+  name.className = 'pn-row__main'
+  name.textContent = item.name
+
+  const meta = document.createElement('div')
+  meta.className = 'pn-row__meta'
+  meta.textContent = CAT_LABELS[item.category] || item.category || ''
+
+  body.append(name, meta)
+
+  if (item.neededFor?.length) {
+    const also = document.createElement('div')
+    also.className = 'pn-grocery-also'
+    const recipes = [...new Map(item.neededFor.map(u => [u.recipe_id + u.date, u])).values()]
+    also.textContent = 'Also needed: ' + recipes.map(u => `${u.recipeName} (${u.dateLabel})`).join(', ')
+    body.appendChild(also)
+  }
+
+  row.append(check, body)
+  return row
+}
+
+function buildGroceryNeededRow(item, ruled) {
+  const row = document.createElement('div')
+  row.className = 'pn-grocery-row' + (ruled ? ' pn-row--ruled' : '')
+
+  const check = mkGroceryCheck(() => gotItNeeded(item))
+  const body = document.createElement('div')
+  body.className = 'pn-grocery-body'
+
+  const name = document.createElement('div')
+  name.className = 'pn-row__main'
+  name.textContent = item.name
+
+  const meta = document.createElement('div')
+  meta.className = 'pn-row__meta'
+  const deduped = [...new Map(item.usages.map(u => [u.recipe_id + u.date, u])).values()]
+  meta.textContent = deduped.map(u => `${u.emoji ? u.emoji + ' ' : ''}${u.recipeName} (${u.dateLabel})`).join(', ')
+
+  body.append(name, meta)
+  row.append(check, body)
+  return row
+}
+
+function mkGroceryCheck(onClick) {
+  const btn = document.createElement('button')
+  btn.className = 'pn-grocery-check'
+  btn.setAttribute('aria-label', 'Got it')
+  btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`
+  btn.addEventListener('click', async e => {
+    e.stopPropagation()
+    btn.disabled = true
+    btn.classList.add('pn-grocery-check--busy')
+    await onClick()
+  })
+  return btn
+}
+
+async function gotItOOS(itemId) {
+  await supabase.from('inventory').update({ quantity: 1 }).eq('id', itemId)
+  toast('Marked as bought')
+  await loadGrocery(); renderGrocery()
+}
+
+async function gotItNeeded(item) {
+  if (item.matchedInventoryId) {
+    await supabase.from('inventory').update({ quantity: 1 }).eq('id', item.matchedInventoryId)
+  } else {
+    await supabase.from('inventory').insert({ name: item.name, quantity: 1, category: 'pantry', active: true })
+  }
+  toast('Marked as bought')
+  await loadGrocery(); renderGrocery()
+}
+
+function fmtPlanDate(iso) {
+  if (!iso) return ''
+  const d = new Date(iso + 'T12:00:00')
+  return d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })
 }
 
 // ═══════════════════════════════════════════════════════════

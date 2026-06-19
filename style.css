@@ -2392,6 +2392,55 @@ body {
 .pn-danger-btn:active { background: #fee2e2; }
 .pn-danger-btn:disabled { opacity: 0.5; cursor: default; }
 
+/* Grocery list */
+.pn-grocery-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 14px 16px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+.pn-grocery-count {
+  font-weight: 400;
+  font-size: 11px;
+}
+.pn-grocery-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 11px 14px;
+  min-height: 48px;
+}
+.pn-grocery-check {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border);
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  margin-top: 1px;
+}
+.pn-grocery-check svg { width: 14px; height: 14px; color: transparent; stroke: transparent; }
+.pn-grocery-check:active { border-color: #16a34a; background: #f0fdf4; }
+.pn-grocery-check:active svg { stroke: #16a34a; }
+.pn-grocery-check--busy { opacity: 0.4; cursor: default; }
+.pn-grocery-body { flex: 1; min-width: 0; }
+.pn-grocery-also {
+  font-size: 11px;
+  color: var(--primary);
+  margin-top: 3px;
+  line-height: 1.4;
+}
+
 
 /* ── Chat — load more button ─────────────────────────────── */
 .chat-load-more {
