@@ -278,17 +278,23 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 12px;
+  padding: 5px 10px 5px 12px;
   background: var(--bg);
-  min-height: 30px;
+  min-height: 28px;
 }
 .day-card__date {
   font-size: 12px;
   font-weight: 700;
   color: var(--text);
   letter-spacing: -0.1px;
+  flex-shrink: 0;
 }
 .day-card--today .day-card__date { color: var(--primary); }
+.day-card__context-right {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
 .day-card__badges {
   display: flex;
   align-items: center;
@@ -366,24 +372,20 @@ body {
   line-height: 1.4;
 }
 
-/* Footer */
-.day-card__footer {
-  display: flex;
-  justify-content: flex-end;
-  padding: 4px 12px 6px;
-  background: var(--bg);
-}
+/* Discuss button (inline in context strip) */
 .day-card__discuss {
-  font-size: 11px;
+  font-size: 14px;
+  line-height: 1;
   color: var(--text-muted);
   background: none;
   border: none;
   cursor: pointer;
-  padding: 2px 0;
+  padding: 3px 4px;
   font-family: var(--font);
   -webkit-tap-highlight-color: transparent;
+  flex-shrink: 0;
 }
-.day-card__discuss:active { color: var(--primary); }
+.day-card__discuss:active { opacity: 0.6; }
 
 /* ── Recipe picker ───────────────────────────────────────── */
 .picker-overlay {

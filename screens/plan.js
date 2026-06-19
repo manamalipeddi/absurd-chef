@@ -182,8 +182,6 @@ function buildDayCard(day) {
   card.appendChild(buildContextStrip(day))
   card.appendChild(hr())
   MEAL_SLOTS.forEach(slot => card.appendChild(buildSlotRow(day.date, slot, day.slots[slot.type], day.meta)))
-  card.appendChild(hr())
-  card.appendChild(buildFooter(day.date))
 
   return card
 }
@@ -197,6 +195,9 @@ function buildContextStrip(day) {
   date.textContent = fmtDate(day.date)
   strip.appendChild(date)
 
+  const right = document.createElement('div')
+  right.className = 'day-card__context-right'
+
   const badges = document.createElement('div')
   badges.className = 'day-card__badges'
 
@@ -209,7 +210,17 @@ function buildContextStrip(day) {
   if (day.meta.isGintasAway)
     badges.appendChild(badge('🍃', 'Light effort'))
 
-  strip.appendChild(badges)
+  const discuss = document.createElement('button')
+  discuss.className = 'day-card__discuss'
+  discuss.textContent = '💬'
+  discuss.title = 'Discuss this day'
+  discuss.addEventListener('click', () => {
+    navState.chatPrefill = `About ${fmtDate(day.date)}: `
+    navigateTo('chat')
+  })
+
+  right.append(badges, discuss)
+  strip.appendChild(right)
   return strip
 }
 
@@ -273,21 +284,6 @@ function buildSlotRow(date, slot, entry, dayMeta) {
   return row
 }
 
-function buildFooter(date) {
-  const footer = document.createElement('div')
-  footer.className = 'day-card__footer'
-
-  const btn = document.createElement('button')
-  btn.className = 'day-card__discuss'
-  btn.textContent = '💬 Discuss this day'
-  btn.addEventListener('click', () => {
-    navState.chatPrefill = `About ${fmtDate(date)}: `
-    navigateTo('chat')
-  })
-
-  footer.appendChild(btn)
-  return footer
-}
 
 function buildEmpty() {
   const wrap = document.createElement('div')

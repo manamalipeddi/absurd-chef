@@ -63,10 +63,21 @@ function render() {
   if (!screenEl) return
   screenEl.innerHTML = ''
 
+  let hasAny = false
   for (const section of SECTIONS) {
     const recipes = allRecipes.filter(r => r.meal_type === section.type)
     if (!recipes.length) continue
+    hasAny = true
     screenEl.appendChild(buildSection(section, recipes))
+  }
+
+  if (!hasAny) {
+    const wrap = document.createElement('div')
+    wrap.className = 'placeholder-wrap'
+    wrap.innerHTML = `
+      <p class="placeholder-label">No recipes yet</p>
+      <p class="placeholder-sub">Tap + to add your first recipe</p>`
+    screenEl.appendChild(wrap)
   }
 }
 
