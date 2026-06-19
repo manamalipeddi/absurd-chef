@@ -515,6 +515,124 @@ async function toolTriggerReplan(input: Record<string, unknown>) {
   }
 }
 
+// ── Plan verification pass ────────────────────────────────
+
+type ToolCall   = { name: string; input: Record<string, unknown> }
+type ToolResult = { tool: string; result: unknown }
+
+function isMultiDayPlanTurn(calls: ToolCall[]): boolean {
+  if (calls.some(c => c.name === 'trigger_replan')) return true
+  if (calls.filter(c => c.name === 'update_plan_slot').length >= 3) return true
+  const planCall = calls.find(c => c.name === 'get_plan')
+  return !!(planCall && Number(planCall.input.days ?? 0) >= 7)
+}
+
+function collectVerifiedFacts(results: ToolResult[]): Record<string, unknown> {
+  const facts: Record<string, unknown> = {}
+  for (const { tool, result } of results) {
+    if (tool === 'get_plan')            facts.existing_plan = result
+    if (tool === 'get_commute_days')    facts.commute_days = result
+    if (tool === 'get_freezer_stash')   facts.freezer_stash = result
+    if (tool === 'get_family_context')  facts.family_context = result
+    if (tool === 'get_weekly_template') facts.weekly_template = result
+    if (tool === 'search_recipes')      facts.recipe_search_results = result
+  }
+  return facts
+}
+
+async function runVerificationPass(
+  draft: string,
+  allToolCalls: unknown[],
+  allToolResults: unknown[],
+  userMsg: string,
+  db: DB,
+): Promise<string | null> {
+  const facts = collectVerifiedFacts(allToolResults as ToolResult[])
+  if (Object.keys(facts).length === 0) return null
+
+  const verifyPrompt = `You are a plan consistency verifier. Return JSON only — no prose, no markdown fences.
+
+VERIFIED REFERENCE DATA:
+${JSON.stringify(facts)}
+
+DRAFT REPLY TO VERIFY:
+${draft}
+
+Check each claim in the draft against the verified data above:
+1. WEEKDAY_NAME — Is each date labeled with the correct day name? Use day_name fields in existing_plan. Convention: 0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat.
+2. COMMUTE_DAY — Are commute days correctly identified per commute_days data?
+3. STASH_REF — Does the draft reference a recipe from stash that is not present in freezer_stash?
+4. ALLERGY — Does the draft suggest any fish or seafood (forbidden — hard allergy)?
+5. RECENCY — Does the draft call a recipe "not used recently" when it appears in existing_plan within 7 days?
+
+Return ONLY valid JSON (no other text):
+{"mismatches":[{"type":"weekday_name|commute_day|stash_ref|allergy|recency","claim":"exact text from draft","fact":"what the data shows","date":"YYYY-MM-DD or null"}]}`
+
+  type Mismatch = { type: string; claim: string; fact: string; date: string | null }
+  let mismatches: Mismatch[] = []
+  try {
+    const vResp = await ac.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 600,
+      messages: [{ role: 'user', content: verifyPrompt }],
+    })
+    const raw = ((vResp.content[0] as Anthropic.TextBlock).text || '').trim()
+    const jsonStr = raw.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '')
+    mismatches = (JSON.parse(jsonStr) as { mismatches: Mismatch[] }).mismatches || []
+  } catch (e) {
+    console.error('[verify] parse error:', e)
+    return null
+  }
+
+  if (mismatches.length === 0) return null
+  console.log('[verify] mismatches:', JSON.stringify(mismatches))
+
+  // Attempt correction with a second haiku call
+  let correctedReply: string | null = null
+  try {
+    const correctPrompt = `You are AbsurdChef. Fix ONLY the identified mismatches in the draft below. Do not change anything else.
+
+ORIGINAL DRAFT:
+${draft}
+
+MISMATCHES TO FIX:
+${JSON.stringify(mismatches)}
+
+VERIFIED FACTS:
+${JSON.stringify(facts)}
+
+Output the corrected reply text only. No preamble.`
+
+    const cResp = await ac.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1500,
+      system: buildSystem(),
+      messages: [{ role: 'user', content: correctPrompt }],
+    })
+    correctedReply = ((cResp.content[0] as Anthropic.TextBlock).text || '').trim() || null
+  } catch (e) {
+    console.error('[verify] correction error:', e)
+  }
+
+  // Log results (fire and forget — table may not exist in dev)
+  db.from('plan_verification_log').insert(
+    mismatches.map(m => ({
+      user_message:  userMsg.slice(0, 500),
+      mismatch_type: m.type,
+      claim:         m.claim,
+      fact:          m.fact,
+      plan_date:     m.date || null,
+      corrected:     !!correctedReply,
+    }))
+  ).then(() => {})
+
+  if (correctedReply) return correctedReply
+
+  // Correction failed — append a review note rather than silently shipping bad data
+  const types = [...new Set(mismatches.map(m => m.type))].join(', ')
+  return draft + `\n\n_(Heads up: I spotted potential inconsistencies in this plan (${types}) — please double-check before committing.)_`
+}
+
 // ── Tool dispatcher ───────────────────────────────────────
 
 async function dispatch(name: string, input: Record<string, unknown>, db: DB, userMsg: string): Promise<string> {
@@ -573,10 +691,11 @@ async function runLoop(
     const textBlocks    = resp.content.filter(b => b.type === 'text')    as Anthropic.TextBlock[]
 
     if (!toolUseBlocks.length || resp.stop_reason === 'end_turn' || resp.stop_reason === 'max_tokens') {
-      return {
-        reply: textBlocks.map(b => b.text).join('').trim() || 'Done.',
-        toolCalls: allToolCalls, toolResults: allToolResults,
-      }
+      const draftReply = textBlocks.map(b => b.text).join('').trim() || 'Done.'
+      const finalReply = isMultiDayPlanTurn(allToolCalls as ToolCall[])
+        ? (await runVerificationPass(draftReply, allToolCalls, allToolResults, userMessage, db)) ?? draftReply
+        : draftReply
+      return { reply: finalReply, toolCalls: allToolCalls, toolResults: allToolResults }
     }
 
     messages.push({ role: 'assistant', content: resp.content })
@@ -598,7 +717,12 @@ async function runLoop(
       const txt = (m.content as Anthropic.ContentBlock[])
         .filter(b => b.type === 'text')
         .map(b => (b as Anthropic.TextBlock).text).join('')
-      if (txt) return { reply: txt, toolCalls: allToolCalls, toolResults: allToolResults }
+      if (txt) {
+        const finalReply = isMultiDayPlanTurn(allToolCalls as ToolCall[])
+          ? (await runVerificationPass(txt, allToolCalls, allToolResults, userMessage, db)) ?? txt
+          : txt
+        return { reply: finalReply, toolCalls: allToolCalls, toolResults: allToolResults }
+      }
     }
   }
   return {
