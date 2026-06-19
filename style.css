@@ -12,8 +12,6 @@
   --text-muted:   #746e6d;
   --nav-inactive: #9b7585;
   --nav-active:   #1d5c3a;
-  --nav-chat-bg:  #cf4488;
-  --nav-chat-fg:  #ffffff;
   --radius:       12px;
   --radius-sm:    8px;
   --header-h:     56px;
@@ -145,37 +143,6 @@ body {
   letter-spacing: 0.2px;
 }
 
-/* Chat button — prominent ring, inactive = outline, active = filled */
-.nav-btn--chat .nav-icon-wrap {
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  background: transparent;
-  border: 2px solid var(--border);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-top: -10px;
-  transition: transform 0.15s, background 0.15s, border-color 0.15s, box-shadow 0.15s;
-}
-.nav-btn--chat .nav-icon {
-  width: 22px;
-  height: 22px;
-  color: var(--nav-inactive);
-}
-.nav-btn--chat.nav-btn--active .nav-icon-wrap {
-  background: var(--nav-chat-bg);
-  border-color: var(--nav-chat-bg);
-  box-shadow: 0 2px 8px rgba(207, 68, 136, 0.35);
-}
-.nav-btn--chat.nav-btn--active .nav-icon {
-  color: var(--nav-chat-fg);
-}
-.nav-btn--chat:active .nav-icon-wrap {
-  transform: scale(0.92);
-}
-.nav-btn--chat { color: var(--nav-inactive); }
-.nav-btn--chat.nav-btn--active { color: var(--nav-active); }
 
 /* ── Placeholder screens ────────────────────────────────── */
 .placeholder-wrap {

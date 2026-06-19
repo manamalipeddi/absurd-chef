@@ -80,16 +80,6 @@ export function toast(msg, { error = false, duration = 3000 } = {}) {
 
 // ── Boot ──────────────────────────────────────────────────
 async function boot() {
-  // Wrap chat icon in its highlight ring
-  const chatBtn = document.querySelector('.nav-btn--chat')
-  if (chatBtn) {
-    const icon = chatBtn.querySelector('.nav-icon')
-    const wrap = document.createElement('div')
-    wrap.className = 'nav-icon-wrap'
-    icon.replaceWith(wrap)
-    wrap.appendChild(icon)
-  }
-
   // Load initial screen
   await navigateTo('plan')
 
