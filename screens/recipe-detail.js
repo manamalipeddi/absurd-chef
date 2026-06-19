@@ -140,38 +140,70 @@ function buildServes() {
   const current = (activeTabId !== 'original' && activeVariant?.serves != null)
     ? activeVariant.serves : (recipe.serves_base ?? 4)
 
-  const wrap  = document.createElement('div')
+  const wrap = document.createElement('div')
   wrap.className = 'rd-serves'
+
+  // Serves label + tappable chip
+  const servesRow = document.createElement('div')
+  servesRow.className = 'rd-serves-row'
   const lbl = document.createElement('span')
-  lbl.className = 'rd-serves__label'
+  lbl.className = 'rd-serves-label'
   lbl.textContent = 'Serves'
+  const chip = document.createElement('button')
+  chip.className = 'rd-serves-chip'
+  chip.textContent = current
+  chip.addEventListener('click', () => {
+    const inp = document.createElement('input')
+    inp.type = 'number'; inp.className = 'rd-serves-input'
+    inp.value = current; inp.min = 1; inp.max = 50
+    chip.replaceWith(inp)
+    inp.focus(); inp.select()
+    const commit = async () => {
+      const val = Math.max(1, Math.min(50, parseInt(inp.value) || current))
+      await saveServes(val)
+      wrap.replaceWith(buildServes())
+    }
+    inp.addEventListener('blur', commit)
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); inp.blur() } })
+  })
+  servesRow.append(lbl, chip)
 
-  const stepper = document.createElement('div')
-  stepper.className = 'rd-stepper'
-  let val = current
-  const valEl = document.createElement('span')
-  valEl.className = 'rd-stepper__val'
-  valEl.textContent = val
+  // Separator + Scale for me
+  const sep = document.createElement('span')
+  sep.className = 'rd-serves-sep'
+  sep.textContent = '·'
 
-  let t = null
-  function step(d) {
-    val = Math.max(1, Math.min(30, val + d))
-    valEl.textContent = val
-    clearTimeout(t)
-    t = setTimeout(() => saveServes(val), 700)
+  const scaleBtn = document.createElement('button')
+  scaleBtn.className = 'rd-serves-scale-btn'
+  scaleBtn.textContent = 'Scale for me'
+
+  const scaleForm = document.createElement('div')
+  scaleForm.className = 'rd-serves-scale-form'
+  scaleForm.hidden = true
+  const scaleInp = document.createElement('input')
+  scaleInp.type = 'number'; scaleInp.className = 'rd-serves-scale-input'
+  scaleInp.min = 1; scaleInp.max = 100; scaleInp.placeholder = '8'
+  const scaleLbl = document.createElement('span')
+  scaleLbl.className = 'rd-serves-label'; scaleLbl.textContent = 'servings'
+  const scaleGo = document.createElement('button')
+  scaleGo.className = 'rd-serves-scale-go'; scaleGo.textContent = '→'
+  scaleForm.append(scaleInp, scaleLbl, scaleGo)
+
+  scaleBtn.addEventListener('click', () => {
+    scaleBtn.hidden = true; sep.hidden = true
+    scaleForm.hidden = false; scaleInp.focus()
+  })
+  const doScale = async () => {
+    const val = scaleInp.value.trim()
+    if (!val) { scaleInp.focus(); return }
+    scaleGo.disabled = true; scaleGo.textContent = '…'
+    await runScaleRecipe(`${val} servings`)
+    scaleGo.disabled = false; scaleGo.textContent = '→'
   }
+  scaleGo.addEventListener('click', doScale)
+  scaleInp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doScale() } })
 
-  const minus = document.createElement('button')
-  minus.className = 'rd-stepper__btn'
-  minus.textContent = '−'
-  minus.addEventListener('click', () => step(-1))
-  const plus  = document.createElement('button')
-  plus.className  = 'rd-stepper__btn'
-  plus.textContent = '+'
-  plus.addEventListener('click', () => step(1))
-
-  stepper.append(minus, valEl, plus)
-  wrap.append(lbl, stepper)
+  wrap.append(servesRow, sep, scaleBtn, scaleForm)
   return wrap
 }
 
@@ -591,7 +623,6 @@ function buildAIActions() {
   const wrap = document.createElement('div')
   wrap.className = 'rd-ai-actions'
   wrap.appendChild(buildEasierAction())
-  wrap.appendChild(buildScaleAction())
   return wrap
 }
 
