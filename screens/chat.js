@@ -1,4 +1,4 @@
-import { supabase, FUNCTIONS_URL, toast } from '../app.js'
+import { supabase, FUNCTIONS_URL, toast, navState } from '../app.js'
 
 // ── State (persists across tab switches) ──────────────────
 const messages   = []   // { role, content }  — sent to API
@@ -50,7 +50,14 @@ export function init(el) {
 }
 
 export async function activate({ headerLeft, headerRight }) {
-  // No header buttons for chat — title is set by app.js
+  // Pre-fill input when arriving from Plan "Discuss this day" button
+  if (navState.chatPrefill && inputEl) {
+    inputEl.value = navState.chatPrefill
+    inputEl.style.height = 'auto'
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px'
+    navState.chatPrefill = null
+    requestAnimationFrame(() => inputEl.focus())
+  }
   if (!greeted) {
     greeted = true
     await showGreeting()
