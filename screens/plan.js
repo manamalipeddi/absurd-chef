@@ -254,15 +254,18 @@ function buildSlotRow(date, slot, entry, dayMeta) {
       val.appendChild(ai)
     }
 
-    // Serving mismatch warning
-    const serves   = entry.recipes.serves_base
-    const needed   = householdCount + (dayMeta?.guestCount || 0)
-    if (householdCount > 0 && serves != null && serves < needed) {
-      const warn = document.createElement('span')
-      warn.className = 'day-slot__serves-warn'
-      warn.title = `Recipe serves ${serves}, need ${needed}`
-      warn.textContent = `⚠ ${serves}/${needed}`
-      val.appendChild(warn)
+    // Serving mismatch warning — only when there are guests that day
+    const guestCount = dayMeta?.guestCount || 0
+    if (guestCount > 0) {
+      const serves = entry.recipes.serves_base
+      const needed = householdCount + guestCount
+      if (serves != null && serves < needed) {
+        const warn = document.createElement('span')
+        warn.className = 'day-slot__serves-warn'
+        warn.title = `Recipe serves ${serves}, need ${needed} (household + ${guestCount} guests)`
+        warn.textContent = `⚠ serves ${serves}`
+        val.appendChild(warn)
+      }
     }
 
     row.classList.add('day-slot--tap')

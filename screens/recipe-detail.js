@@ -459,7 +459,7 @@ async function addMoreHacks() {
       else if (av) av.hacks_and_shortcuts = merged
       toast(`${newHacks.length} new tip${newHacks.length > 1 ? 's' : ''} added`)
     } else {
-      toast('No new tips found — you've got them all!')
+      toast("No new tips found — you've got them all!")
     }
   } catch {
     toast('Could not reach server', { error: true })
