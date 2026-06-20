@@ -279,6 +279,16 @@ body {
   padding: 8px 12px 28px;
 }
 
+/* Week divider before each Monday in the 14-day view */
+.plan-week-divider {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text-on-page);
+  padding: 14px 4px 4px;
+  margin-top: 2px;
+}
+
 /* Plan subheading — date range + ISO week numbers */
 .plan-subhead {
   display: flex;

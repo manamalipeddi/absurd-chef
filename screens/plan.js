@@ -22,6 +22,7 @@ let allRecipes      = []   // for the recipe picker
 let generating      = false
 let householdCount  = 0
 let currentStartDate = null  // start of the currently displayed plan window
+let lastRenderDay   = null  // todayStr() at last render — detects day rollover
 
 // ── Date helpers ──────────────────────────────────────────
 function addDays(s, n) {
@@ -69,6 +70,14 @@ function isoWeek(s) {
 export function init(el) {
   screenEl = el
   document.addEventListener('plan-updated', () => loadAndRender())
+  // If the app was left open across midnight, re-anchor to the new day when it
+  // comes back to the foreground — otherwise "today" (and any generation
+  // triggered from this view) would still reference the stale day.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return
+    if (!screenEl?.classList.contains('screen--active')) return
+    if (lastRenderDay && lastRenderDay !== todayStr()) loadAndRender()
+  })
 }
 
 export async function activate({ headerLeft, headerRight }) {
@@ -96,6 +105,7 @@ async function loadAndRender() {
   const { startDate, endDate } = await getPlanWindow()
   currentStartDate = startDate
   const today = todayStr()
+  lastRenderDay = today
   // History covers past dinners older than the forward window (no overlap with
   // the current-week past days shown in the forward cards).
   const histBefore = startDate < today ? startDate : today
@@ -232,10 +242,30 @@ function render(days, startDate, genWarning, history) {
 
   const wrap = document.createElement('div')
   wrap.className = 'plan-cards'
-  days.forEach(day => wrap.appendChild(buildDayCard(day)))
+  days.forEach(day => {
+    // Week divider before each Monday: "Current Week xx" / "Next Week xx".
+    if (new Date(day.date + 'T12:00:00Z').getUTCDay() === 1)
+      wrap.appendChild(buildWeekDivider(day.date))
+    wrap.appendChild(buildDayCard(day))
+  })
   screenEl.appendChild(wrap)
 
   if (history && history.length) screenEl.appendChild(buildHistorySection(history))
+}
+
+function weekLabel(date) {
+  const w   = isoWeek(date)
+  const twm = thisWeekMonday()
+  if (date === twm)              return `Current Week ${w}`
+  if (date === addDays(twm, 7))  return `Next Week ${w}`
+  return `Week ${w}`
+}
+
+function buildWeekDivider(date) {
+  const el = document.createElement('div')
+  el.className = 'plan-week-divider'
+  el.textContent = weekLabel(date)
+  return el
 }
 
 // Date range + ISO week numbers for the displayed 14-day window.
@@ -475,9 +505,10 @@ function buildSlotRow(date, slot, entry, dayMeta, isPast = false) {
       navigateTo('recipe-detail')
     })
   } else {
+    // Leave unchosen slots blank (no dash) to keep the view uncluttered.
     const empty = document.createElement('span')
     empty.className = 'day-slot__empty'
-    empty.textContent = '—'
+    empty.textContent = ''
     val.appendChild(empty)
 
     // Past days are read-only — no picker for empty slots.
@@ -753,10 +784,13 @@ async function onRegeneratePlan() {
   if (btn) { btn.disabled = true; btn.innerHTML = `<span class="spinner spinner--sm"></span> Regenerating…` }
 
   try {
+    // Recompute the window now (not from cached state) so a session left open
+    // across a day/week boundary still generates from the correct Monday.
+    const { startDate } = await getPlanWindow()
     const res  = await fetch(`${FUNCTIONS_URL}/plan-generator`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'full_14', start_date: currentStartDate, triggered_by: 'manual' }),
+      body: JSON.stringify({ mode: 'full_14', start_date: startDate, triggered_by: 'manual' }),
     })
     const json = await res.json()
     if (!json.success) throw new Error(json.error || 'Generation failed')
