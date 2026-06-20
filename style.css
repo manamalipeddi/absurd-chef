@@ -501,6 +501,14 @@ body {
 /* Struck-through planned recipe when something different was made */
 .day-slot__name--struck { text-decoration: line-through; color: var(--text-muted); }
 
+/* "Why this was chosen" note under a meal row — secondary, muted */
+.day-slot-note {
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-muted);
+  padding: 1px 12px 6px 42px;
+}
+
 /* ── Actual-outcome footer (past dinners) ────────────────── */
 .day-outcome {
   display: flex;

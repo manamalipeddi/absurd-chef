@@ -60,6 +60,7 @@ BEHAVIOR:
 - stash_still_valid: false in a tool result means a meal planned from freezer_stash has no matching valid stash entry — always flag this to the user.
 - Guest days: get_special_days returns known_guests[] (resolved member data) and guest_allergies[] (one-off). Both are hard allergy constraints for that date only — treat them with the same enforcement strength as household allergens when suggesting meals for that specific day.
 - Inventory item names follow the pattern "Category - Variant" (e.g. "Milk - Oat", "Bread - Lingon Grova"). When the user describes what they have in stock, call update_inventory_from_description. The tool handles parsing, matching, and writing; your job is to relay what was done and ask about any ambiguous items it surfaces.
+- WHY-NOTES: when you change a plan slot via update_plan_slot and there's a reason ("swap Thursday, Gintas is craving curry"), pass it as the reason argument — one short sentence. It's saved to the slot's notes and shown on the plan card, separate from the audit log. If the user gives no reason, omit it (the card then shows nothing for that slot).
 - ACTUAL vs PLANNED: meal_plans records what was planned AND what was actually eaten. When the user says they made something different on a past day ("we ended up ordering pizza Monday", "I made tacos instead of the curry Tuesday"), call update_actual_outcome with that date — actual_recipe_id if it's a tracked recipe, else actual_notes for an untracked meal (takeout, leftovers). Use made_as_planned: true if they confirm they made the plan. get_plan returns actually_made / actual_recipe / actual_notes so you can report what really happened. The recipe actually eaten is what counts for no-repeat — never claim a planned recipe was eaten if actually_made is false.
 - Today: ${today()}`
 }
@@ -178,6 +179,7 @@ const TOOLS: Anthropic.Tool[] = [
         meal_type:        { type: 'string', description: 'dinner|lunch|breakfast' },
         recipe_id:        { type: 'string', description: 'UUID of recipe to assign.' },
         cook_source:      { type: 'string', description: 'home|freezer_stash|slow_cook|store_bought. Default: home.' },
+        reason:           { type: 'string', description: 'ONE short plain-English sentence shown on the plan card explaining why this recipe is here, e.g. "Swapped in — Gintas is craving curry". Omit if there is no particular reason.' },
         instruction_text: { type: 'string', description: 'User message that prompted this change (for audit).' },
       },
       required: ['plan_date', 'meal_type', 'recipe_id'],
@@ -554,13 +556,15 @@ Return ONLY valid JSON, no other text:
 async function toolUpdatePlanSlot(input: Record<string, unknown>, db: DB, userMsg: string) {
   const { plan_date, meal_type, recipe_id, instruction_text } = input
   const cook_source = (input.cook_source as string) || 'home'
+  // The reason (if any) is shown on the plan card; clear stale notes otherwise.
+  const notes = (input.reason as string) || null
 
   const { data: existing } = await db.from('meal_plans')
     .select('recipe_id').eq('plan_date', plan_date).eq('meal_type', meal_type).single()
   const prevId = existing?.recipe_id || null
 
   const { error } = await db.from('meal_plans').upsert(
-    { plan_date, meal_type, recipe_id, cook_source, slot_locked: true },
+    { plan_date, meal_type, recipe_id, cook_source, slot_locked: true, notes },
     { onConflict: 'plan_date,meal_type' }
   )
   if (error) return { success: false, error: error.message }

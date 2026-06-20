@@ -430,6 +430,15 @@ PLANNING RULES
     never schedule that same recipe again nearby. If honouring the locked
     recipe makes another rule impossible to satisfy, work around it by
     changing the OTHER (unlocked) days — never the locked one.
+14. NOTES — for EVERY planned slot, set "notes" to ONE short plain-English
+    sentence saying why that recipe landed there: the deciding factor, in
+    the same tone you'd say it in chat. Examples:
+    "Batch-cook day — doubled and added to freezer stash"
+    "Commute day — quick stovetop, no prep needed"
+    "Swapped from Korean Beef — original stash entry no longer available"
+    "Matches Thursday's red meat template, hasn't been made in 18 days"
+    Keep it to one sentence. Never leave notes empty for a chosen recipe.
+    Do not restate the recipe name; give the reason.
 
 WEEKLY TEMPLATE
 ${JSON.stringify(ctx.template.filter((t: TemplateRule) => t.meal_type === "dinner"), null, 2)}
@@ -466,7 +475,7 @@ Return ONLY valid JSON. No markdown. No explanation. No wrapper text.
       "guest_count": 0,
       "stash_item_id": "uuid or null",
       "remap_log": null or {"reason": "...", "original_date": "...", "swapped_with": "..."},
-      "notes": null or "string"
+      "notes": "one short plain-English sentence: WHY this recipe was chosen for this slot (see rule 14)"
     }
   ],
   "unresolved": [

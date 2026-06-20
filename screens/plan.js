@@ -114,7 +114,7 @@ async function loadAndRender() {
   // planned + actual recipe both reference recipes — disambiguate by FK.
   const planSelect =
     'plan_date, meal_type, recipe_id, slot_locked, is_commute_day, is_holiday, is_preschool_closed, guest_count, ' +
-    'actually_made, actual_recipe_id, actual_notes, ' +
+    'notes, actually_made, actual_recipe_id, actual_notes, ' +
     'recipes!meal_plans_recipe_id_fkey(id, name, emoji, serves_base), ' +
     'actual_recipe:recipes!meal_plans_actual_recipe_id_fkey(id, name, emoji)'
 
@@ -363,7 +363,12 @@ function buildDayCard(day, opts = {}) {
 
   // History cards are dinner-only and read-only; full cards show all slots.
   const slots = opts.history ? MEAL_SLOTS.filter(s => s.type === 'dinner') : MEAL_SLOTS
-  slots.forEach(slot => card.appendChild(buildSlotRow(day.date, slot, day.slots[slot.type], day.meta, isPast)))
+  slots.forEach(slot => {
+    const entry = day.slots[slot.type]
+    card.appendChild(buildSlotRow(day.date, slot, entry, day.meta, isPast))
+    // "Why this was chosen" — show the generation/edit reason under its row.
+    if (entry?.notes) card.appendChild(buildSlotNote(entry.notes))
+  })
 
   // Past dinners get an outcome footer (confirm / correct / show actual).
   if (isPast) {
@@ -600,11 +605,13 @@ function showPicker(date, slotType) {
 }
 
 async function savePick(date, slotType, recipeId) {
+  // Manual pick has no AI reasoning — clear any stale notes from a prior pick.
   const { error } = await supabase.from('meal_plans').upsert({
     plan_date:   date,
     meal_type:   slotType,
     recipe_id:   recipeId,
     slot_locked: true,
+    notes:       null,
   }, { onConflict: 'plan_date,meal_type' })
 
   if (error) { toast('Failed to save', { error: true }); return }
@@ -819,6 +826,13 @@ function badge(text, title) {
   const el = document.createElement('span')
   el.className = 'day-badge'
   el.title = title
+  el.textContent = text
+  return el
+}
+
+function buildSlotNote(text) {
+  const el = document.createElement('div')
+  el.className = 'day-slot-note'
   el.textContent = text
   return el
 }
