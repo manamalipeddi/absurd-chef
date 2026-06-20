@@ -491,9 +491,16 @@ async function writePlan(
   plan: PlanDay[],
   mode: string
 ) {
-  // For rolling_7: only upsert days 8–14 (don't touch existing days 1–7)
-  let toWrite =
-    mode === "rolling_7" ? plan.slice(7) : plan;
+  // This planner writes 'dinner' rows only (the delete below is dinner-scoped).
+  // Filter to dinner FIRST — the model can emit stray breakfast/snack/lunch
+  // entries, and slicing before filtering would misalign the rolling window.
+  // Sort by date so slice(7) reliably yields days 8–14.
+  const dinners = plan
+    .filter((p) => p.meal_type === "dinner")
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  // For rolling_7: only write days 8–14 (don't touch existing days 1–7).
+  let toWrite = mode === "rolling_7" ? dinners.slice(7) : dinners;
 
   // Verify stash references are still live before committing
   const stashPlanItems = toWrite.filter(p => p.cook_source === "freezer_stash" && p.stash_item_id)
@@ -539,11 +546,25 @@ async function writePlan(
     console.log(`Skipping ${lockedSet.size} locked slot(s): ${[...lockedSet].join(", ")}`);
   }
 
-  // Only delete/insert slots that are NOT locked.
+  // Only write slots that are NOT locked.
   toWrite = toWrite.filter((p) => !lockedSet.has(lockedKey(p.date, p.meal_type)));
+
+  // Dedup by date+meal_type — the model can occasionally emit the same date
+  // twice (e.g. via a remap); without this the batch insert violates the
+  // (plan_date, meal_type) unique constraint and the whole write rolls back.
+  const seen = new Set<string>();
+  toWrite = toWrite.filter((p) => {
+    const k = lockedKey(p.date, p.meal_type);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+
   const deletableDates = toWrite.map((p) => p.date);
 
-  // Delete existing (unlocked) plan entries for these dates
+  // Delete existing (unlocked) plan entries for exactly these dates. The list
+  // already excludes locked dates; the slot_locked guard is defense-in-depth so
+  // a locked row can never be deleted even if lock detection above missed it.
   if (deletableDates.length > 0) {
     await supabase
       .from("meal_plans")
@@ -643,7 +664,7 @@ Deno.serve(async (req: Request) => {
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
-        max_tokens: 4000,
+        max_tokens: 16000,
         messages: [{ role: "user", content: prompt }],
       }),
     });
@@ -667,13 +688,17 @@ Deno.serve(async (req: Request) => {
     // 5. Write plan to DB
     await writePlan(supabase, result.plan, mode);
 
+    // dinner rows are the only ones written; report that count
+    const dinnerCount = result.plan.filter((p) => p.meal_type === "dinner").length;
+    const daysPlanned = mode === "rolling_7" ? Math.max(0, dinnerCount - 7) : dinnerCount;
+
     // 6. Return result to client
     // Client only needs unresolved items + stash recommendations
     // The full plan is now in the DB and will be fetched normally
     return new Response(
       JSON.stringify({
         success: true,
-        days_planned: result.plan.length,
+        days_planned: daysPlanned,
         unresolved: result.unresolved,
         stash_recommendations: result.stash_recommendations,
       }),
