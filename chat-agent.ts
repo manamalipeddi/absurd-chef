@@ -60,6 +60,7 @@ BEHAVIOR:
 - stash_still_valid: false in a tool result means a meal planned from freezer_stash has no matching valid stash entry — always flag this to the user.
 - Guest days: get_special_days returns known_guests[] (resolved member data) and guest_allergies[] (one-off). Both are hard allergy constraints for that date only — treat them with the same enforcement strength as household allergens when suggesting meals for that specific day.
 - Inventory item names follow the pattern "Category - Variant" (e.g. "Milk - Oat", "Bread - Lingon Grova"). When the user describes what they have in stock, call update_inventory_from_description. The tool handles parsing, matching, and writing; your job is to relay what was done and ask about any ambiguous items it surfaces.
+- ACTUAL vs PLANNED: meal_plans records what was planned AND what was actually eaten. When the user says they made something different on a past day ("we ended up ordering pizza Monday", "I made tacos instead of the curry Tuesday"), call update_actual_outcome with that date — actual_recipe_id if it's a tracked recipe, else actual_notes for an untracked meal (takeout, leftovers). Use made_as_planned: true if they confirm they made the plan. get_plan returns actually_made / actual_recipe / actual_notes so you can report what really happened. The recipe actually eaten is what counts for no-repeat — never claim a planned recipe was eaten if actually_made is false.
 - Today: ${today()}`
 }
 
@@ -183,6 +184,21 @@ const TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'update_actual_outcome',
+    description: "Record what was ACTUALLY eaten on a PAST date (distinct from what was planned). Use when the user says they made something different, or confirms they made the plan. e.g. \"I made tacos instead of the curry on Tuesday\". Past dates only.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        plan_date:        { type: 'string', description: 'YYYY-MM-DD (must be in the past).' },
+        meal_type:        { type: 'string', description: 'dinner|lunch. Default: dinner.' },
+        made_as_planned:  { type: 'boolean', description: 'true if they made exactly what was planned. When true, omit actual_recipe_id/actual_notes.' },
+        actual_recipe_id: { type: 'string', description: 'UUID of the recipe actually made, if it differs from the plan and is a tracked recipe.' },
+        actual_notes:     { type: 'string', description: 'Free text for an untracked meal actually eaten, e.g. "ordered takeout", "leftovers". Use instead of actual_recipe_id.' },
+      },
+      required: ['plan_date'],
+    },
+  },
+  {
     name: 'use_stash_item',
     description: 'Mark a freezer stash item as used (fully or partially).',
     input_schema: {
@@ -260,7 +276,7 @@ async function toolGetPlan(input: Record<string, unknown>, db: DB) {
   const days  = Number(input.days) || 14
   const end   = addDays(start, days - 1)
   const { data } = await db.from('meal_plans')
-    .select('plan_date, meal_type, cook_source, is_commute_day, is_holiday, guest_count, slot_locked, notes, stash_item_id, recipes(id, name, emoji, protein, cooking_method, template_slot)')
+    .select('plan_date, meal_type, cook_source, is_commute_day, is_holiday, guest_count, slot_locked, notes, stash_item_id, actually_made, actual_recipe_id, actual_notes, recipes!meal_plans_recipe_id_fkey(id, name, emoji, protein, cooking_method, template_slot), actual_recipe:recipes!meal_plans_actual_recipe_id_fkey(id, name, emoji)')
     .gte('plan_date', start).lte('plan_date', end)
     .order('plan_date').order('meal_type')
 
@@ -293,7 +309,7 @@ async function toolGetPlan(input: Record<string, unknown>, db: DB) {
 async function toolGetTodayRecipe(db: DB) {
   const t = today()
   const { data } = await db.from('meal_plans')
-    .select('plan_date, meal_type, cook_source, guest_count, stash_item_id, recipes(id, name, emoji, protein, serves_base, original_instructions, night_before, morning_of, when_cooking, hacks_and_shortcuts, recipe_ingredients(name, quantity, unit, notes, order_index))')
+    .select('plan_date, meal_type, cook_source, guest_count, stash_item_id, recipes!meal_plans_recipe_id_fkey(id, name, emoji, protein, serves_base, original_instructions, night_before, morning_of, when_cooking, hacks_and_shortcuts, recipe_ingredients(name, quantity, unit, notes, order_index))')
     .eq('plan_date', t).in('meal_type', ['dinner', 'lunch']).order('meal_type')
   if (!data?.length) return { message: 'No meal planned for today.' }
 
@@ -559,6 +575,46 @@ async function toolUpdatePlanSlot(input: Record<string, unknown>, db: DB, userMs
   return { success: true, plan_date, meal_type, recipe_id, previous_recipe_id: prevId }
 }
 
+async function toolUpdateActualOutcome(input: Record<string, unknown>, db: DB) {
+  const plan_date = input.plan_date as string
+  const meal_type = (input.meal_type as string) || 'dinner'
+  const madeAsPlanned = input.made_as_planned === true
+  const actualRecipeId = (input.actual_recipe_id as string) || null
+  const actualNotes    = (input.actual_notes as string) || null
+
+  if (plan_date >= today()) return { success: false, error: 'Actual outcomes can only be logged for past dates.' }
+
+  const { data: row } = await db.from('meal_plans')
+    .select('recipe_id').eq('plan_date', plan_date).eq('meal_type', meal_type).single()
+  if (!row) return { success: false, error: `No ${meal_type} planned on ${plan_date} to confirm.` }
+
+  let update: Record<string, unknown>
+  let recipeToMark: string | null = null
+  if (madeAsPlanned) {
+    update = { actually_made: true, actual_recipe_id: null, actual_notes: null }
+    recipeToMark = row.recipe_id || null
+  } else if (actualRecipeId) {
+    update = { actually_made: false, actual_recipe_id: actualRecipeId, actual_notes: null }
+    recipeToMark = actualRecipeId
+  } else if (actualNotes) {
+    update = { actually_made: false, actual_recipe_id: null, actual_notes: actualNotes }
+  } else {
+    return { success: false, error: 'Provide made_as_planned, actual_recipe_id, or actual_notes.' }
+  }
+
+  const { error } = await db.from('meal_plans').update(update)
+    .eq('plan_date', plan_date).eq('meal_type', meal_type)
+  if (error) return { success: false, error: error.message }
+
+  // Keep recipe-level recency truthful: what was actually eaten counts for
+  // no-repeat (search_recipes reads recipes.last_made).
+  if (recipeToMark) {
+    await db.from('recipes').update({ last_made: plan_date }).eq('id', recipeToMark)
+  }
+
+  return { success: true, plan_date, meal_type, ...update }
+}
+
 async function toolUseStashItem(input: Record<string, unknown>, db: DB) {
   const { stash_id, portions_used } = input as { stash_id: string; portions_used?: number }
   if (portions_used == null) {
@@ -782,6 +838,7 @@ async function dispatch(name: string, input: Record<string, unknown>, db: DB, us
       case 'get_commute_days':                   result = await toolGetCommuteDays(db); break
       case 'update_inventory_from_description':  result = await toolUpdateInventoryFromDescription(input, db); break
       case 'update_plan_slot':                   result = await toolUpdatePlanSlot(input, db, userMsg); break
+      case 'update_actual_outcome':              result = await toolUpdateActualOutcome(input, db); break
       case 'use_stash_item':         result = await toolUseStashItem(input, db); break
       case 'add_recipe':             result = await toolAddRecipe(input, db); break
       case 'log_plan_edit':          result = await toolLogPlanEdit(input, db); break

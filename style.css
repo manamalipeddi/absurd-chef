@@ -459,6 +459,73 @@ body {
 }
 .day-card__discuss:active { opacity: 0.6; }
 
+/* Struck-through planned recipe when something different was made */
+.day-slot__name--struck { text-decoration: line-through; color: var(--text-muted); }
+
+/* ── Actual-outcome footer (past dinners) ────────────────── */
+.day-outcome {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--border);
+}
+.day-outcome__btn {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  -webkit-tap-highlight-color: transparent;
+}
+.day-outcome__btn:active { background: var(--border); }
+.day-outcome__btn--alt { color: var(--primary); border-color: var(--primary); background: var(--surface); }
+.day-outcome__confirmed { font-size: 12px; font-weight: 600; color: var(--primary); }
+.day-outcome__label { font-size: 12px; color: var(--text-muted); }
+.day-outcome__actual { font-size: 13px; font-weight: 700; color: var(--text); }
+
+/* ── History section ─────────────────────────────────────── */
+.plan-history { margin-top: 8px; }
+.plan-history__heading {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-on-page);
+  padding: 18px 16px 2px;
+  letter-spacing: 0.02em;
+}
+
+/* Free-text row in the "made something different" picker */
+.picker-note-row {
+  display: flex;
+  gap: 8px;
+  padding: 10px 16px calc(10px + var(--safe-bottom));
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+.picker-note-row .picker-search { margin: 0; flex: 1; }
+.picker-note-save {
+  flex-shrink: 0;
+  padding: 0 16px;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-family: var(--font);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.picker-note-save:active { opacity: 0.85; }
+
 /* ── Recipe picker ───────────────────────────────────────── */
 .picker-overlay {
   position: fixed;

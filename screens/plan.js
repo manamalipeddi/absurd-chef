@@ -81,11 +81,23 @@ async function loadAndRender() {
   screenEl.innerHTML = `<div class="loading-row"><div class="spinner"></div>Loading…</div>`
 
   const { startDate, endDate } = await getPlanWindow()
+  const today = todayStr()
+  // History covers past dinners older than the forward window (no overlap with
+  // the current-week past days shown in the forward cards).
+  const histBefore = startDate < today ? startDate : today
+  const histFrom   = addDays(histBefore, -90)
 
-  const [planRes, specialRes, recipeRes, householdRes, schedLogRes] = await Promise.all([
+  // planned + actual recipe both reference recipes — disambiguate by FK.
+  const planSelect =
+    'plan_date, meal_type, recipe_id, slot_locked, is_commute_day, is_holiday, is_preschool_closed, guest_count, ' +
+    'actually_made, actual_recipe_id, actual_notes, ' +
+    'recipes!meal_plans_recipe_id_fkey(id, name, emoji, serves_base), ' +
+    'actual_recipe:recipes!meal_plans_actual_recipe_id_fkey(id, name, emoji)'
+
+  const [planRes, specialRes, recipeRes, householdRes, schedLogRes, histRes] = await Promise.all([
     supabase
       .from('meal_plans')
-      .select('plan_date, meal_type, recipe_id, slot_locked, is_commute_day, is_holiday, is_preschool_closed, guest_count, recipes(id, name, emoji, serves_base)')
+      .select(planSelect)
       .gte('plan_date', startDate).lte('plan_date', endDate)
       .order('plan_date'),
     supabase
@@ -108,6 +120,12 @@ async function loadAndRender() {
       .eq('triggered_by', 'scheduled')
       .order('started_at', { ascending: false })
       .limit(1),
+    supabase
+      .from('meal_plans')
+      .select(planSelect)
+      .eq('meal_type', 'dinner')
+      .gte('plan_date', histFrom).lt('plan_date', histBefore)
+      .order('plan_date', { ascending: false }),
   ])
 
   householdCount = householdRes.count ?? 0
@@ -120,7 +138,7 @@ async function loadAndRender() {
     startDate
   )
 
-  render(days, startDate, computeGenWarning(schedLogRes.data?.[0]))
+  render(days, startDate, computeGenWarning(schedLogRes.data?.[0]), histRes.data || [])
 }
 
 // Decide whether to warn about scheduled generation. Returns null (all good),
@@ -175,7 +193,7 @@ function buildDayData(planRows, specialRows, startDate) {
 }
 
 // ── Render ────────────────────────────────────────────────
-function render(days, startDate, genWarning) {
+function render(days, startDate, genWarning, history) {
   if (!screenEl) return
   screenEl.innerHTML = ''
 
@@ -183,6 +201,7 @@ function render(days, startDate, genWarning) {
 
   if (!days.some(d => Object.keys(d.slots).length > 0)) {
     screenEl.appendChild(buildEmpty())
+    if (history && history.length) screenEl.appendChild(buildHistorySection(history))
     return
   }
 
@@ -192,6 +211,39 @@ function render(days, startDate, genWarning) {
   wrap.className = 'plan-cards'
   days.forEach(day => wrap.appendChild(buildDayCard(day)))
   screenEl.appendChild(wrap)
+
+  if (history && history.length) screenEl.appendChild(buildHistorySection(history))
+}
+
+// ── History (past actual outcomes) ────────────────────────
+function buildHistorySection(historyRows) {
+  const section = document.createElement('div')
+  section.className = 'plan-history'
+
+  const heading = document.createElement('div')
+  heading.className = 'plan-history__heading'
+  heading.textContent = '📜 History'
+  section.appendChild(heading)
+
+  const cards = document.createElement('div')
+  cards.className = 'plan-cards'
+  for (const row of historyRows) {
+    // each history row is a single dinner entry; wrap it as a day for reuse
+    const day = {
+      date: row.plan_date,
+      slots: { dinner: row },
+      meta: {
+        isHoliday: row.is_holiday || false,
+        isPreschoolClosed: row.is_preschool_closed || false,
+        isCommute: row.is_commute_day || false,
+        guestCount: row.guest_count || 0,
+        isGintasAway: false,
+      },
+    }
+    cards.appendChild(buildDayCard(day, { history: true }))
+  }
+  section.appendChild(cards)
+  return section
 }
 
 // Manual "generate next week now" action, near the top of the plan.
@@ -220,18 +272,69 @@ function buildGenBanner(warning) {
 }
 
 // ── Day card ──────────────────────────────────────────────
-function buildDayCard(day) {
+function buildDayCard(day, opts = {}) {
   const today = todayStr()
+  const isPast = day.date < today
   const card  = document.createElement('div')
   card.className = 'day-card'
   if (day.date === today) card.classList.add('day-card--today')
-  if (day.date < today)   card.classList.add('day-card--past')
+  if (isPast)             card.classList.add('day-card--past')
 
   card.appendChild(buildContextStrip(day))
   card.appendChild(hr())
-  MEAL_SLOTS.forEach(slot => card.appendChild(buildSlotRow(day.date, slot, day.slots[slot.type], day.meta)))
+
+  // History cards are dinner-only and read-only; full cards show all slots.
+  const slots = opts.history ? MEAL_SLOTS.filter(s => s.type === 'dinner') : MEAL_SLOTS
+  slots.forEach(slot => card.appendChild(buildSlotRow(day.date, slot, day.slots[slot.type], day.meta, isPast)))
+
+  // Past dinners get an outcome footer (confirm / correct / show actual).
+  if (isPast) {
+    const footer = buildOutcomeFooter(day)
+    if (footer) card.appendChild(footer)
+  }
 
   return card
+}
+
+// Outcome footer for a past dinner: confirm "made as planned", correct it, or
+// display what was actually eaten once logged.
+function buildOutcomeFooter(day) {
+  const dinner = day.slots.dinner
+  if (!dinner) return null
+
+  const footer = document.createElement('div')
+  footer.className = 'day-outcome'
+  const am = dinner.actually_made
+
+  if (am === true) {
+    const tag = document.createElement('span')
+    tag.className = 'day-outcome__confirmed'
+    tag.textContent = '✅ Made as planned'
+    footer.appendChild(tag)
+  } else if (am === false) {
+    const label = document.createElement('span')
+    label.className = 'day-outcome__label'
+    label.textContent = 'Actually made:'
+    const actual = document.createElement('span')
+    actual.className = 'day-outcome__actual'
+    actual.textContent = dinner.actual_recipe?.name || dinner.actual_notes || 'Something different'
+    footer.append(label, actual)
+  } else {
+    const made = document.createElement('button')
+    made.className = 'day-outcome__btn'
+    made.textContent = '✅ Made as planned'
+    made.addEventListener('click', () => logMadeAsPlanned(day.date, 'dinner', dinner.recipe_id))
+
+    const diff = document.createElement('button')
+    diff.className = 'day-outcome__btn day-outcome__btn--alt'
+    diff.textContent = '🔄 Made something different'
+    diff.addEventListener('click', () => showOutcomePicker(day.date, 'dinner'))
+
+    // Only offer "made as planned" when something was actually planned.
+    if (dinner.recipe_id) footer.appendChild(made)
+    footer.appendChild(diff)
+  }
+  return footer
 }
 
 function buildContextStrip(day) {
@@ -272,7 +375,7 @@ function buildContextStrip(day) {
   return strip
 }
 
-function buildSlotRow(date, slot, entry, dayMeta) {
+function buildSlotRow(date, slot, entry, dayMeta, isPast = false) {
   const row = document.createElement('div')
   row.className = 'day-slot'
 
@@ -292,6 +395,8 @@ function buildSlotRow(date, slot, entry, dayMeta) {
   if (hasRecipe) {
     const name = document.createElement('span')
     name.className = 'day-slot__name'
+    // Planned recipe is struck through when something different was made.
+    if (entry.actually_made === false) name.classList.add('day-slot__name--struck')
     name.textContent = entry.recipes.name
     val.appendChild(name)
 
@@ -327,8 +432,11 @@ function buildSlotRow(date, slot, entry, dayMeta) {
     empty.textContent = '—'
     val.appendChild(empty)
 
-    row.classList.add('day-slot--tap')
-    row.addEventListener('click', () => showPicker(date, slot.type))
+    // Past days are read-only — no picker for empty slots.
+    if (!isPast) {
+      row.classList.add('day-slot--tap')
+      row.addEventListener('click', () => showPicker(date, slot.type))
+    }
   }
 
   row.append(icon, label, val)
@@ -431,6 +539,99 @@ async function savePick(date, slotType, recipeId) {
   })
 
   await loadAndRender()
+}
+
+// ── Actual-outcome logging ────────────────────────────────
+async function logMadeAsPlanned(date, mealType, plannedRecipeId) {
+  const { error } = await supabase.from('meal_plans')
+    .update({ actually_made: true, actual_recipe_id: null, actual_notes: null })
+    .eq('plan_date', date).eq('meal_type', mealType)
+  if (error) { toast('Failed to save', { error: true }); return }
+  // Keep recipe recency truthful for no-repeat.
+  if (plannedRecipeId) await supabase.from('recipes').update({ last_made: date }).eq('id', plannedRecipeId)
+  toast('Logged — made as planned')
+  await loadAndRender()
+}
+
+async function logMadeDifferent(date, mealType, { recipeId = null, notes = null }) {
+  const { error } = await supabase.from('meal_plans')
+    .update({ actually_made: false, actual_recipe_id: recipeId, actual_notes: notes })
+    .eq('plan_date', date).eq('meal_type', mealType)
+  if (error) { toast('Failed to save', { error: true }); return }
+  if (recipeId) await supabase.from('recipes').update({ last_made: date }).eq('id', recipeId)
+  toast('Logged what you actually made')
+  await loadAndRender()
+}
+
+// Picker for "made something different" — pick a tracked recipe, or log a
+// free-text note for an untracked meal (takeout, leftovers, etc.).
+function showOutcomePicker(date, mealType) {
+  const pool = allRecipes.filter(r => r.meal_type === RECIPE_CATEGORY[mealType])
+
+  const overlay = document.createElement('div')
+  overlay.className = 'picker-overlay'
+  const sheet = document.createElement('div')
+  sheet.className = 'picker-sheet'
+
+  const head = document.createElement('div')
+  head.className = 'picker-header'
+  head.innerHTML = `
+    <span class="picker-title">What did you actually make?</span>
+    <button class="picker-close" aria-label="Close">✕</button>`
+  head.querySelector('.picker-close').addEventListener('click', () => overlay.remove())
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove() })
+
+  // Free-text row for an untracked meal.
+  const noteRow = document.createElement('div')
+  noteRow.className = 'picker-note-row'
+  const noteInput = document.createElement('input')
+  noteInput.type = 'text'
+  noteInput.className = 'picker-search'
+  noteInput.placeholder = 'Or type it (e.g. takeout, leftovers)…'
+  const noteBtn = document.createElement('button')
+  noteBtn.className = 'picker-note-save'
+  noteBtn.textContent = 'Save'
+  noteBtn.addEventListener('click', async () => {
+    const txt = noteInput.value.trim()
+    if (!txt) return
+    overlay.remove()
+    await logMadeDifferent(date, mealType, { notes: txt })
+  })
+  noteRow.append(noteInput, noteBtn)
+
+  const search = document.createElement('input')
+  search.type = 'text'
+  search.className = 'picker-search'
+  search.placeholder = 'Search recipes…'
+
+  const list = document.createElement('div')
+  list.className = 'picker-list'
+
+  function renderList(q) {
+    const lq = q.toLowerCase()
+    const hits = lq ? pool.filter(r => r.name.toLowerCase().includes(lq)) : pool
+    list.innerHTML = ''
+    if (!hits.length) { list.innerHTML = `<p class="picker-empty">No recipes found</p>`; return }
+    for (const r of hits) {
+      const row = document.createElement('button')
+      row.className = 'picker-row'
+      row.innerHTML = `
+        <span class="picker-row__emoji" aria-hidden="true">${r.emoji || slotEmoji(mealType)}</span>
+        <span class="picker-row__name">${r.name}</span>`
+      row.addEventListener('click', async () => {
+        overlay.remove()
+        await logMadeDifferent(date, mealType, { recipeId: r.id })
+      })
+      list.appendChild(row)
+    }
+  }
+  search.addEventListener('input', () => renderList(search.value))
+  renderList('')
+
+  sheet.append(head, search, list, noteRow)
+  overlay.appendChild(sheet)
+  document.body.appendChild(overlay)
+  requestAnimationFrame(() => search.focus())
 }
 
 // ── Generate ──────────────────────────────────────────────
