@@ -6,6 +6,7 @@ const SECTIONS = [
   { id: 'setup-commute-days',    emoji: '🚗', label: 'Commute Days',    sub: "Who's out and when" },
   { id: 'setup-special-days',    emoji: '🎉', label: 'Special Days',    sub: 'Holidays, guests, closures' },
   { id: 'setup-preschool-menu',  emoji: '🏫', label: 'Preschool Menu',  sub: "This week's lunch menu" },
+  { id: 'setup-ingredients',     emoji: '🥕', label: 'Ingredients',     sub: 'Master ingredient list & matching' },
 ]
 
 let screenEl = null

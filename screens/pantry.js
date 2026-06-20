@@ -598,16 +598,20 @@ async function loadGrocery() {
   const today = new Date().toISOString().split('T')[0]
   const end   = new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0]
 
-  const [{ data: invData }, { data: planData }] = await Promise.all([
+  const [{ data: invData }, { data: planData }, { data: activeMasterData }] = await Promise.all([
     supabase.from('inventory').select('*').eq('active', true),
     supabase.from('meal_plans')
       .select('plan_date, recipe_id, cook_source, recipes(id, name, emoji, default_variant_id)')
       .gte('plan_date', today).lte('plan_date', end)
       .not('recipe_id', 'is', null)
       .order('plan_date'),
+    supabase.from('master_ingredients').select('id').eq('active', true),
   ])
 
   const allInventory = invData || []
+  // Only ACTIVE master ingredients count as a confident link (old links on
+  // recipes stay intact, but a deactivated master falls back to fuzzy matching).
+  const activeMasters = new Set((activeMasterData || []).map(m => m.id))
 
   // Source 1: items explicitly out of stock
   const outOfStock = allInventory.filter(i => i.quantity == null || Number(i.quantity) === 0)
@@ -641,10 +645,11 @@ async function loadGrocery() {
       : Promise.resolve({ data: [] }),
   ])
 
-  // Inventory indexed by master_ingredient_id for exact, reliable matching.
+  // Inventory indexed by master_ingredient_id for exact, reliable matching
+  // (active masters only).
   const invByMaster = new Map()
   for (const item of allInventory)
-    if (item.master_ingredient_id && !invByMaster.has(item.master_ingredient_id))
+    if (item.master_ingredient_id && activeMasters.has(item.master_ingredient_id) && !invByMaster.has(item.master_ingredient_id))
       invByMaster.set(item.master_ingredient_id, item)
 
   // Build map: normalised ingredient name → { displayName, usages[], masterId }
@@ -667,8 +672,8 @@ async function loadGrocery() {
   const needed       = []
 
   for (const [key, data] of Object.entries(ingMap)) {
-    // Prefer the reliable master_ingredient_id link; fall back to fuzzy name match.
-    const match = (data.masterId && invByMaster.get(data.masterId)) || findInventoryMatch(key, allInventory)
+    // Prefer the reliable master_ingredient_id link (active only); fall back to fuzzy name match.
+    const match = (data.masterId && activeMasters.has(data.masterId) && invByMaster.get(data.masterId)) || findInventoryMatch(key, allInventory)
     if (match && match.quantity != null && Number(match.quantity) > 0) continue  // covered
     if (match && outOfStockById.has(match.id)) {
       // Appears in both — annotate the OOS row instead of duplicating

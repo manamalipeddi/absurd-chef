@@ -23,6 +23,7 @@ const SCREENS = {
   'setup-commute-days':    { title: 'Commute Days',     module: './screens/setup-commute-days.js' },
   'setup-special-days':    { title: 'Special Days',     module: './screens/setup-special-days.js' },
   'setup-preschool-menu':  { title: 'Preschool Menu',   module: './screens/setup-preschool-menu.js' },
+  'setup-ingredients':     { title: 'Ingredients',      module: './screens/setup-ingredients.js' },
   'recipe-detail':         { title: '',                 module: './screens/recipe-detail.js' },
   'add-recipe':            { title: 'Add Recipe',       module: './screens/add-recipe.js' },
 }
