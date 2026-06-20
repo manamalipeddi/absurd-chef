@@ -128,7 +128,7 @@ async function loadAndRender() {
     // day_settings spans history → end so notes are available on every card.
     supabase
       .from('day_settings')
-      .select('day, is_commute_day, kids_home, gintas_away, guest_count, note')
+      .select('day, is_commute_day, kids_home, gintas_away, is_vacation, guest_count, note')
       .gte('day', histFrom).lte('day', endDate),
     supabase
       .from('recipes')
@@ -210,6 +210,7 @@ function buildDayData(planRows, daySettingsRows, startDate) {
       meta: {
         isKidsHome:   ds ? !!ds.kids_home    : (dow === 0 || dow === 6),
         isCommute:    ds ? !!ds.is_commute_day : false,
+        isVacation:   ds ? !!ds.is_vacation  : false,
         guestCount:   ds ? (ds.guest_count || 0) : 0,
         isGintasAway: ds ? !!ds.gintas_away  : false,
         note:         ds?.note || null,
@@ -364,6 +365,17 @@ function buildDayCard(day, opts = {}) {
   card.appendChild(buildContextStrip(day))
   // Day-level note (every card): shown if present, tappable to view/edit.
   if (day.meta.note) card.appendChild(buildDayNote(day.date, day.meta.note))
+
+  // Vacation day: deliberate absence of a plan — no meal rows, a clear label.
+  if (day.meta.isVacation) {
+    card.classList.add('day-card--vacation')
+    const v = document.createElement('div')
+    v.className = 'day-vacation'
+    v.textContent = '🏖 Vacation — no plan needed'
+    card.appendChild(v)
+    return card
+  }
+
   card.appendChild(hr())
 
   // History cards are dinner-only; full cards show all slots.
@@ -423,14 +435,18 @@ function buildContextStrip(day) {
   const badges = document.createElement('div')
   badges.className = 'day-card__badges'
 
-  if (day.meta.isKidsHome)
-    badges.appendChild(badge('🏠', 'Kids home'))
-  if (day.meta.isCommute)
-    badges.appendChild(badge('🚗', 'Commute'))
-  if (day.meta.guestCount > 0)
-    badges.appendChild(badge(`👥 ×${day.meta.guestCount}`, 'Guests'))
-  if (day.meta.isGintasAway)
-    badges.appendChild(badge('🍃', 'Light effort'))
+  if (day.meta.isVacation) {
+    badges.appendChild(badge('🏖', 'Vacation'))
+  } else {
+    if (day.meta.isKidsHome)
+      badges.appendChild(badge('🏠', 'Kids home'))
+    if (day.meta.isCommute)
+      badges.appendChild(badge('🚗', 'Commute'))
+    if (day.meta.guestCount > 0)
+      badges.appendChild(badge(`👥 ×${day.meta.guestCount}`, 'Guests'))
+    if (day.meta.isGintasAway)
+      badges.appendChild(badge('🍃', 'Light effort'))
+  }
 
   const noteBtn = document.createElement('button')
   noteBtn.className = 'day-card__notebtn' + (day.meta.note ? ' day-card__notebtn--on' : '')
@@ -620,10 +636,26 @@ function showPicker(date, slotType) {
   search.addEventListener('input', () => renderList(search.value))
   renderList('')
 
-  sheet.append(head, search, list)
+  // Distinct action: clear the slot entirely (delete the row → empty slot).
+  const clearBtn = document.createElement('button')
+  clearBtn.className = 'picker-clear'
+  clearBtn.textContent = '✕ Clear this slot (no meal planned)'
+  clearBtn.addEventListener('click', async () => { overlay.remove(); await clearSlot(date, slotType) })
+
+  sheet.append(head, search, list, clearBtn)
   overlay.appendChild(sheet)
   document.body.appendChild(overlay)
   requestAnimationFrame(() => search.focus())
+}
+
+// Delete the meal_plans row for this date+meal_type → slot returns to empty,
+// available for manual re-pick or the generator to fill on a future replan.
+async function clearSlot(date, slotType) {
+  const { error } = await supabase.from('meal_plans')
+    .delete().eq('plan_date', date).eq('meal_type', slotType)
+  if (error) { toast('Failed to clear', { error: true }); return }
+  toast('Slot cleared')
+  await loadAndRender()
 }
 
 // Single save path for both plan changes and actual-outcome logging.

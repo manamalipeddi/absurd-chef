@@ -539,6 +539,18 @@ body {
 .day-note__icon { font-size: 12.7px; flex-shrink: 0; }
 .day-note__text { font-size: 12.7px; color: #92400e; line-height: 1.4; }
 
+/* Vacation day — deliberate no-plan state */
+.day-card--vacation { opacity: 0.92; }
+.day-vacation {
+  padding: 14px 14px;
+  text-align: center;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: repeating-linear-gradient(45deg, var(--bg), var(--bg) 10px, var(--surface) 10px, var(--surface) 20px);
+  border-radius: 0 0 16px 16px;
+}
+
 /* Slot override swap icon */
 .day-slot__swap {
   font-size: 12.7px;
@@ -744,6 +756,23 @@ body {
   color: var(--text-muted);
   font-size: 14.8px;
 }
+
+/* Clear-slot action — distinct footer, separate from the recipe list */
+.picker-clear {
+  flex-shrink: 0;
+  width: 100%;
+  padding: 13px 16px;
+  border: none;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  color: #b91c1c;
+  font-family: var(--font);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.picker-clear:active { background: #fee2e2; }
 
 /* "Other" free-text entry (in-modal) */
 .picker-other { padding: 16px; display: flex; flex-direction: column; gap: 10px; }
@@ -2361,9 +2390,9 @@ body {
 }
 .ds-grid {
   display: grid;
-  grid-template-columns: 50px repeat(4, 1fr);
-  gap: 4px;
-  padding: 8px 12px 88px;   /* room for the fixed Save bar */
+  grid-template-columns: 44px repeat(5, 1fr);
+  gap: 3px;
+  padding: 8px 8px 88px;   /* room for the fixed Save bar */
 }
 
 /* Fixed Save bar (shown only when there are unsaved changes) */
@@ -2411,16 +2440,15 @@ body {
 }
 .ds-rowlabel--today { color: #fff; }
 .ds-cell {
-  aspect-ratio: 1 / 1;
-  min-height: 38px;
+  height: 42px;            /* fixed (not square) so 5 columns stay compact */
   display: flex;
   align-items: center;
   justify-content: center;
   position: relative;
   background: var(--surface);
   border: 1.5px solid var(--border);
-  border-radius: 10px;
-  font-size: 17px;
+  border-radius: 9px;
+  font-size: 16px;
   font-weight: 700;
   color: var(--primary);
   cursor: pointer;

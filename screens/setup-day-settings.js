@@ -4,7 +4,7 @@ let screenEl = null
 let rows = []            // 14 day objects { date, dow, ds }
 let guestMembers = []    // family_members role=guest active
 // per-column paint state for copy-forward ("most recently set")
-let paint = { is_commute_day: null, kids_home: null, gintas_away: null, guests: null }
+let paint = { is_commute_day: null, kids_home: null, gintas_away: null, is_vacation: null, guests: null }
 let dirty = new Set()    // dates touched this editing session (unsaved)
 let saving = false
 
@@ -12,6 +12,7 @@ const COLS = [
   { key: 'is_commute_day', label: 'Commute',     icon: '🚗' },
   { key: 'kids_home',      label: 'Kids Home',   icon: '🏠' },
   { key: 'gintas_away',    label: 'Gintas Away', icon: '🍃' },
+  { key: 'is_vacation',    label: 'Vacation',    icon: '🏖' },
   { key: 'guests',         label: 'Guests',      icon: '👥' },
 ]
 
@@ -25,7 +26,7 @@ function fmtDate(s) {
 function defaultDs(date) {
   const wd = dow(date)
   return { day: date, is_commute_day: false, kids_home: wd === 0 || wd === 6, gintas_away: false,
-           guest_count: 0, guest_family_member_ids: [], guest_allergies: [] }
+           is_vacation: false, guest_count: 0, guest_family_member_ids: [], guest_allergies: [] }
 }
 
 export function init(el) { screenEl = el }
@@ -34,7 +35,7 @@ export async function activate({ headerLeft, headerRight }) {
   headerLeft.innerHTML = backBtn('ds-back')
   headerRight.innerHTML = ''
   document.getElementById('ds-back').addEventListener('click', () => navigateTo('setup'))
-  paint = { is_commute_day: null, kids_home: null, gintas_away: null, guests: null }
+  paint = { is_commute_day: null, kids_home: null, gintas_away: null, is_vacation: null, guests: null }
   dirty = new Set()
   await load()
   render()
@@ -189,6 +190,7 @@ async function saveAll() {
     is_commute_day: r.ds.is_commute_day,
     kids_home: r.ds.kids_home,
     gintas_away: r.ds.gintas_away,
+    is_vacation: r.ds.is_vacation,
     guest_count: r.ds.guest_count,
     guest_family_member_ids: r.ds.guest_family_member_ids,
     guest_allergies: r.ds.guest_allergies,

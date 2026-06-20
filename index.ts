@@ -54,6 +54,7 @@ interface DaySetting {
   is_commute_day: boolean;
   kids_home: boolean;
   gintas_away: boolean;
+  is_vacation: boolean;
   guest_count: number;
   guest_family_member_ids?: string[];
   guest_allergies?: Array<{ substance: string; severity: string }>;
@@ -335,6 +336,7 @@ function buildPrompt(
       date,
       day_of_week: dow,
       day_name: ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][dow],
+      is_vacation: !!ds?.is_vacation,            // overrides everything (rule 0)
       week: i < 7 ? 1 : 2,                       // week-relative inventory (rule 16)
       is_commute: isCommute,
       kids_home: kidsHome,
@@ -409,7 +411,12 @@ PLANNING PERIOD
 - Days to plan: ${days}
 
 PLANNING RULES
-1. Plan dinner for every day. ALSO plan a lunch for any day where needs_lunch = true (this covers both weekend template lunches and weekday kids-home days — see rule 14). Output lunch as a separate plan entry with meal_type "lunch".
+0. VACATION (checked FIRST, overrides everything): if a day has is_vacation = true,
+   output NOTHING for it — no dinner, no lunch, no breakfast, no snack, no entry in
+   "plan" at all, and never put it in "unresolved". A vacation day is a deliberate
+   absence of a plan, not a gap to fill. This takes precedence over kids_home,
+   commute, guests, template — ignore all other day-type logic for that date.
+1. Plan dinner for every NON-vacation day. ALSO plan a lunch for any non-vacation day where needs_lunch = true (this covers both weekend template lunches and weekday kids-home days — see rule 14). Output lunch as a separate plan entry with meal_type "lunch".
 2. No recipe repeat within 14 days (check recently_used below).
 3. No same protein two days in a row.
 4. Match each day's template constraint (protein or style).
@@ -548,9 +555,11 @@ async function writePlan(
   mode: string,
   targetDates?: string[],
   startDate?: string,
+  vacationDates?: string[],
 ) {
   const MEALS = ["dinner", "lunch"];          // the planner writes these two
   const lockedKey = (d: string, m: string) => `${d}|${m}`;
+  const vacSet = new Set(vacationDates || []);
 
   // Keep dinner + lunch; drop stray breakfast/snack. The day set is driven by
   // dinners (one per day); lunch rides along for the same dates.
@@ -561,7 +570,8 @@ async function writePlan(
   if (mode === "rolling_7") writeDates = new Set(dinnerDates.slice(7));   // days 8–14
   else if (mode === "targeted" && targetDates?.length) writeDates = new Set(targetDates);
   else writeDates = new Set(dinnerDates);
-  let toWrite = rowsAll.filter((p) => writeDates.has(p.date));
+  // Never write a vacation day, even if the model mistakenly emits one.
+  let toWrite = rowsAll.filter((p) => writeDates.has(p.date) && !vacSet.has(p.date));
 
   // Week-relative stash validation: a stash ref is normally only valid when
   // portions > 0, BUT a typically_restocked item is also allowed in WEEK 2
@@ -588,7 +598,21 @@ async function writePlan(
     });
   }
 
-  const dates = [...writeDates];
+  // Vacation days within the window must be CLEARED (so toggling vacation on
+  // wipes any prior plan). Add them to the delete set; nothing is inserted for
+  // them (locked rows are still protected by the slot_locked guard below).
+  let vacInWindow: string[] = [];
+  if (vacSet.size > 0) {
+    if (mode === "targeted" && targetDates?.length) {
+      vacInWindow = [...vacSet].filter(d => targetDates.includes(d));
+    } else if (startDate) {
+      const winStart = mode === "rolling_7" ? addDays(startDate, 7) : startDate;
+      const winEnd = addDays(startDate, 13);
+      vacInWindow = [...vacSet].filter(d => d >= winStart && d <= winEnd);
+    }
+  }
+
+  const dates = [...new Set([...writeDates, ...vacInWindow])];
 
   // ── HARD RULE: never overwrite a manually-locked slot (dinner OR lunch). ────
   const { data: lockedRows } = await supabase
@@ -764,8 +788,9 @@ Deno.serve(async (req: Request) => {
       `Plan: ${result.plan.length} days, ${result.unresolved.length} unresolved`
     );
 
-    // 5. Write plan to DB
-    await writePlan(supabase, result.plan, mode, targetDates, start_date);
+    // 5. Write plan to DB (skip & clear vacation days)
+    const vacationDates = (ctx.daySettings as DaySetting[]).filter(d => d.is_vacation).map(d => d.day);
+    await writePlan(supabase, result.plan, mode, targetDates, start_date, vacationDates);
 
     // dinner rows are the only ones written; report that count
     const dinnerCount = result.plan.filter((p) => p.meal_type === "dinner").length;
