@@ -2242,8 +2242,35 @@ body {
   display: grid;
   grid-template-columns: 50px repeat(4, 1fr);
   gap: 4px;
-  padding: 8px 12px 24px;
+  padding: 8px 12px 88px;   /* room for the fixed Save bar */
 }
+
+/* Fixed Save bar (shown only when there are unsaved changes) */
+.ds-savebar {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(var(--nav-h) + var(--safe-bottom) + 10px);
+  width: calc(100% - 32px);
+  max-width: 448px;
+  z-index: 50;
+}
+.ds-savebar__btn {
+  width: 100%;
+  padding: 14px 16px;
+  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-light) 100%);
+  color: #fff;
+  border: none;
+  border-radius: 14px;
+  font-family: var(--font);
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(22, 101, 52, 0.35);
+  -webkit-tap-highlight-color: transparent;
+}
+.ds-savebar__btn:active { opacity: 0.9; }
+.ds-savebar__btn:disabled { opacity: 0.6; cursor: default; }
 .ds-corner { }
 .ds-colhead {
   display: flex;
@@ -2252,23 +2279,8 @@ body {
   gap: 2px;
   padding: 4px 2px;
 }
-.ds-colhead__icon { font-size: 15px; line-height: 1; }
-.ds-colhead__label { font-size: 9px; font-weight: 700; color: var(--text-on-page); text-align: center; line-height: 1.1; }
-.ds-apply { display: flex; gap: 2px; margin-top: 2px; }
-.ds-apply__btn {
-  flex: 1;
-  font-size: 8px;
-  font-weight: 700;
-  padding: 2px 0;
-  background: rgba(255,255,255,0.1);
-  color: var(--text-on-page-muted);
-  border: 1px solid var(--text-on-page-muted);
-  border-radius: 4px;
-  cursor: pointer;
-  font-family: var(--font);
-  -webkit-tap-highlight-color: transparent;
-}
-.ds-apply__btn:active { background: rgba(255,255,255,0.2); }
+.ds-colhead__icon { font-size: 17px; line-height: 1; }
+.ds-colhead__label { font-size: 10px; font-weight: 700; color: var(--text-on-page); text-align: center; line-height: 1.1; }
 .ds-rowlabel {
   display: flex;
   align-items: center;
@@ -2294,6 +2306,7 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 .ds-cell--on { background: var(--primary-bg); border-color: var(--primary); }
+.ds-cell--dirty { box-shadow: 0 0 0 2px var(--accent); }
 .ds-cell:active { opacity: 0.7; }
 .ds-cell__guests { font-size: 15px; color: var(--primary); }
 .ds-cell__dash { color: var(--border); }

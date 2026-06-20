@@ -47,6 +47,10 @@ export async function navigateTo(id) {
     return
   }
 
+  // Let the current screen veto navigation (e.g. unsaved changes).
+  const leaving = screenModules[currentScreen]
+  if (leaving?.canLeave && !leaving.canLeave()) return
+
   document.getElementById(`screen-${currentScreen}`).classList.remove('screen--active')
   document.getElementById(`screen-${id}`).classList.add('screen--active')
   // Only flip nav highlight for top-level screens that have a nav button
