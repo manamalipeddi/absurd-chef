@@ -1,10 +1,12 @@
 import { supabase, FUNCTIONS_URL, navigateTo, navState, toast } from '../app.js'
+import { convBracket, convertText } from './convert.js'
 
 // ── State ─────────────────────────────────────────────────
 let recipe           = null
 let variants         = []
 let activeTabId      = 'original'
 let ingredients      = []
+let masterConv       = {}   // master_ingredient_id → { unit_type, grams_per_cup, ... }
 let preppedComponents = []
 let subMap           = {}   // `${tabId}:${ingId}` → {loading, message}
 let scaleResult      = null
@@ -85,12 +87,21 @@ async function loadIngredients() {
   const isVariant = activeTabId !== 'original'
   const { data } = isVariant
     ? await supabase.from('recipe_variant_ingredients')
-        .select('id,name,quantity,unit,notes,order_index,user_marked_unavailable')
+        .select('id,name,quantity,unit,notes,order_index,user_marked_unavailable,master_ingredient_id')
         .eq('variant_id', activeTabId).order('order_index')
     : await supabase.from('recipe_ingredients')
-        .select('id,name,quantity,unit,notes,order_index,user_marked_unavailable')
+        .select('id,name,quantity,unit,notes,order_index,user_marked_unavailable,master_ingredient_id')
         .eq('recipe_id', recipe.id).order('order_index')
   ingredients = data || []
+
+  // Load conversion data for the linked master ingredients (computed centrally).
+  const ids = [...new Set(ingredients.map(i => i.master_ingredient_id).filter(Boolean))]
+  masterConv = {}
+  if (ids.length) {
+    const { data: mi } = await supabase.from('master_ingredients')
+      .select('id, unit_type, grams_per_cup, conversion_is_approximate').in('id', ids)
+    for (const m of mi || []) masterConv[m.id] = m
+  }
 }
 
 // ── Render ────────────────────────────────────────────────
@@ -356,6 +367,14 @@ function buildIngredientList() {
       n.textContent = ` (${ing.notes})`
       nm.appendChild(n)
     }
+    // Metric conversion (computed from the linked master ingredient), additive.
+    const conv = convBracket(ing.quantity, ing.unit, masterConv[ing.master_ingredient_id])
+    if (conv) {
+      const cs = document.createElement('span')
+      cs.className = 'rd-ing-conv'
+      cs.textContent = conv
+      nm.appendChild(cs)
+    }
     const toggle = document.createElement('button')
     toggle.className = `rd-ing-toggle${struck ? ' rd-ing-toggle--on' : ''}`
     toggle.title = struck ? 'I have this' : "I don't have this"
@@ -442,7 +461,8 @@ function buildOriginalInstructions(text) {
 
   const body = document.createElement('pre')
   body.className = 'rd-orig__body rd-orig__body--hidden'
-  body.textContent = text   // verbatim, no formatting/AI
+  // Stored value is never modified; conversions are appended at display time only.
+  body.textContent = convertText(text)
 
   toggle.addEventListener('click', () => {
     const open = body.classList.toggle('rd-orig__body--hidden') === false

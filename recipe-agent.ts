@@ -20,6 +20,44 @@ function parseJSON(text: string) {
   return JSON.parse(text.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim())
 }
 
+// ── Unit conversion (mirrors screens/convert.js; uses central master data) ──
+type MasterConv = { unit_type?: string; grams_per_cup?: number | null }
+function gram(g: number) { const r = g >= 100 ? Math.round(g / 5) * 5 : Math.round(g); return `${r}g` }
+function kg(g: number) { return `${(g / 1000).toFixed(g % 1000 === 0 ? 0 : 1)}kg` }
+function mlFmt(ml: number) { return `${Math.round(ml / 5) * 5}ml` }
+function convBracket(q: number | undefined, unit: string | undefined, m?: MasterConv): string {
+  if (q == null || !unit) return ''
+  const u = unit.toLowerCase().trim()
+  const t = m?.unit_type
+  if (['oz', 'oz.', 'ounce', 'ounces'].includes(u)) return ` (${gram(q * 28.3495)})`
+  if (['lb', 'lbs', 'lb.', 'pound', 'pounds'].includes(u)) { const g = q * 453.592; return ` (${g >= 1000 ? kg(g) : gram(g)})` }
+  if (['cup', 'cups', 'c'].includes(u)) {
+    if (t === 'liquid_volume') return ` (${mlFmt(q * 240)})`
+    if (t === 'solid_volume' && m?.grams_per_cup) return ` (~${gram(q * m.grams_per_cup)})`
+    if (t === 'count' || t === 'weight_only') return ''
+    return ` (~${gram(q * 150)})`
+  }
+  const isTbsp = ['tbsp', 'tbsp.', 'tablespoon', 'tablespoons', 'tbs'].includes(u)
+  const isTsp = ['tsp', 'tsp.', 'teaspoon', 'teaspoons'].includes(u)
+  if (isTbsp || isTsp) {
+    if (t === 'liquid_volume') return ` (${mlFmt(q * (isTbsp ? 15 : 5))})`
+    if (t === 'solid_volume' && m?.grams_per_cup) return ` (~${gram(q * m.grams_per_cup / (isTbsp ? 16 : 48))})`
+  }
+  return ''
+}
+// Match free-text ingredient names to a master row (canonical or alias).
+async function buildMasterMatcher() {
+  const { data } = await supabase.from('master_ingredients')
+    .select('canonical_name, aliases, unit_type, grams_per_cup').eq('active', true)
+  const byName: Record<string, MasterConv> = {}
+  for (const m of data || []) {
+    const conv = { unit_type: m.unit_type, grams_per_cup: m.grams_per_cup }
+    byName[(m.canonical_name as string).toLowerCase().trim()] = conv
+    for (const a of (m.aliases as string[] | null) || []) byName[a.toLowerCase().trim()] = conv
+  }
+  return (name: string): MasterConv | undefined => byName[name.toLowerCase().trim()]
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS })
   const body = await req.json()
@@ -60,9 +98,13 @@ async function handleGenerateAdhdLayers({ recipe_name, original_instructions, in
   original_instructions: string
   ingredients: { name: string; quantity?: number; unit?: string; notes?: string }[]
 }) {
-  const ingList = ingredients.map(i =>
-    `${i.quantity != null ? i.quantity + (i.unit ? ' ' + i.unit + ' ' : ' ') : ''}${i.name}${i.notes ? ' (' + i.notes + ')' : ''}`
-  ).join('\n')
+  // Each ingredient line carries its centrally-computed metric conversion so the
+  // generated steps include dual units directly, e.g. "1 cup flour (~120g)".
+  const matchMaster = await buildMasterMatcher()
+  const ingList = ingredients.map(i => {
+    const base = `${i.quantity != null ? i.quantity + (i.unit ? ' ' + i.unit + ' ' : ' ') : ''}${i.name}`
+    return `${base}${convBracket(i.quantity, i.unit, matchMaster(i.name))}${i.notes ? ' (' + i.notes + ')' : ''}`
+  }).join('\n')
 
   const msg = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
@@ -74,6 +116,8 @@ BAD:  "Mix the dry spices the night before" / "Add the yoghurt and top with berr
 GOOD: "In a small jar, mix: 1.5 tsp cumin, 1 tsp turmeric, 1 tsp coriander powder, ½ tsp chili powder, ½ tsp salt. Shake to combine." / "Add 200g yoghurt to a bowl, top with a handful of berries (about 100g)"
 Any step that involves measurable ingredients MUST include the exact amounts from the ingredient list above — in when_cooking just as strictly as in night_before/morning_of. Never use vague descriptions like "the spices" or "a handful of" when a number exists.
 EXCEPTION — do not invent precision the source lacks: if an ingredient has no quantity entered in the list, refer to it plainly (e.g. "add the yoghurt") rather than fabricating a number.
+
+DUAL UNITS: the ingredient list already includes metric conversions in brackets for imperial amounts, e.g. "1 cup flour (~120g)". When you reference such an ingredient in a step, carry the dual unit through exactly as given — original first, metric in brackets — e.g. "Mix 1 cup flour (~120g) with 2 eggs." Keep the "~" where shown. For any oven temperature in Fahrenheit, write it as °F with °C in brackets, e.g. "Bake at 400°F (200°C)."
 
 Tone: plain, direct, reassuring. No fluff or motivational filler.
 Return ONLY valid JSON, no markdown.`,

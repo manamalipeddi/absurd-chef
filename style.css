@@ -1208,6 +1208,7 @@ body {
   text-align: right;
   min-width: 30px;
 }
+.rd-ing-conv { color: var(--text-muted); font-weight: 600; font-size: 12.7px; }
 .rd-ing-name {
   font-size: 14.8px;
   color: var(--text);
