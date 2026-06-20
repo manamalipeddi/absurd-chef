@@ -106,10 +106,10 @@ async function loadAndRender() {
   currentStartDate = startDate
   const today = todayStr()
   lastRenderDay = today
-  // History covers past dinners older than the forward window (no overlap with
-  // the current-week past days shown in the forward cards).
-  const histBefore = startDate < today ? startDate : today
-  const histFrom   = addDays(histBefore, -90)
+  // History = everything strictly before today (incl. this week's earlier days);
+  // upcoming section is today forward.
+  const histBefore = today
+  const histFrom   = addDays(today, -90)
 
   // planned + actual recipe both reference recipes — disambiguate by FK.
   const planSelect =
@@ -118,16 +118,17 @@ async function loadAndRender() {
     'recipes!meal_plans_recipe_id_fkey(id, name, emoji, serves_base), ' +
     'actual_recipe:recipes!meal_plans_actual_recipe_id_fkey(id, name, emoji)'
 
-  const [planRes, specialRes, recipeRes, householdRes, schedLogRes, histRes] = await Promise.all([
+  const [planRes, dsRes, recipeRes, householdRes, schedLogRes, histRes] = await Promise.all([
     supabase
       .from('meal_plans')
       .select(planSelect)
       .gte('plan_date', startDate).lte('plan_date', endDate)
       .order('plan_date'),
+    // day_settings spans history → end so notes are available on every card.
     supabase
       .from('day_settings')
-      .select('day, is_commute_day, kids_home, gintas_away, guest_count')
-      .gte('day', startDate).lte('day', endDate),
+      .select('day, is_commute_day, kids_home, gintas_away, guest_count, note')
+      .gte('day', histFrom).lte('day', endDate),
     supabase
       .from('recipes')
       .select('id, name, meal_type, emoji')
@@ -153,16 +154,15 @@ async function loadAndRender() {
   ])
 
   householdCount = householdRes.count ?? 0
-
   allRecipes = recipeRes.data || []
 
-  const days = buildDayData(
-    planRes.data  || [],
-    specialRes.data || [],   // day_settings rows
-    startDate
-  )
+  const dsRows = dsRes.data || []
+  const noteMap = {}
+  for (const d of dsRows) if (d.note) noteMap[d.day] = d.note
 
-  render(days, startDate, computeGenWarning(schedLogRes.data?.[0]), histRes.data || [])
+  const days = buildDayData(planRes.data || [], dsRows, startDate)
+
+  render(days, startDate, computeGenWarning(schedLogRes.data?.[0]), histRes.data || [], noteMap)
 }
 
 // Decide whether to warn about scheduled generation. Returns null (all good),
@@ -204,38 +204,47 @@ function buildDayData(planRows, daySettingsRows, startDate) {
         isCommute:    ds ? !!ds.is_commute_day : false,
         guestCount:   ds ? (ds.guest_count || 0) : 0,
         isGintasAway: ds ? !!ds.gintas_away  : false,
+        note:         ds?.note || null,
       },
     }
   })
 }
 
 // ── Render ────────────────────────────────────────────────
-function render(days, startDate, genWarning, history) {
+// Order: upcoming days (today forward) → History (past) → generation buttons.
+function render(days, startDate, genWarning, history, noteMap = {}) {
   if (!screenEl) return
   screenEl.innerHTML = ''
 
   if (genWarning) screenEl.appendChild(buildGenBanner(genWarning))
 
-  if (!days.some(d => Object.keys(d.slots).length > 0)) {
+  const today = todayStr()
+  const upcoming = days.filter(d => d.date >= today)
+  const hasPlan = days.some(d => Object.keys(d.slots).length > 0)
+
+  if (!hasPlan) {
     screenEl.appendChild(buildEmpty())
-    if (history && history.length) screenEl.appendChild(buildHistorySection(history))
+    if (history && history.length) screenEl.appendChild(buildHistorySection(history, noteMap))
+    screenEl.appendChild(buildActionBar())
     return
   }
 
-  screenEl.appendChild(buildPlanSubhead(startDate))
-  screenEl.appendChild(buildActionBar())
+  screenEl.appendChild(buildPlanSubhead(upcoming[0]?.date || startDate, addDays(startDate, 13)))
 
   const wrap = document.createElement('div')
   wrap.className = 'plan-cards'
-  days.forEach(day => {
-    // Week divider before each Monday: "Current Week xx" / "Next Week xx".
-    if (new Date(day.date + 'T12:00:00Z').getUTCDay() === 1)
-      wrap.appendChild(buildWeekDivider(day.date))
-    wrap.appendChild(buildDayCard(day))
+  upcoming.forEach((day, i) => {
+    // Week divider before each Monday and before the very first upcoming card.
+    const isMon = new Date(day.date + 'T12:00:00Z').getUTCDay() === 1
+    if (isMon || i === 0) wrap.appendChild(buildWeekDivider(day.date))
+    wrap.appendChild(buildDayCard(day, { note: noteMap[day.date] }))
   })
   screenEl.appendChild(wrap)
 
-  if (history && history.length) screenEl.appendChild(buildHistorySection(history))
+  if (history && history.length) screenEl.appendChild(buildHistorySection(history, noteMap))
+
+  // Low-frequency actions live at the very bottom.
+  screenEl.appendChild(buildActionBar())
 }
 
 function weekLabel(date) {
@@ -253,9 +262,8 @@ function buildWeekDivider(date) {
   return el
 }
 
-// Date range + ISO week numbers for the displayed 14-day window.
-function buildPlanSubhead(startDate) {
-  const endDate = addDays(startDate, 13)
+// Date range + ISO week numbers for the displayed window.
+function buildPlanSubhead(startDate, endDate) {
   const w1 = isoWeek(startDate)
   const w2 = isoWeek(endDate)
   const weeks = w1 === w2 ? `Week ${w1}` : `Weeks ${w1}–${w2}`
@@ -268,7 +276,7 @@ function buildPlanSubhead(startDate) {
 }
 
 // ── History (past actual outcomes) ────────────────────────
-function buildHistorySection(historyRows) {
+function buildHistorySection(historyRows, noteMap = {}) {
   const section = document.createElement('div')
   section.className = 'plan-history'
 
@@ -285,37 +293,38 @@ function buildHistorySection(historyRows) {
       date: row.plan_date,
       slots: { dinner: row },
       meta: {
-        isHoliday: row.is_holiday || false,
-        isPreschoolClosed: row.is_preschool_closed || false,
         isKidsHome: row.is_holiday || row.is_preschool_closed || false,
         isCommute: row.is_commute_day || false,
         guestCount: row.guest_count || 0,
         isGintasAway: false,
+        note: noteMap[row.plan_date] || null,
       },
     }
-    cards.appendChild(buildDayCard(day, { history: true }))
+    cards.appendChild(buildDayCard(day, { history: true, note: noteMap[row.plan_date] }))
   }
   section.appendChild(cards)
   return section
 }
 
-// Two generation actions near the top of the plan:
-//  • Regenerate plan  — full_14 rebuild of the current window (current params)
-//  • Generate next week — rolling_7 failsafe if Sunday's cron didn't run
+// Two low-frequency generation actions, anchored at the very bottom of the tab.
+//  • Regenerate Full Plan — full_14 rebuild of the whole visible plan
+//  • Plan Week [N]        — rolling_7; N = the upcoming ISO week it generates
 function buildActionBar() {
   const bar = document.createElement('div')
-  bar.className = 'plan-actionbar'
+  bar.className = 'plan-actionbar plan-actionbar--bottom'
 
   const regen = document.createElement('button')
   regen.className = 'plan-roll-btn'
   regen.id = 'btn-regenerate'
-  regen.innerHTML = '🔄 Regenerate plan'
+  regen.innerHTML = '🔄 Regenerate Full Plan'
   regen.addEventListener('click', onRegeneratePlan)
 
+  // rolling_7 writes days 8–14 from the current week's Monday → next week.
+  const nextWeekNo = isoWeek(addDays(thisWeekMonday(), 7))
   const next = document.createElement('button')
   next.className = 'plan-roll-btn plan-roll-btn--alt'
   next.id = 'btn-roll-week'
-  next.innerHTML = '📅 Generate next week'
+  next.innerHTML = `📅 Plan Week ${nextWeekNo}`
   next.addEventListener('click', onRollNextWeek)
 
   bar.append(regen, next)
@@ -338,41 +347,41 @@ function buildGenBanner(warning) {
 function buildDayCard(day, opts = {}) {
   const today = todayStr()
   const isPast = day.date < today
+  const isToday = day.date === today
   const card  = document.createElement('div')
   card.className = 'day-card'
-  if (day.date === today) card.classList.add('day-card--today')
-  if (isPast)             card.classList.add('day-card--past')
+  if (isToday) card.classList.add('day-card--today')
+  if (isPast)  card.classList.add('day-card--past')
 
   card.appendChild(buildContextStrip(day))
+  // Day-level note (every card): shown if present, tappable to view/edit.
+  if (day.meta.note) card.appendChild(buildDayNote(day.date, day.meta.note))
   card.appendChild(hr())
 
-  // History cards are dinner-only and read-only; full cards show all slots.
+  // History cards are dinner-only; full cards show all slots.
   const slots = opts.history ? MEAL_SLOTS.filter(s => s.type === 'dinner') : MEAL_SLOTS
   slots.forEach(slot => {
     const entry = day.slots[slot.type]
     card.appendChild(buildSlotRow(day.date, slot, entry, day.meta, isPast))
-    // "Why this was chosen" — show the generation/edit reason under its row.
     if (entry?.notes) card.appendChild(buildSlotNote(entry.notes))
+    // Actual-outcome logging: past dinner (History) OR any filled slot today.
+    const showOutcome = (opts.history && slot.type === 'dinner') || (isToday && entry?.recipe_id)
+    if (showOutcome) {
+      const oc = buildSlotOutcome(day.date, slot.type, entry)
+      if (oc) card.appendChild(oc)
+    }
   })
-
-  // Past dinners get an outcome footer (confirm / correct / show actual).
-  if (isPast) {
-    const footer = buildOutcomeFooter(day)
-    if (footer) card.appendChild(footer)
-  }
 
   return card
 }
 
-// Outcome footer for a past dinner: confirm "made as planned", correct it, or
-// display what was actually eaten once logged.
-function buildOutcomeFooter(day) {
-  const dinner = day.slots.dinner
-  if (!dinner) return null
-
+// Per-slot actual-outcome row: confirm "made as planned", correct it, or show
+// what was actually eaten once logged. Used on History dinners and today's slots.
+function buildSlotOutcome(date, mealType, entry) {
+  if (!entry) return null
   const footer = document.createElement('div')
   footer.className = 'day-outcome'
-  const am = dinner.actually_made
+  const am = entry.actually_made
 
   if (am === true) {
     const tag = document.createElement('span')
@@ -385,24 +394,33 @@ function buildOutcomeFooter(day) {
     label.textContent = 'Actually made:'
     const actual = document.createElement('span')
     actual.className = 'day-outcome__actual'
-    actual.textContent = dinner.actual_recipe?.name || dinner.actual_notes || 'Something different'
+    actual.textContent = entry.actual_recipe?.name || entry.actual_notes || 'Something different'
     footer.append(label, actual)
   } else {
     const made = document.createElement('button')
     made.className = 'day-outcome__btn'
     made.textContent = '✅ Made as planned'
-    made.addEventListener('click', () => logMadeAsPlanned(day.date, 'dinner', dinner.recipe_id))
+    made.addEventListener('click', () => logMadeAsPlanned(date, mealType, entry.recipe_id))
 
     const diff = document.createElement('button')
     diff.className = 'day-outcome__btn day-outcome__btn--alt'
     diff.textContent = '🔄 Made something different'
-    diff.addEventListener('click', () => showOutcomePicker(day.date, 'dinner'))
+    diff.addEventListener('click', () => showOutcomePicker(date, mealType))
 
-    // Only offer "made as planned" when something was actually planned.
-    if (dinner.recipe_id) footer.appendChild(made)
+    if (entry.recipe_id) footer.appendChild(made)
     footer.appendChild(diff)
   }
   return footer
+}
+
+// Day-level free-form note display (tap to edit).
+function buildDayNote(date, text) {
+  const el = document.createElement('button')
+  el.className = 'day-note'
+  el.innerHTML = `<span class="day-note__icon">📝</span><span class="day-note__text"></span>`
+  el.querySelector('.day-note__text').textContent = text
+  el.addEventListener('click', () => openNoteEditor(date, text))
+  return el
 }
 
 function buildContextStrip(day) {
@@ -429,6 +447,12 @@ function buildContextStrip(day) {
   if (day.meta.isGintasAway)
     badges.appendChild(badge('🍃', 'Light effort'))
 
+  const noteBtn = document.createElement('button')
+  noteBtn.className = 'day-card__notebtn' + (day.meta.note ? ' day-card__notebtn--on' : '')
+  noteBtn.textContent = day.meta.note ? '📝' : '＋📝'
+  noteBtn.title = day.meta.note ? 'Edit note' : 'Add a note'
+  noteBtn.addEventListener('click', () => openNoteEditor(day.date, day.meta.note || ''))
+
   const discuss = document.createElement('button')
   discuss.className = 'day-card__discuss'
   discuss.textContent = '💬'
@@ -438,7 +462,7 @@ function buildContextStrip(day) {
     navigateTo('chat')
   })
 
-  right.append(badges, discuss)
+  right.append(badges, noteBtn, discuss)
   strip.appendChild(right)
   return strip
 }
@@ -494,6 +518,17 @@ function buildSlotRow(date, slot, entry, dayMeta, isPast = false) {
       navState.recipeId = entry.recipe_id
       navigateTo('recipe-detail')
     })
+
+    // Override: a separate swap action to change what's planned for this slot
+    // (distinct from the name tap → Recipe Detail). Not on past/history rows.
+    if (!isPast) {
+      const swap = document.createElement('button')
+      swap.className = 'day-slot__swap'
+      swap.textContent = '🔄'
+      swap.title = 'Change this meal'
+      swap.addEventListener('click', (e) => { e.stopPropagation(); showPicker(date, slot.type) })
+      val.appendChild(swap)
+    }
   } else {
     // Leave unchosen slots blank (no dash) to keep the view uncluttered.
     const empty = document.createElement('span')
@@ -632,6 +667,51 @@ async function logMadeDifferent(date, mealType, { recipeId = null, notes = null 
   if (recipeId) await supabase.from('recipes').update({ last_made: date }).eq('id', recipeId)
   toast('Logged what you actually made')
   await loadAndRender()
+}
+
+// Day-level free-form note editor. Writes day_settings.note only — no replan,
+// no effect on no-repeat. Preserves the weekend kids_home default when the row
+// doesn't exist yet (so adding a note never silently flips a weekend off).
+function openNoteEditor(date, existing) {
+  const overlay = document.createElement('div'); overlay.className = 'picker-overlay'
+  const sheet = document.createElement('div'); sheet.className = 'picker-sheet note-sheet'
+  const head = document.createElement('div'); head.className = 'picker-header'
+  head.innerHTML = `<span class="picker-title">Note — ${fmtDate(date)}</span><button class="picker-close">✕</button>`
+  head.querySelector('.picker-close').addEventListener('click', () => overlay.remove())
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove() })
+
+  const ta = document.createElement('textarea')
+  ta.className = 'note-sheet__input'
+  ta.placeholder = 'e.g. kids were sick, hectic week, simplified everything…'
+  ta.value = existing || ''
+
+  const save = document.createElement('button')
+  save.className = 'su-btn-primary note-sheet__save'
+  save.textContent = 'Save note'
+  save.addEventListener('click', async () => {
+    const note = ta.value.trim() || null
+    save.disabled = true
+    const { data: row } = await supabase.from('day_settings').select('id').eq('day', date).maybeSingle()
+    let error
+    if (row) {
+      ;({ error } = await supabase.from('day_settings').update({ note, updated_at: new Date().toISOString() }).eq('day', date))
+    } else {
+      const wd = new Date(date + 'T12:00:00Z').getUTCDay()
+      ;({ error } = await supabase.from('day_settings').insert({
+        day: date, note, kids_home: wd === 0 || wd === 6,
+        is_commute_day: false, gintas_away: false, guest_count: 0,
+      }))
+    }
+    if (error) { toast('Save failed', { error: true }); save.disabled = false; return }
+    toast(note ? 'Note saved' : 'Note cleared')
+    overlay.remove()
+    await loadAndRender()
+  })
+
+  sheet.append(head, ta, save)
+  overlay.appendChild(sheet)
+  document.body.appendChild(overlay)
+  requestAnimationFrame(() => ta.focus())
 }
 
 // Picker for "made something different" — pick a tracked recipe, or log a

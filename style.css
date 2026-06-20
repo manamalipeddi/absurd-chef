@@ -314,6 +314,7 @@ body {
   gap: 8px;
   padding: 8px 12px 4px;
 }
+.plan-actionbar--bottom { margin-top: 12px; padding-bottom: 28px; }
 .plan-roll-btn {
   flex: 1;
   min-width: 0;
@@ -498,6 +499,70 @@ body {
 }
 .day-card__discuss:active { opacity: 0.6; }
 
+/* Day-level note button (context strip) + note display */
+.day-card__notebtn {
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 3px 4px;
+  font-family: var(--font);
+  flex-shrink: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+.day-card__notebtn--on { color: var(--accent); }
+.day-card__notebtn:active { opacity: 0.6; }
+.day-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  background: #fffbeb;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+  font-family: var(--font);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.day-note__icon { font-size: 12px; flex-shrink: 0; }
+.day-note__text { font-size: 12px; color: #92400e; line-height: 1.4; }
+
+/* Slot override swap icon */
+.day-slot__swap {
+  font-size: 12px;
+  line-height: 1;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+  flex-shrink: 0;
+  opacity: 0.55;
+  -webkit-tap-highlight-color: transparent;
+}
+.day-slot__swap:active { opacity: 1; }
+
+/* Note editor sheet */
+.note-sheet { padding-bottom: calc(12px + var(--safe-bottom)); }
+.note-sheet__input {
+  margin: 12px 16px;
+  min-height: 120px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  resize: vertical;
+}
+.note-sheet__input:focus { outline: none; border-color: var(--primary); }
+.note-sheet__save { width: calc(100% - 32px); margin: 0 16px; }
+
 /* Struck-through planned recipe when something different was made */
 .day-slot__name--struck { text-decoration: line-through; color: var(--text-muted); }
 
@@ -588,7 +653,9 @@ body {
   width: 100%;
   max-width: 480px;
   margin: 0 auto;
-  max-height: 65vh;
+  /* dvh tracks the visible viewport so the sheet (and its list) shrink to fit
+     above the on-screen keyboard instead of being crushed to ~3 rows. */
+  max-height: 88dvh;
   display: flex;
   flex-direction: column;
   padding-bottom: env(safe-area-inset-bottom, 0px);
@@ -597,7 +664,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 16px 10px;
+  padding: 10px 16px 6px;   /* compact chrome — yields more room to the list */
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -620,7 +687,7 @@ body {
   justify-content: center;
 }
 .picker-search {
-  margin: 10px 12px;
+  margin: 8px 12px;
   flex-shrink: 0;
   padding: 9px 12px;
   border: 1px solid var(--border);
@@ -634,7 +701,9 @@ body {
 .picker-search::placeholder { color: var(--text-muted); }
 .picker-list {
   flex: 1;
+  min-height: 0;            /* allow the list to shrink & scroll, not the sheet */
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   padding: 0 0 8px;
 }
 .picker-row {

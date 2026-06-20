@@ -424,7 +424,7 @@ async function toolGetSpecialDays(input: Record<string, unknown>, db: DB) {
   // / guest days (with resolved known-guest allergies) for this window.
   const { data } = await db.from('day_settings').select('*').gte('day', start).lte('day', end).order('day')
   const rows = (data || []).filter((r: Record<string, unknown>) =>
-    r.kids_home || r.gintas_away || ((r.guest_count as number) || 0) > 0)
+    r.kids_home || r.gintas_away || ((r.guest_count as number) || 0) > 0 || r.note)
 
   const allGuestIds: string[] = [...new Set(
     rows.flatMap((r: Record<string, unknown>) => (r.guest_family_member_ids as string[] | null) || [])
@@ -447,6 +447,7 @@ async function toolGetSpecialDays(input: Record<string, unknown>, db: DB) {
       gintas_away: !!row.gintas_away,
       guest_count: (row.guest_count as number) || 0,
       guest_allergies: row.guest_allergies || [],
+      note: row.note || null,
       known_guests: ((row.guest_family_member_ids as string[]) || [])
         .map(id => guestMemberMap[id])
         .filter(Boolean),
