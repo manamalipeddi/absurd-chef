@@ -256,6 +256,11 @@ function buildContent() {
   if (layers?.morning_of?.length)    wrap.appendChild(buildLayerList('☀️ Morning of',    layers.morning_of))
   if (layers?.when_cooking?.length)  wrap.appendChild(buildLayerList('🍳 When cooking',  layers.when_cooking))
 
+  // Original instructions, verbatim — only on the Original tab (variants have
+  // no separate original-instructions field). Collapsed by default.
+  if (isOriginal && recipe.original_instructions?.trim())
+    wrap.appendChild(buildOriginalInstructions(recipe.original_instructions))
+
   wrap.appendChild(buildHacks(layers?.hacks_and_shortcuts || []))
 
   if (!isOriginal && av?.notes) wrap.appendChild(buildVariantNotes(av.notes))
@@ -423,6 +428,30 @@ function buildVariantNotes(notes) {
   el.className = 'rd-section rd-variant-notes'
   el.innerHTML = `<span class="rd-section__title">About this version</span><p>${notes}</p>`
   return el
+}
+
+// Collapsed-by-default reference: the raw source text, shown verbatim.
+function buildOriginalInstructions(text) {
+  const section = document.createElement('div')
+  section.className = 'rd-section rd-orig'
+
+  const toggle = document.createElement('button')
+  toggle.className = 'rd-orig__toggle'
+  toggle.setAttribute('aria-expanded', 'false')
+  toggle.innerHTML = `<span class="rd-orig__chev">▸</span> Original instructions (as written)`
+
+  const body = document.createElement('pre')
+  body.className = 'rd-orig__body rd-orig__body--hidden'
+  body.textContent = text   // verbatim, no formatting/AI
+
+  toggle.addEventListener('click', () => {
+    const open = body.classList.toggle('rd-orig__body--hidden') === false
+    toggle.setAttribute('aria-expanded', String(open))
+    toggle.querySelector('.rd-orig__chev').textContent = open ? '▾' : '▸'
+  })
+
+  section.append(toggle, body)
+  return section
 }
 
 // ── Hacks and shortcuts ───────────────────────────────────
@@ -819,16 +848,40 @@ async function runScaleRecipe(target) {
 }
 
 async function saveScaleAsVariant(label) {
-  const r          = scaleResult
+  const r = scaleResult
+
+  // Regenerate the cooking layers from the SCALED ingredients so the steps
+  // show the correct scaled quantities (not the parent's un-scaled amounts).
+  // Falls back to the scaling-notes overlay if regeneration fails.
   const isOriginal = activeTabId === 'original'
   const av         = variants.find(v => v.id === activeTabId) || null
-  const layers     = isOriginal ? recipe : av
-  const baseWC     = layers?.when_cooking || []
-  const withChanges = r.when_cooking_changes?.length
-    ? [...baseWC, '─── Scaling notes ───', ...r.when_cooking_changes] : baseWC
+  const baseLayers = isOriginal ? recipe : av
+  let nightBefore = baseLayers?.night_before || []
+  let morningOf   = baseLayers?.morning_of   || []
+  let whenCooking = r.when_cooking_changes?.length
+    ? [...(baseLayers?.when_cooking || []), '─── Scaling notes ───', ...r.when_cooking_changes]
+    : (baseLayers?.when_cooking || [])
+  try {
+    const res = await fetch(`${FUNCTIONS_URL}/recipe-agent`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'generate_adhd_layers',
+        recipe_name: `${recipe.name} (${label || 'scaled'})`,
+        original_instructions: recipe.original_instructions || '',
+        ingredients: r.ingredients.map(i => ({ name: i.name, quantity: i.quantity, unit: i.unit, notes: i.notes })),
+      }),
+    })
+    const gen = await res.json()
+    if (!gen.error && Array.isArray(gen.when_cooking)) {
+      nightBefore = gen.night_before || []
+      morningOf   = gen.morning_of   || []
+      whenCooking = gen.when_cooking
+    }
+  } catch { /* keep fallback layers */ }
+
   const { data: nv, error } = await supabase.from('recipe_variants')
-    .insert({ recipe_id: recipe.id, label, serves: r.serves, night_before: layers?.night_before || [],
-      morning_of: layers?.morning_of || [], when_cooking: withChanges,
+    .insert({ recipe_id: recipe.id, label, serves: r.serves, night_before: nightBefore,
+      morning_of: morningOf, when_cooking: whenCooking,
       notes: r.scaling_notes, created_by: 'ai' }).select().single()
   if (error || !nv) { toast('Save failed', { error: true }); return }
   const varIngRows = r.ingredients.map((i, idx) => ({

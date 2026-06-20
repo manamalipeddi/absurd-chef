@@ -69,10 +69,11 @@ async function handleGenerateAdhdLayers({ recipe_name, original_instructions, in
     max_tokens: 2000,
     system: `You are creating ADHD-friendly cooking preparation layers for a family meal app.
 
-CRITICAL QUALITY RULE — exact quantities mandatory:
-BAD:  "Mix the dry spices the night before"
-GOOD: "In a small jar, mix: 1.5 tsp cumin, 1 tsp turmeric, 1 tsp coriander powder, ½ tsp chili powder, ½ tsp salt. Shake to combine. Set by the stove for tomorrow."
-Any step that involves measurable ingredients MUST include the exact amounts from the ingredient list. Never use vague descriptions like "the spices" or "a handful of".
+CRITICAL QUALITY RULE — exact quantities mandatory in ALL THREE step arrays (night_before, morning_of, AND when_cooking — not just the prep layers):
+BAD:  "Mix the dry spices the night before" / "Add the yoghurt and top with berries"
+GOOD: "In a small jar, mix: 1.5 tsp cumin, 1 tsp turmeric, 1 tsp coriander powder, ½ tsp chili powder, ½ tsp salt. Shake to combine." / "Add 200g yoghurt to a bowl, top with a handful of berries (about 100g)"
+Any step that involves measurable ingredients MUST include the exact amounts from the ingredient list above — in when_cooking just as strictly as in night_before/morning_of. Never use vague descriptions like "the spices" or "a handful of" when a number exists.
+EXCEPTION — do not invent precision the source lacks: if an ingredient has no quantity entered in the list, refer to it plainly (e.g. "add the yoghurt") rather than fabricating a number.
 
 Tone: plain, direct, reassuring. No fluff or motivational filler.
 Return ONLY valid JSON, no markdown.`,
@@ -90,7 +91,7 @@ Return JSON:
 {
   "night_before": ["step with exact quantities"],
   "morning_of": ["step with exact quantities"],
-  "when_cooking": ["step 1", "step 2", "step 3"],
+  "when_cooking": ["step with exact quantities", "step with exact quantities"],
   "hacks_and_shortcuts": [
     "specific shortcut or tip for this exact dish"
   ]
@@ -202,7 +203,8 @@ async function handleSuggestEasier({ recipe_name, current_serves, ingredients, i
   const msg = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 1800,
-    system: `Meal planning assistant creating an easier cooking variant. Return ONLY valid JSON, no markdown. Family has a hard fish/seafood allergy.`,
+    system: `Meal planning assistant creating an easier cooking variant. Return ONLY valid JSON, no markdown. Family has a hard fish/seafood allergy.
+EXACT QUANTITIES: in night_before, morning_of AND when_cooking, every step that uses a measurable ingredient must state the real amount from the INGREDIENTS list (e.g. "stir in 400g chopped tomatoes", not "add the tomatoes"). Apply this to when_cooking just as strictly as the prep layers. Do not invent precision for ingredients that have no quantity given.`,
     messages: [{
       role: 'user',
       content: `Recipe: "${recipe_name}" (serves ${current_serves})\n\nINGREDIENTS:\n${ingText}\n\nINSTRUCTIONS:\n${instrText}\n\nPANTRY: ${pantry}\n\nSITUATION: ${constraint}\n\nReturn JSON:\n{\n  "label": "short variant name",\n  "serves": ${current_serves},\n  "night_before": [],\n  "morning_of": [],\n  "when_cooking": ["step"],\n  "hacks_and_shortcuts": ["specific tip for this easier version"],\n  "notes": "1-2 sentences on the tradeoff",\n  "ingredient_changes": [\n    {"action": "substitute", "from": "old name", "to": "new name", "quantity": null, "unit": null, "notes": null},\n    {"action": "remove", "name": "ingredient to drop"}\n  ]\n}`,

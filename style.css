@@ -1032,8 +1032,41 @@ body {
   letter-spacing: 0.6px;
   text-transform: uppercase;
   color: var(--text-muted);
-  margin-bottom: 10px;
+  margin-bottom: 6px;
 }
+
+/* Original instructions — collapsed reference */
+.rd-orig__toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  padding: 6px 0;
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-align: left;
+  -webkit-tap-highlight-color: transparent;
+}
+.rd-orig__chev { font-size: 11px; line-height: 1; }
+.rd-orig__body {
+  margin-top: 6px;
+  padding: 12px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.rd-orig__body--hidden { display: none; }
 
 /* Ease descriptor */
 .rd-ease { padding-bottom: 16px; }
@@ -1055,53 +1088,53 @@ body {
 .rd-ease-input:focus { outline: none; border-color: var(--primary); }
 .rd-ease-input::placeholder { color: var(--text-muted); }
 
-/* Ingredients */
+/* Ingredients — compact: one row per item, notes inline/muted */
 .rd-ing-list {
-  padding-bottom: 16px;
+  padding-bottom: 8px;
 }
 .rd-ing-empty {
   font-size: 14px;
   color: var(--text-muted);
   font-style: italic;
-  padding-bottom: 4px;
+  padding-bottom: 2px;
 }
 .rd-ing-row {
   display: flex;
   align-items: baseline;
-  gap: 5px;
-  padding: 6px 0;
-  border-bottom: 1px solid var(--border);
+  gap: 6px;
+  padding: 3px 0;
+  border-bottom: none;
 }
-.rd-ing-row:last-child { border-bottom: none; }
 .rd-ing-row--struck .rd-ing-qty,
 .rd-ing-row--struck .rd-ing-name { text-decoration: line-through; color: var(--text-muted); }
 .rd-ing-qty {
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--primary);
   white-space: nowrap;
   flex-shrink: 0;
-  min-width: 32px;
+  text-align: right;
+  min-width: 30px;
 }
 .rd-ing-name {
   font-size: 14px;
   color: var(--text);
   flex: 1;
-  line-height: 1.4;
+  line-height: 1.3;
 }
 .rd-ing-notes {
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: 12px;
 }
 .rd-ing-toggle {
   flex-shrink: 0;
-  width: 28px;
-  height: 28px;
+  width: 22px;
+  height: 22px;
   border: 1px solid var(--border);
   border-radius: 50%;
   background: none;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 10px;
   color: var(--text-muted);
   display: flex;
   align-items: center;
