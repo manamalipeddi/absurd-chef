@@ -1,4 +1,4 @@
-import { supabase, FUNCTIONS_URL, toast, navigateTo, navState } from '../app.js'
+import { supabase, FUNCTIONS_URL, toast, navigateTo, navState, openModal, closeModal } from '../app.js'
 
 // ── Slot config ───────────────────────────────────────────
 const MEAL_SLOTS = [
@@ -582,8 +582,8 @@ function showPicker(date, slotType) {
   head.innerHTML = `
     <span class="picker-title">${isActual ? 'What did you have' : 'Choose'} — ${label}</span>
     <button class="picker-close" aria-label="Close">✕</button>`
-  head.querySelector('.picker-close').addEventListener('click', () => overlay.remove())
-  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove() })
+  head.querySelector('.picker-close').addEventListener('click', () => closeModal(overlay))
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(overlay) })
 
   const search = document.createElement('input')
   search.type = 'text'; search.className = 'picker-search'; search.placeholder = 'Search recipes…'
@@ -604,7 +604,7 @@ function showPicker(date, slotType) {
     list.innerHTML = ''
     for (const r of hits) {
       list.appendChild(pickRow(r.emoji || slotEmoji(slotType), r.name, async () => {
-        overlay.remove(); await applyPick(date, slotType, r.id, isActual, null)
+        closeModal(overlay); await applyPick(date, slotType, r.id, isActual, null)
       }))
     }
     // "Other" is always present, regardless of search term or meal_type.
@@ -626,7 +626,7 @@ function showPicker(date, slotType) {
     ta.placeholder = 'e.g. Picnic lunch in the park'
     const save = document.createElement('button'); save.className = 'su-btn-primary picker-other__save'; save.textContent = 'Save'
     save.addEventListener('click', async () => {
-      overlay.remove(); await applyPick(date, slotType, otherRecipe.id, isActual, ta.value.trim() || null)
+      closeModal(overlay); await applyPick(date, slotType, otherRecipe.id, isActual, ta.value.trim() || null)
     })
     wrap.append(lblEl, ta, save)
     list.appendChild(wrap)
@@ -640,11 +640,12 @@ function showPicker(date, slotType) {
   const clearBtn = document.createElement('button')
   clearBtn.className = 'picker-clear'
   clearBtn.textContent = '✕ Clear this slot (no meal planned)'
-  clearBtn.addEventListener('click', async () => { overlay.remove(); await clearSlot(date, slotType) })
+  clearBtn.addEventListener('click', async () => { closeModal(overlay); await clearSlot(date, slotType) })
 
   sheet.append(head, search, list, clearBtn)
   overlay.appendChild(sheet)
   document.body.appendChild(overlay)
+  openModal(overlay, () => overlay.remove())
   requestAnimationFrame(() => search.focus())
 }
 
@@ -694,8 +695,8 @@ function openNoteEditor(date, existing) {
   const sheet = document.createElement('div'); sheet.className = 'picker-sheet note-sheet'
   const head = document.createElement('div'); head.className = 'picker-header'
   head.innerHTML = `<span class="picker-title">Note — ${fmtDate(date)}</span><button class="picker-close">✕</button>`
-  head.querySelector('.picker-close').addEventListener('click', () => overlay.remove())
-  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove() })
+  head.querySelector('.picker-close').addEventListener('click', () => closeModal(overlay))
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(overlay) })
 
   const ta = document.createElement('textarea')
   ta.className = 'note-sheet__input'
@@ -721,13 +722,14 @@ function openNoteEditor(date, existing) {
     }
     if (error) { toast('Save failed', { error: true }); save.disabled = false; return }
     toast(note ? 'Note saved' : 'Note cleared')
-    overlay.remove()
+    closeModal(overlay)
     await loadAndRender()
   })
 
   sheet.append(head, ta, save)
   overlay.appendChild(sheet)
   document.body.appendChild(overlay)
+  openModal(overlay, () => overlay.remove())
   requestAnimationFrame(() => ta.focus())
 }
 

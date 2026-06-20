@@ -12,7 +12,7 @@ export function init(el) { screenEl = el }
 export async function activate({ headerLeft, headerRight }) {
   headerLeft.innerHTML = backBtn('mi-back')
   headerRight.innerHTML = ''
-  document.getElementById('mi-back').addEventListener('click', () => navigateTo('setup'))
+  document.getElementById('mi-back').addEventListener('click', () => history.back())
   editId = null
   await load()
   renderList()

@@ -43,7 +43,7 @@ export async function activate({ headerLeft, headerRight }) {
     </button>`
   document.getElementById('btn-ar-back').addEventListener('click', () => {
     if (mode === 'edit') navState.recipeId = editRecipeId
-    navigateTo(backTarget)
+    history.back()
   })
 
   const titleEl = document.getElementById('screen-title')
@@ -517,7 +517,8 @@ async function handleSave(form) {
     }
 
     navState.recipeId = recipeId
-    navigateTo('recipe-detail')
+    // Replace the form in history so Back doesn't reopen the editor.
+    navigateTo('recipe-detail', { replace: true })
   } catch (e) {
     console.error(e)
     toast('Save failed — check your connection', { error: true })

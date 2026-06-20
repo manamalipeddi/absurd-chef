@@ -27,7 +27,7 @@ export async function activate({ headerLeft, headerRight }) {
       </svg>
     </button>`
   // Context-aware back: return to wherever we came from (Plan or Recipes).
-  document.getElementById('btn-back').addEventListener('click', () => navigateTo(navState.recipeFrom || 'recipes'))
+  document.getElementById('btn-back').addEventListener('click', () => history.back())
 
   const recipeId = navState.recipeId
   if (!recipeId) return

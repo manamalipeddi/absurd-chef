@@ -14,7 +14,7 @@ export function init(el) { screenEl = el }
 export async function activate({ headerLeft, headerRight }) {
   headerLeft.innerHTML = backBtn('swt-back')
   headerRight.innerHTML = ''
-  document.getElementById('swt-back').addEventListener('click', () => navigateTo('setup'))
+  document.getElementById('swt-back').addEventListener('click', () => history.back())
   editId = null
   await load()
   renderList()

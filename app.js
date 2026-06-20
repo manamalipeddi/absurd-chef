@@ -36,24 +36,23 @@ const headerLeft  = document.getElementById('header-left')
 const headerRight = document.getElementById('header-right')
 const navBtns     = document.querySelectorAll('.nav-btn')
 
-// ── Navigation ───────────────────────────────────────────
+// ── Navigation (history-aware) ───────────────────────────
+// Every screen change pushes a real browser-history entry and every modal
+// pushes one too, so the OS/browser Back gesture steps back through the app's
+// own navigation (one level at a time) instead of exiting the PWA.
 let currentScreen = 'plan'
+const modalStack = []      // { el, onClose } — topmost last
+let suppressPop = false     // set when WE call history.back() ourselves
 
-export async function navigateTo(id) {
+// Swap the visible screen + (lazy) load + activate. No history side-effects.
+async function applyScreen(id) {
   if (id === currentScreen && loaded.has(id)) {
-    // Already here — just re-activate (refresh data)
     const mod = screenModules[id]
     if (mod?.activate) await mod.activate({ headerLeft, headerRight })
     return
   }
-
-  // Let the current screen veto navigation (e.g. unsaved changes).
-  const leaving = screenModules[currentScreen]
-  if (leaving?.canLeave && !leaving.canLeave()) return
-
-  document.getElementById(`screen-${currentScreen}`).classList.remove('screen--active')
-  document.getElementById(`screen-${id}`).classList.add('screen--active')
-  // Only flip nav highlight for top-level screens that have a nav button
+  document.getElementById(`screen-${currentScreen}`)?.classList.remove('screen--active')
+  document.getElementById(`screen-${id}`)?.classList.add('screen--active')
   if (document.querySelector(`.nav-btn[data-screen="${id}"]`)) {
     navBtns.forEach(b => b.classList.toggle('nav-btn--active', b.dataset.screen === id))
   }
@@ -67,17 +66,62 @@ export async function navigateTo(id) {
     try {
       const mod = await import(SCREENS[id].module)
       screenModules[id] = mod
-      // init: one-time DOM setup (create elements, register listeners)
       if (mod.init) await mod.init(document.getElementById(`screen-${id}`))
     } catch (e) {
       console.warn(`Screen ${id} failed to load`, e)
     }
   }
-
-  // activate: called every visit — sets header buttons + refreshes data
   const mod = screenModules[id]
   if (mod?.activate) await mod.activate({ headerLeft, headerRight })
 }
+
+// Forward navigation (user action): push a history entry, then show the screen.
+// { replace:true } swaps the current entry instead of pushing — used when a
+// flow shouldn't be re-reachable by Back (e.g. after saving from a form).
+export async function navigateTo(id, { replace = false } = {}) {
+  if (id === currentScreen && loaded.has(id) && !modalStack.length) {
+    await applyScreen(id)   // re-activate / refresh in place
+    return
+  }
+  const leaving = screenModules[currentScreen]
+  if (leaving?.canLeave && !leaving.canLeave()) return
+  history[replace ? 'replaceState' : 'pushState']({ screen: id }, '')
+  await applyScreen(id)
+}
+
+// Modal/picker/bottom-sheet history integration. Caller appends `el` to the DOM
+// and passes how to dismiss it; opening pushes a history entry so Back closes
+// just the modal. Manual closes must go through closeModal() to stay balanced.
+export function openModal(el, onClose) {
+  modalStack.push({ el, onClose })
+  history.pushState({ modal: true }, '')
+}
+export function closeModal(el) {
+  const idx = modalStack.findIndex(m => m.el === el)
+  if (idx === -1) { el.remove(); return }
+  modalStack.splice(idx)           // drop this entry and any above it
+  el.remove()
+  suppressPop = true               // balance the pushed entry without re-closing
+  history.back()
+}
+
+window.addEventListener('popstate', async (e) => {
+  if (suppressPop) { suppressPop = false; return }
+  // 1. A modal is open → Back closes just the top modal.
+  if (modalStack.length) {
+    const m = modalStack.pop()
+    if (m.onClose) m.onClose(); else m.el.remove()
+    return
+  }
+  // 2. Respect a screen's unsaved-changes veto (re-push to cancel the Back).
+  const leaving = screenModules[currentScreen]
+  if (leaving?.canLeave && !leaving.canLeave()) {
+    history.pushState({ screen: currentScreen }, '')
+    return
+  }
+  // 3. Step back to the previous screen.
+  await applyScreen((e.state && e.state.screen) || 'plan')
+})
 
 navBtns.forEach(btn =>
   btn.addEventListener('click', () => navigateTo(btn.dataset.screen))
@@ -98,8 +142,9 @@ export function toast(msg, { error = false, duration = 3000 } = {}) {
 
 // ── Boot ──────────────────────────────────────────────────
 async function boot() {
-  // Load initial screen
-  await navigateTo('plan')
+  // Seed the initial history entry, then show the first screen without pushing.
+  history.replaceState({ screen: 'plan' }, '')
+  await applyScreen('plan')
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(() => {})

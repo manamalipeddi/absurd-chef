@@ -1,4 +1,4 @@
-import { supabase, FUNCTIONS_URL, navigateTo, toast } from '../app.js'
+import { supabase, FUNCTIONS_URL, navigateTo, toast, openModal, closeModal } from '../app.js'
 
 let screenEl = null
 let rows = []            // 14 day objects { date, dow, ds }
@@ -34,7 +34,7 @@ export function init(el) { screenEl = el }
 export async function activate({ headerLeft, headerRight }) {
   headerLeft.innerHTML = backBtn('ds-back')
   headerRight.innerHTML = ''
-  document.getElementById('ds-back').addEventListener('click', () => navigateTo('setup'))
+  document.getElementById('ds-back').addEventListener('click', () => history.back())
   paint = { is_commute_day: null, kids_home: null, gintas_away: null, is_vacation: null, guests: null }
   dirty = new Set()
   await load()
@@ -228,8 +228,8 @@ function openGuestFork(row) {
   const sheet = document.createElement('div'); sheet.className = 'picker-sheet ds-fork'
   const head = document.createElement('div'); head.className = 'picker-header'
   head.innerHTML = `<span class="picker-title">Guests — ${fmtDate(row.date)}</span><button class="picker-close">✕</button>`
-  head.querySelector('.picker-close').addEventListener('click', () => overlay.remove())
-  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove() })
+  head.querySelector('.picker-close').addEventListener('click', () => closeModal(overlay))
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(overlay) })
 
   const body = document.createElement('div'); body.className = 'ds-fork__body'
 
@@ -295,13 +295,14 @@ function openGuestFork(row) {
     row.ds.guest_allergies = allergies
     paint.guests = { guest_count: count, guest_family_member_ids: [...ids], guest_allergies: JSON.parse(JSON.stringify(allergies)) }
     dirty.add(row.date)
-    overlay.remove()
+    closeModal(overlay)
     render()
   })
 
   sheet.append(head, body, saveBtn)
   overlay.appendChild(sheet)
   document.body.appendChild(overlay)
+  openModal(overlay, () => overlay.remove())
 }
 
 function allergyRow(data) {

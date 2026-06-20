@@ -14,7 +14,7 @@ export function init(el) { screenEl = el }
 export async function activate({ headerLeft, headerRight }) {
   headerLeft.innerHTML = backBtn('spm-back')
   headerRight.innerHTML = ''
-  document.getElementById('spm-back').addEventListener('click', () => navigateTo('setup'))
+  document.getElementById('spm-back').addEventListener('click', () => history.back())
   viewMode = 'display'
   parsedRows = null
   await renderDisplay()

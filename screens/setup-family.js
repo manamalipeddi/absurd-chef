@@ -9,7 +9,7 @@ export function init(el) { screenEl = el }
 export async function activate({ headerLeft, headerRight }) {
   headerLeft.innerHTML = backBtn('sf-back')
   headerRight.innerHTML = ''
-  document.getElementById('sf-back').addEventListener('click', () => navigateTo('setup'))
+  document.getElementById('sf-back').addEventListener('click', () => history.back())
   editId = null
   await load()
   renderList()
