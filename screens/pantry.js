@@ -634,25 +634,32 @@ async function loadGrocery() {
 
   const [ingRes, varIngRes] = await Promise.all([
     uniqueRecipeIds.length
-      ? supabase.from('recipe_ingredients').select('name, recipe_id').in('recipe_id', uniqueRecipeIds)
+      ? supabase.from('recipe_ingredients').select('name, recipe_id, master_ingredient_id').in('recipe_id', uniqueRecipeIds)
       : Promise.resolve({ data: [] }),
     uniqueVariantIds.length
-      ? supabase.from('recipe_variant_ingredients').select('name, variant_id').in('variant_id', uniqueVariantIds)
+      ? supabase.from('recipe_variant_ingredients').select('name, variant_id, master_ingredient_id').in('variant_id', uniqueVariantIds)
       : Promise.resolve({ data: [] }),
   ])
 
-  // Build map: normalised ingredient name → { displayName, usages[] }
+  // Inventory indexed by master_ingredient_id for exact, reliable matching.
+  const invByMaster = new Map()
+  for (const item of allInventory)
+    if (item.master_ingredient_id && !invByMaster.has(item.master_ingredient_id))
+      invByMaster.set(item.master_ingredient_id, item)
+
+  // Build map: normalised ingredient name → { displayName, usages[], masterId }
   const ingMap = {}
-  function addIngredient(rawName, ctx) {
+  function addIngredient(rawName, ctx, masterId) {
     const key = rawName.toLowerCase().trim()
-    if (!ingMap[key]) ingMap[key] = { displayName: rawName, usages: [] }
+    if (!ingMap[key]) ingMap[key] = { displayName: rawName, usages: [], masterId: masterId || null }
+    if (masterId && !ingMap[key].masterId) ingMap[key].masterId = masterId
     if (!ingMap[key].usages.some(u => u.recipe_id === ctx.recipe_id && u.date === ctx.date))
       ingMap[key].usages.push(ctx)
   }
   for (const ing of ingRes.data || [])
-    noVariantCtx.filter(c => c.recipe_id === ing.recipe_id).forEach(c => addIngredient(ing.name, c))
+    noVariantCtx.filter(c => c.recipe_id === ing.recipe_id).forEach(c => addIngredient(ing.name, c, ing.master_ingredient_id))
   for (const ing of varIngRes.data || [])
-    variantCtx.filter(c => c.variant_id === ing.variant_id).forEach(c => addIngredient(ing.name, c))
+    variantCtx.filter(c => c.variant_id === ing.variant_id).forEach(c => addIngredient(ing.name, c, ing.master_ingredient_id))
 
   // Match each ingredient against inventory; build combined lists
   const annotatedOOS = outOfStock.map(i => ({ ...i, neededFor: [] }))
@@ -660,7 +667,8 @@ async function loadGrocery() {
   const needed       = []
 
   for (const [key, data] of Object.entries(ingMap)) {
-    const match = findInventoryMatch(key, allInventory)
+    // Prefer the reliable master_ingredient_id link; fall back to fuzzy name match.
+    const match = (data.masterId && invByMaster.get(data.masterId)) || findInventoryMatch(key, allInventory)
     if (match && match.quantity != null && Number(match.quantity) > 0) continue  // covered
     if (match && outOfStockById.has(match.id)) {
       // Appears in both — annotate the OOS row instead of duplicating
