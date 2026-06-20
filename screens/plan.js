@@ -23,6 +23,7 @@ let generating      = false
 let householdCount  = 0
 let currentStartDate = null  // start of the currently displayed plan window
 let lastRenderDay   = null  // todayStr() at last render — detects day rollover
+let otherRecipe     = null  // the "Other" placeholder recipe (always pinned in picker)
 
 // ── Date helpers ──────────────────────────────────────────
 function addDays(s, n) {
@@ -115,8 +116,8 @@ async function loadAndRender() {
   const planSelect =
     'plan_date, meal_type, recipe_id, slot_locked, is_commute_day, is_holiday, is_preschool_closed, guest_count, ' +
     'notes, actually_made, actual_recipe_id, actual_notes, ' +
-    'recipes!meal_plans_recipe_id_fkey(id, name, emoji, serves_base), ' +
-    'actual_recipe:recipes!meal_plans_actual_recipe_id_fkey(id, name, emoji)'
+    'recipes!meal_plans_recipe_id_fkey(id, name, emoji, serves_base, is_placeholder), ' +
+    'actual_recipe:recipes!meal_plans_actual_recipe_id_fkey(id, name, emoji, is_placeholder)'
 
   const [planRes, dsRes, recipeRes, householdRes, schedLogRes, histRes] = await Promise.all([
     supabase
@@ -131,7 +132,7 @@ async function loadAndRender() {
       .gte('day', histFrom).lte('day', endDate),
     supabase
       .from('recipes')
-      .select('id, name, meal_type, emoji')
+      .select('id, name, meal_type, emoji, is_placeholder')
       .eq('active', true)
       .order('name'),
     supabase
@@ -155,6 +156,7 @@ async function loadAndRender() {
 
   householdCount = householdRes.count ?? 0
   allRecipes = recipeRes.data || []
+  otherRecipe = allRecipes.find(r => r.is_placeholder) || null
 
   const dsRows = dsRes.data || []
   const noteMap = {}
@@ -363,54 +365,31 @@ function buildDayCard(day, opts = {}) {
   slots.forEach(slot => {
     const entry = day.slots[slot.type]
     card.appendChild(buildSlotRow(day.date, slot, entry, day.meta, isPast))
-    if (entry?.notes) card.appendChild(buildSlotNote(entry.notes))
-    // Actual-outcome logging: past dinner (History) OR any filled slot today.
-    const showOutcome = (opts.history && slot.type === 'dinner') || (isToday && entry?.recipe_id)
-    if (showOutcome) {
-      const oc = buildSlotOutcome(day.date, slot.type, entry)
-      if (oc) card.appendChild(oc)
-    }
+    if (entry?.notes && !(entry.recipes && entry.recipes.is_placeholder)) card.appendChild(buildSlotNote(entry.notes))
   })
 
   return card
 }
 
-// Per-slot actual-outcome row: confirm "made as planned", correct it, or show
-// what was actually eaten once logged. Used on History dinners and today's slots.
-function buildSlotOutcome(date, mealType, entry) {
+// Resolve what to show for a slot: the actual outcome if logged different,
+// otherwise the planned recipe. "Other" placeholder renders its free text.
+// Returns null when there's nothing to show. recipeIdForNav is null for Other.
+function slotDisplay(entry) {
   if (!entry) return null
-  const footer = document.createElement('div')
-  footer.className = 'day-outcome'
-  const am = entry.actually_made
-
-  if (am === true) {
-    const tag = document.createElement('span')
-    tag.className = 'day-outcome__confirmed'
-    tag.textContent = '✅ Made as planned'
-    footer.appendChild(tag)
-  } else if (am === false) {
-    const label = document.createElement('span')
-    label.className = 'day-outcome__label'
-    label.textContent = 'Actually made:'
-    const actual = document.createElement('span')
-    actual.className = 'day-outcome__actual'
-    actual.textContent = entry.actual_recipe?.name || entry.actual_notes || 'Something different'
-    footer.append(label, actual)
-  } else {
-    const made = document.createElement('button')
-    made.className = 'day-outcome__btn'
-    made.textContent = '✅ Made as planned'
-    made.addEventListener('click', () => logMadeAsPlanned(date, mealType, entry.recipe_id))
-
-    const diff = document.createElement('button')
-    diff.className = 'day-outcome__btn day-outcome__btn--alt'
-    diff.textContent = '🔄 Made something different'
-    diff.addEventListener('click', () => showOutcomePicker(date, mealType))
-
-    if (entry.recipe_id) footer.appendChild(made)
-    footer.appendChild(diff)
+  if (entry.actually_made === false) {
+    const ar = entry.actual_recipe
+    if (entry.actual_recipe_id && ar) {
+      if (ar.is_placeholder) return { name: entry.actual_notes || 'Other', nav: null, actual: true }
+      return { name: ar.name, nav: entry.actual_recipe_id, actual: true }
+    }
+    if (entry.actual_notes) return { name: entry.actual_notes, nav: null, actual: true }
   }
-  return footer
+  const r = entry.recipes
+  if (entry.recipe_id && r) {
+    if (r.is_placeholder) return { name: entry.notes || 'Other', nav: null, actual: false }
+    return { name: r.name, nav: entry.recipe_id, actual: false }
+  }
+  return null
 }
 
 // Day-level free-form note display (tap to edit).
@@ -483,16 +462,14 @@ function buildSlotRow(date, slot, entry, dayMeta, isPast = false) {
   const val = document.createElement('div')
   val.className = 'day-slot__value'
 
-  const hasRecipe = entry?.recipe_id && entry.recipes
-  if (hasRecipe) {
+  const disp = slotDisplay(entry)
+  if (disp) {
     const name = document.createElement('span')
     name.className = 'day-slot__name'
-    // Planned recipe is struck through when something different was made.
-    if (entry.actually_made === false) name.classList.add('day-slot__name--struck')
-    name.textContent = entry.recipes.name
+    name.textContent = disp.name
     val.appendChild(name)
 
-    if (!entry.slot_locked) {
+    if (entry.recipe_id && !entry.slot_locked && !disp.actual) {
       const ai = document.createElement('span')
       ai.className = 'day-slot__ai'
       ai.textContent = 'AI'
@@ -501,7 +478,7 @@ function buildSlotRow(date, slot, entry, dayMeta, isPast = false) {
 
     // Serving mismatch warning — only when there are guests that day
     const guestCount = dayMeta?.guestCount || 0
-    if (guestCount > 0) {
+    if (guestCount > 0 && entry.recipes && !entry.recipes.is_placeholder) {
       const serves = entry.recipes.serves_base
       const needed = householdCount + guestCount
       if (serves != null && serves < needed) {
@@ -513,31 +490,28 @@ function buildSlotRow(date, slot, entry, dayMeta, isPast = false) {
       }
     }
 
-    row.classList.add('day-slot--tap')
-    row.addEventListener('click', () => {
-      navState.recipeId = entry.recipe_id
-      navigateTo('recipe-detail')
-    })
-
-    // Override: a separate swap action to change what's planned for this slot
-    // (distinct from the name tap → Recipe Detail). Not on past/history rows.
-    if (!isPast) {
-      const swap = document.createElement('button')
-      swap.className = 'day-slot__swap'
-      swap.textContent = '🔄'
-      swap.title = 'Change this meal'
-      swap.addEventListener('click', (e) => { e.stopPropagation(); showPicker(date, slot.type) })
-      val.appendChild(swap)
+    // Name tap → Recipe Detail (only for a real, navigable recipe).
+    if (disp.nav) {
+      row.classList.add('day-slot--tap')
+      row.addEventListener('click', () => { navState.recipeId = disp.nav; navigateTo('recipe-detail') })
     }
+
+    // The single 🔁 action — present on every filled slot. Date decides intent:
+    // future = change the plan; today/past = log what actually happened.
+    const swap = document.createElement('button')
+    swap.className = 'day-slot__swap'
+    swap.textContent = '🔁'
+    swap.title = 'Change / log this meal'
+    swap.addEventListener('click', (e) => { e.stopPropagation(); showPicker(date, slot.type) })
+    val.appendChild(swap)
   } else {
-    // Leave unchosen slots blank (no dash) to keep the view uncluttered.
     const empty = document.createElement('span')
     empty.className = 'day-slot__empty'
     empty.textContent = ''
     val.appendChild(empty)
 
-    // Past days are read-only — no picker for empty slots.
-    if (!isPast) {
+    // Empty slots are tappable today/future (plan or log); past empties stay read-only.
+    if (date >= todayStr()) {
       row.classList.add('day-slot--tap')
       row.addEventListener('click', () => showPicker(date, slot.type))
     }
@@ -565,54 +539,71 @@ function buildEmpty() {
   return wrap
 }
 
-// ── Recipe picker ─────────────────────────────────────────
+// ── Recipe picker (date-aware) ────────────────────────────
+// Future date → change the PLAN (recipe_id + slot_locked). Today/past → LOG
+// what actually happened (actual_recipe_id + actually_made = false). "Other"
+// is always pinned and leads to a free-text entry.
 function showPicker(date, slotType) {
+  const isActual = date <= todayStr()   // today or past = logging reality
   const category = RECIPE_CATEGORY[slotType]
-  const pool     = allRecipes.filter(r => r.meal_type === category)
+  const pool     = allRecipes.filter(r => r.meal_type === category && !r.is_placeholder)
   const label    = MEAL_SLOTS.find(s => s.type === slotType)?.label || slotType
 
-  const overlay = document.createElement('div')
-  overlay.className = 'picker-overlay'
-
-  const sheet = document.createElement('div')
-  sheet.className = 'picker-sheet'
-
-  const head = document.createElement('div')
-  head.className = 'picker-header'
+  const overlay = document.createElement('div'); overlay.className = 'picker-overlay'
+  const sheet = document.createElement('div'); sheet.className = 'picker-sheet'
+  const head = document.createElement('div'); head.className = 'picker-header'
   head.innerHTML = `
-    <span class="picker-title">Choose ${label}</span>
+    <span class="picker-title">${isActual ? 'What did you have' : 'Choose'} — ${label}</span>
     <button class="picker-close" aria-label="Close">✕</button>`
   head.querySelector('.picker-close').addEventListener('click', () => overlay.remove())
   overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove() })
 
   const search = document.createElement('input')
-  search.type = 'text'
-  search.className = 'picker-search'
-  search.placeholder = 'Search recipes…'
+  search.type = 'text'; search.className = 'picker-search'; search.placeholder = 'Search recipes…'
 
-  const list = document.createElement('div')
-  list.className = 'picker-list'
+  const list = document.createElement('div'); list.className = 'picker-list'
+
+  function pickRow(emoji, name, onClick, cls) {
+    const row = document.createElement('button')
+    row.className = 'picker-row' + (cls ? ' ' + cls : '')
+    row.innerHTML = `<span class="picker-row__emoji" aria-hidden="true">${emoji}</span><span class="picker-row__name">${name}</span>`
+    row.addEventListener('click', onClick)
+    return row
+  }
 
   function renderList(q) {
     const lq = q.toLowerCase()
     const hits = lq ? pool.filter(r => r.name.toLowerCase().includes(lq)) : pool
     list.innerHTML = ''
-    if (!hits.length) {
-      list.innerHTML = `<p class="picker-empty">No recipes found</p>`
-      return
-    }
     for (const r of hits) {
-      const row = document.createElement('button')
-      row.className = 'picker-row'
-      row.innerHTML = `
-        <span class="picker-row__emoji" aria-hidden="true">${r.emoji || slotEmoji(slotType)}</span>
-        <span class="picker-row__name">${r.name}</span>`
-      row.addEventListener('click', async () => {
-        overlay.remove()
-        await savePick(date, slotType, r.id)
-      })
-      list.appendChild(row)
+      list.appendChild(pickRow(r.emoji || slotEmoji(slotType), r.name, async () => {
+        overlay.remove(); await applyPick(date, slotType, r.id, isActual, null)
+      }))
     }
+    // "Other" is always present, regardless of search term or meal_type.
+    if (otherRecipe) {
+      list.appendChild(pickRow(otherRecipe.emoji || '❓', 'Other — something not in my recipes',
+        () => showOtherInput(), 'picker-row--other'))
+    }
+  }
+
+  // Free-text entry for "Other", in-modal (replaces the list).
+  function showOtherInput() {
+    list.innerHTML = ''
+    search.style.display = 'none'
+    const wrap = document.createElement('div'); wrap.className = 'picker-other'
+    const lbl = document.createElement('div'); lbl.className = 'su-label'
+    lbl.textContent = isActual ? 'What did you actually have?' : 'What are you planning?'
+    const lblEl = document.createElement('div'); lblEl.className = 'picker-other__label'; lblEl.textContent = lbl.textContent
+    const ta = document.createElement('input'); ta.type = 'text'; ta.className = 'picker-search'
+    ta.placeholder = 'e.g. Picnic lunch in the park'
+    const save = document.createElement('button'); save.className = 'su-btn-primary picker-other__save'; save.textContent = 'Save'
+    save.addEventListener('click', async () => {
+      overlay.remove(); await applyPick(date, slotType, otherRecipe.id, isActual, ta.value.trim() || null)
+    })
+    wrap.append(lblEl, ta, save)
+    list.appendChild(wrap)
+    requestAnimationFrame(() => ta.focus())
   }
 
   search.addEventListener('input', () => renderList(search.value))
@@ -624,48 +615,31 @@ function showPicker(date, slotType) {
   requestAnimationFrame(() => search.focus())
 }
 
-async function savePick(date, slotType, recipeId) {
-  // Manual pick has no AI reasoning — clear any stale notes from a prior pick.
-  const { error } = await supabase.from('meal_plans').upsert({
-    plan_date:   date,
-    meal_type:   slotType,
-    recipe_id:   recipeId,
-    slot_locked: true,
-    notes:       null,
-  }, { onConflict: 'plan_date,meal_type' })
-
+// Single save path for both plan changes and actual-outcome logging.
+async function applyPick(date, slotType, recipeId, isActual, otherText) {
+  let error
+  if (isActual) {
+    // Logging reality: actual_recipe_id (+ optional free text for "Other").
+    ;({ error } = await supabase.from('meal_plans').upsert({
+      plan_date: date, meal_type: slotType,
+      actually_made: false, actual_recipe_id: recipeId, actual_notes: otherText,
+    }, { onConflict: 'plan_date,meal_type' }))
+  } else {
+    // Changing the plan itself (future day): recipe_id + lock; reset any actuals.
+    ;({ error } = await supabase.from('meal_plans').upsert({
+      plan_date: date, meal_type: slotType,
+      recipe_id: recipeId, slot_locked: true, notes: otherText,
+      actually_made: null, actual_recipe_id: null, actual_notes: null,
+    }, { onConflict: 'plan_date,meal_type' }))
+    await supabase.from('plan_edits').insert({
+      plan_date: date, meal_type: slotType, new_recipe_id: recipeId,
+      edit_source: 'manual', instruction_text: 'Manual pick from recipe picker',
+    })
+  }
   if (error) { toast('Failed to save', { error: true }); return }
-
-  await supabase.from('plan_edits').insert({
-    plan_date:        date,
-    meal_type:        slotType,
-    new_recipe_id:    recipeId,
-    edit_source:      'manual',
-    instruction_text: 'Manual pick from recipe picker',
-  })
-
-  await loadAndRender()
-}
-
-// ── Actual-outcome logging ────────────────────────────────
-async function logMadeAsPlanned(date, mealType, plannedRecipeId) {
-  const { error } = await supabase.from('meal_plans')
-    .update({ actually_made: true, actual_recipe_id: null, actual_notes: null })
-    .eq('plan_date', date).eq('meal_type', mealType)
-  if (error) { toast('Failed to save', { error: true }); return }
-  // Keep recipe recency truthful for no-repeat.
-  if (plannedRecipeId) await supabase.from('recipes').update({ last_made: date }).eq('id', plannedRecipeId)
-  toast('Logged — made as planned')
-  await loadAndRender()
-}
-
-async function logMadeDifferent(date, mealType, { recipeId = null, notes = null }) {
-  const { error } = await supabase.from('meal_plans')
-    .update({ actually_made: false, actual_recipe_id: recipeId, actual_notes: notes })
-    .eq('plan_date', date).eq('meal_type', mealType)
-  if (error) { toast('Failed to save', { error: true }); return }
-  if (recipeId) await supabase.from('recipes').update({ last_made: date }).eq('id', recipeId)
-  toast('Logged what you actually made')
+  // Keep recipe recency truthful for no-repeat — but never for the placeholder.
+  if (recipeId && recipeId !== otherRecipe?.id) await supabase.from('recipes').update({ last_made: date }).eq('id', recipeId)
+  toast(isActual ? 'Logged' : 'Plan updated')
   await loadAndRender()
 }
 
@@ -714,76 +688,6 @@ function openNoteEditor(date, existing) {
   requestAnimationFrame(() => ta.focus())
 }
 
-// Picker for "made something different" — pick a tracked recipe, or log a
-// free-text note for an untracked meal (takeout, leftovers, etc.).
-function showOutcomePicker(date, mealType) {
-  const pool = allRecipes.filter(r => r.meal_type === RECIPE_CATEGORY[mealType])
-
-  const overlay = document.createElement('div')
-  overlay.className = 'picker-overlay'
-  const sheet = document.createElement('div')
-  sheet.className = 'picker-sheet'
-
-  const head = document.createElement('div')
-  head.className = 'picker-header'
-  head.innerHTML = `
-    <span class="picker-title">What did you actually make?</span>
-    <button class="picker-close" aria-label="Close">✕</button>`
-  head.querySelector('.picker-close').addEventListener('click', () => overlay.remove())
-  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove() })
-
-  // Free-text row for an untracked meal.
-  const noteRow = document.createElement('div')
-  noteRow.className = 'picker-note-row'
-  const noteInput = document.createElement('input')
-  noteInput.type = 'text'
-  noteInput.className = 'picker-search'
-  noteInput.placeholder = 'Or type it (e.g. takeout, leftovers)…'
-  const noteBtn = document.createElement('button')
-  noteBtn.className = 'picker-note-save'
-  noteBtn.textContent = 'Save'
-  noteBtn.addEventListener('click', async () => {
-    const txt = noteInput.value.trim()
-    if (!txt) return
-    overlay.remove()
-    await logMadeDifferent(date, mealType, { notes: txt })
-  })
-  noteRow.append(noteInput, noteBtn)
-
-  const search = document.createElement('input')
-  search.type = 'text'
-  search.className = 'picker-search'
-  search.placeholder = 'Search recipes…'
-
-  const list = document.createElement('div')
-  list.className = 'picker-list'
-
-  function renderList(q) {
-    const lq = q.toLowerCase()
-    const hits = lq ? pool.filter(r => r.name.toLowerCase().includes(lq)) : pool
-    list.innerHTML = ''
-    if (!hits.length) { list.innerHTML = `<p class="picker-empty">No recipes found</p>`; return }
-    for (const r of hits) {
-      const row = document.createElement('button')
-      row.className = 'picker-row'
-      row.innerHTML = `
-        <span class="picker-row__emoji" aria-hidden="true">${r.emoji || slotEmoji(mealType)}</span>
-        <span class="picker-row__name">${r.name}</span>`
-      row.addEventListener('click', async () => {
-        overlay.remove()
-        await logMadeDifferent(date, mealType, { recipeId: r.id })
-      })
-      list.appendChild(row)
-    }
-  }
-  search.addEventListener('input', () => renderList(search.value))
-  renderList('')
-
-  sheet.append(head, search, list, noteRow)
-  overlay.appendChild(sheet)
-  document.body.appendChild(overlay)
-  requestAnimationFrame(() => search.focus())
-}
 
 // ── Generate ──────────────────────────────────────────────
 async function onGenerate() {

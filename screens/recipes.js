@@ -41,10 +41,10 @@ async function loadData() {
   const [recipeRes, inactiveRes, stashRes] = await Promise.all([
     supabase.from('recipes')
       .select('id, name, meal_type, cooking_method, is_preferred, ease_descriptor, emoji, active')
-      .eq('active', true).order('name'),
+      .eq('active', true).or('is_placeholder.is.null,is_placeholder.eq.false').order('name'),
     supabase.from('recipes')
       .select('id, name, meal_type, emoji')
-      .eq('active', false).order('name'),
+      .eq('active', false).or('is_placeholder.is.null,is_placeholder.eq.false').order('name'),
     supabase.from('freezer_stash')
       .select('recipe_id, portions').eq('used', false),
   ])

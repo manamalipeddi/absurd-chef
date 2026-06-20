@@ -186,6 +186,7 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
       .from("recipes")
       .select("id, name, protein, style, cooking_method, tags, last_made, template_slot, is_freezable, prep_time_min, cook_time_min, contains_allergen")
       .eq("active", true)
+      .eq("is_placeholder", false)
       .not("meal_type", "in", '("meal_prep","breakfast","snack","dessert","special")'),
     supabase
       .from("weekly_template")
@@ -217,14 +218,14 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
     // (actually_made = false) use actual_recipe_id; otherwise the planned recipe.
     supabase
       .from("meal_plans")
-      .select("plan_date, meal_type, recipe_id, actually_made, actual_recipe_id, planned:recipes!meal_plans_recipe_id_fkey(name, protein, style), actual:recipes!meal_plans_actual_recipe_id_fkey(name, protein, style)")
+      .select("plan_date, meal_type, recipe_id, actually_made, actual_recipe_id, planned:recipes!meal_plans_recipe_id_fkey(name, protein, style, is_placeholder), actual:recipes!meal_plans_actual_recipe_id_fkey(name, protein, style, is_placeholder)")
       .gte("plan_date", addDays(startDate, -14))
       .lt("plan_date", startDate),
     // Locked slots WITHIN the planning window — immovable; the planner must keep
     // them as-is and count their recipe against the no-repeat window.
     supabase
       .from("meal_plans")
-      .select("plan_date, meal_type, recipe_id, slot_locked, planned:recipes!meal_plans_recipe_id_fkey(name, protein, style)")
+      .select("plan_date, meal_type, recipe_id, slot_locked, planned:recipes!meal_plans_recipe_id_fkey(name, protein, style, is_placeholder)")
       .gte("plan_date", startDate)
       .lte("plan_date", endDate)
       .eq("slot_locked", true),
@@ -346,19 +347,20 @@ function buildPrompt(
 
   // Reads reality: if a past day was made differently, the actual recipe is
   // what counts against the no-repeat window — not the original plan.
-  const recentlyUsed = ctx.existingPlan.map((p: {plan_date: string; actually_made: boolean | null; actual_recipe_id: string | null; planned: {name: string} | null; actual: {name: string} | null}) => {
+  const recentlyUsed = ctx.existingPlan.map((p: {plan_date: string; actually_made: boolean | null; actual_recipe_id: string | null; planned: {name: string; is_placeholder?: boolean} | null; actual: {name: string; is_placeholder?: boolean} | null}) => {
     const useActual = p.actually_made === false && p.actual_recipe_id;
     const r = useActual ? p.actual : p.planned;
-    return { date: p.plan_date, name: r?.name || null };
+    // "Other" is excluded from no-repeat entirely.
+    return { date: p.plan_date, name: (r && !r.is_placeholder) ? r.name : null };
   });
 
   // Locked slots inside the planning window — immovable. Surface them so the
   // model keeps them and counts their recipe against the no-repeat window.
-  const lockedList = (ctx.lockedSlots || []).map((p: {plan_date: string; meal_type: string; recipe_id: string; planned: {name: string} | null}) => ({
+  const lockedList = (ctx.lockedSlots || []).map((p: {plan_date: string; meal_type: string; recipe_id: string; planned: {name: string; is_placeholder?: boolean} | null}) => ({
     date: p.plan_date,
     meal_type: p.meal_type,
     recipe_id: p.recipe_id,
-    name: p.planned?.name || null,
+    name: (p.planned && !p.planned.is_placeholder) ? p.planned.name : null,
   }));
 
   const recipeList = safeRecipes.map((r: Recipe) => ({

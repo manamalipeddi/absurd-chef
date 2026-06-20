@@ -638,27 +638,31 @@ body {
 }
 .picker-note-save:active { opacity: 0.85; }
 
-/* ── Recipe picker ───────────────────────────────────────── */
+/* ── Modal / picker (centered, keyboard-aware) ───────────── */
 .picker-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.4);
+  background: rgba(0,0,0,0.45);
   z-index: 300;
   display: flex;
-  align-items: flex-end;
+  align-items: center;          /* centered, not bottom-anchored */
+  justify-content: center;
+  /* Center within the space ABOVE the keyboard: dvh shrinks with the keyboard,
+     and the padding keeps the modal off the screen edges. */
+  padding: 16px;
+  overflow: hidden;
 }
 .picker-sheet {
   background: var(--surface);
-  border-radius: 20px 20px 0 0;
+  border-radius: 18px;          /* all corners — it's a centered card now */
   width: 100%;
-  max-width: 480px;
-  margin: 0 auto;
-  /* dvh tracks the visible viewport so the sheet (and its list) shrink to fit
-     above the on-screen keyboard instead of being crushed to ~3 rows. */
+  max-width: 440px;
+  margin: 0;
   max-height: 88dvh;
   display: flex;
   flex-direction: column;
-  padding-bottom: env(safe-area-inset-bottom, 0px);
+  overflow: hidden;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.3);
 }
 .picker-header {
   display: flex;
@@ -724,12 +728,23 @@ body {
 .picker-row:active { background: var(--bg); }
 .picker-row__emoji { font-size: 20px; width: 28px; text-align: center; flex-shrink: 0; }
 .picker-row__name  { font-size: 14px; font-weight: 500; color: var(--text); }
+.picker-row--other { background: var(--bg); }
+.picker-row--other .picker-row__name { font-weight: 700; color: var(--primary); }
 .picker-empty {
   text-align: center;
   padding: 24px;
   color: var(--text-muted);
   font-size: 14px;
 }
+
+/* "Other" free-text entry (in-modal) */
+.picker-other { padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.picker-other__label { font-size: 14px; font-weight: 600; color: var(--text); }
+.picker-other .picker-search { margin: 0; }
+.picker-other__save { width: 100%; }
+
+/* Guest fork body scrolls within the centered modal */
+.ds-fork__body { flex: 1; min-height: 0; }
 
 /* Primary button (used in empty state) */
 .btn-primary {
