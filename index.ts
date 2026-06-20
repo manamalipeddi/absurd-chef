@@ -372,18 +372,18 @@ function buildPrompt(
     name: (p.planned && !p.planned.is_placeholder) ? p.planned.name : null,
   }));
 
+  // Lean payload — only fields the planning rules actually use. Dropping tags,
+  // last_made and prep/cook minutes meaningfully shrinks the prompt (×~64
+  // recipes), reducing the worker's memory/processing footprint. Recency is
+  // already covered by recently_used; dump detection uses method/slot.
   const recipeList = safeRecipes.map((r: Recipe) => ({
     id: r.id,
     name: r.name,
     protein: r.protein,
     style: r.style,
     method: r.cooking_method,
-    tags: r.tags,
-    last_made: r.last_made,
     slot: r.template_slot,
     freezable: r.is_freezable,
-    prep_min: r.prep_time_min,
-    cook_min: r.cook_time_min,
   }));
 
   const stashList = ctx.stash.map((s: StashItem) => ({
@@ -739,8 +739,11 @@ Deno.serve(async (req: Request) => {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
+        // Capped lower than 16k: a 14-day plan (dinners + lunches + concise
+        // notes) fits comfortably under this, and bounding output keeps the
+        // worst-case generation time (and worker resource use) in check.
         model: "claude-sonnet-4-6",
-        max_tokens: 16000,
+        max_tokens: 11000,
         messages: [{ role: "user", content: prompt }],
       }),
     });
