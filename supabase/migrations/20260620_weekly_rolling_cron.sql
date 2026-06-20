@@ -37,7 +37,7 @@ select cron.schedule(
   select net.http_post(
     url     := 'https://tsigszlaklspuankhztx.supabase.co/functions/v1/plan-generator',
     headers := jsonb_build_object('Content-Type', 'application/json'),
-    body    := jsonb_build_object('mode', 'rolling_7')
+    body    := jsonb_build_object('mode', 'rolling_7', 'triggered_by', 'scheduled')
   );
   $$
 );

@@ -82,7 +82,7 @@ async function loadAndRender() {
 
   const { startDate, endDate } = await getPlanWindow()
 
-  const [planRes, specialRes, recipeRes, householdRes] = await Promise.all([
+  const [planRes, specialRes, recipeRes, householdRes, schedLogRes] = await Promise.all([
     supabase
       .from('meal_plans')
       .select('plan_date, meal_type, recipe_id, slot_locked, is_commute_day, is_holiday, is_preschool_closed, guest_count, recipes(id, name, emoji, serves_base)')
@@ -102,6 +102,12 @@ async function loadAndRender() {
       .select('id', { count: 'exact', head: true })
       .eq('is_default_household', true)
       .eq('active', true),
+    supabase
+      .from('plan_generation_log')
+      .select('success, completed_at, started_at, error_message')
+      .eq('triggered_by', 'scheduled')
+      .order('started_at', { ascending: false })
+      .limit(1),
   ])
 
   householdCount = householdRes.count ?? 0
@@ -114,7 +120,20 @@ async function loadAndRender() {
     startDate
   )
 
-  render(days, startDate)
+  render(days, startDate, computeGenWarning(schedLogRes.data?.[0]))
+}
+
+// Decide whether to warn about scheduled generation. Returns null (all good),
+// or { kind, msg }. Only fires when a scheduled row exists — a brand-new setup
+// with no scheduled runs yet stays quiet until the first Sunday.
+function computeGenWarning(row) {
+  if (!row) return null
+  if (row.success === false) return { kind: 'failed', msg: row.error_message }
+  const ref = row.completed_at || row.started_at
+  if (!ref) return null
+  const ageDays = (Date.now() - new Date(ref).getTime()) / 86400000
+  if (ageDays > 8) return { kind: 'overdue' }
+  return null
 }
 
 function buildDayData(planRows, specialRows, startDate) {
@@ -156,19 +175,48 @@ function buildDayData(planRows, specialRows, startDate) {
 }
 
 // ── Render ────────────────────────────────────────────────
-function render(days, startDate) {
+function render(days, startDate, genWarning) {
   if (!screenEl) return
   screenEl.innerHTML = ''
+
+  if (genWarning) screenEl.appendChild(buildGenBanner(genWarning))
 
   if (!days.some(d => Object.keys(d.slots).length > 0)) {
     screenEl.appendChild(buildEmpty())
     return
   }
 
+  screenEl.appendChild(buildActionBar())
+
   const wrap = document.createElement('div')
   wrap.className = 'plan-cards'
   days.forEach(day => wrap.appendChild(buildDayCard(day)))
   screenEl.appendChild(wrap)
+}
+
+// Manual "generate next week now" action, near the top of the plan.
+function buildActionBar() {
+  const bar = document.createElement('div')
+  bar.className = 'plan-actionbar'
+  const btn = document.createElement('button')
+  btn.className = 'plan-roll-btn'
+  btn.id = 'btn-roll-week'
+  btn.innerHTML = '🔄 Generate next week now'
+  btn.addEventListener('click', onRollNextWeek)
+  bar.appendChild(btn)
+  return bar
+}
+
+// Proactive failure banner — tap to retry via the manual trigger.
+function buildGenBanner(warning) {
+  const banner = document.createElement('button')
+  banner.className = 'plan-banner'
+  banner.id = 'plan-gen-banner'
+  banner.textContent = warning.kind === 'failed'
+    ? "⚠ Last automatic update didn't complete — tap to retry"
+    : "⚠ Automatic weekly update is overdue — tap to run it now"
+  banner.addEventListener('click', onRollNextWeek)
+  return banner
 }
 
 // ── Day card ──────────────────────────────────────────────
@@ -410,6 +458,39 @@ async function onGenerate() {
     generating = false
     const btn  = document.getElementById('btn-generate')
     if (btn) { btn.disabled = false; btn.innerHTML = sparklesSvg() }
+  }
+}
+
+// Manual rolling trigger — extend the plan by 7 days on demand (recovery /
+// testing). Same function, logic and lock-respect as the Sunday schedule.
+async function onRollNextWeek() {
+  if (generating) return
+  generating = true
+  const btn    = document.getElementById('btn-roll-week')
+  const banner = document.getElementById('plan-gen-banner')
+  if (btn) { btn.disabled = true; btn.innerHTML = `<span class="spinner spinner--sm"></span> Generating…` }
+  if (banner) { banner.disabled = true; banner.textContent = '⏳ Generating next week…' }
+
+  try {
+    const res  = await fetch(`${FUNCTIONS_URL}/plan-generator`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'rolling_7', triggered_by: 'manual' }),
+    })
+    const json = await res.json()
+    if (!json.success) throw new Error(json.error || 'Generation failed')
+    toast(`Next week generated — ${json.days_planned} day(s)`)
+    if (json.unresolved?.length)
+      setTimeout(() => toast(`${json.unresolved.length} day(s) need input — check Chat`, { duration: 5000 }), 600)
+    generating = false
+    await loadAndRender()   // rebuilds the screen (and clears the banner)
+    return
+  } catch (e) {
+    toast(`Couldn't generate next week: ${e.message || 'unknown error'}. Try again, or ask in Chat.`, { error: true, duration: 6000 })
+    if (btn) { btn.disabled = false; btn.innerHTML = '🔄 Generate next week now' }
+    if (banner) { banner.disabled = false; banner.textContent = "⚠ Last automatic update didn't complete — tap to retry" }
+  } finally {
+    generating = false
   }
 }
 

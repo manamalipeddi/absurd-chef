@@ -22,6 +22,7 @@ interface PlanRequest {
   mode: "full_14" | "rolling_7" | "targeted";
   start_date?: string;
   days?: number;
+  triggered_by?: "scheduled" | "manual";
 }
 
 interface Recipe {
@@ -624,9 +625,14 @@ Deno.serve(async (req: Request) => {
     });
   }
 
+  // Hoisted so the catch block can mark the log row as failed.
+  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+  let logId: string | null = null;
+
   try {
     const body: PlanRequest = await req.json();
     const { mode, days: reqDays } = body;
+    const triggeredBy = body.triggered_by === "scheduled" ? "scheduled" : "manual";
 
     if (!mode) {
       return new Response(
@@ -634,6 +640,14 @@ Deno.serve(async (req: Request) => {
         { status: 400, headers: { "Content-Type": "application/json" } }
       );
     }
+
+    // Open a log row for this attempt (success/completed_at filled in later).
+    const { data: logRow } = await supabase
+      .from("plan_generation_log")
+      .insert({ triggered_by: triggeredBy, mode })
+      .select("id")
+      .single();
+    logId = logRow?.id ?? null;
 
     // start_date is optional: when omitted (e.g. the scheduled Sunday rolling
     // run) default to the Monday of the current week. With rolling_7 the
@@ -643,9 +657,8 @@ Deno.serve(async (req: Request) => {
       getMondayOf(new Date().toISOString().slice(0, 10));
 
     const days = reqDays && reqDays >= 1 && reqDays <= 14 ? reqDays : 14;
-    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
-    console.log(`Planning ${mode} from ${start_date}`);
+    console.log(`Planning ${mode} from ${start_date} (${triggeredBy})`);
 
     // 1. Fetch all context from DB
     const ctx = await fetchContext(supabase, start_date, days);
@@ -692,6 +705,14 @@ Deno.serve(async (req: Request) => {
     const dinnerCount = result.plan.filter((p) => p.meal_type === "dinner").length;
     const daysPlanned = mode === "rolling_7" ? Math.max(0, dinnerCount - 7) : dinnerCount;
 
+    // Mark the log row succeeded.
+    if (logId) {
+      await supabase
+        .from("plan_generation_log")
+        .update({ success: true, completed_at: new Date().toISOString(), days_generated: daysPlanned })
+        .eq("id", logId);
+    }
+
     // 6. Return result to client
     // Client only needs unresolved items + stash recommendations
     // The full plan is now in the DB and will be fetched normally
@@ -711,10 +732,20 @@ Deno.serve(async (req: Request) => {
     );
   } catch (err) {
     console.error("Plan generation error:", err);
+    const errMsg = err instanceof Error ? err.message : "Unknown error";
+
+    // Mark the log row failed so the Plan tab can surface it.
+    if (logId) {
+      await supabase
+        .from("plan_generation_log")
+        .update({ success: false, completed_at: new Date().toISOString(), error_message: errMsg })
+        .eq("id", logId);
+    }
+
     return new Response(
       JSON.stringify({
         success: false,
-        error: err instanceof Error ? err.message : "Unknown error",
+        error: errMsg,
       }),
       {
         status: 500,
