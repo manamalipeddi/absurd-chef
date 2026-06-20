@@ -420,10 +420,12 @@ async function toolGetWeeklyTemplate(db: DB) {
 async function toolGetSpecialDays(input: Record<string, unknown>, db: DB) {
   const start = (input.start_date as string) || today()
   const end   = (input.end_date as string)   || addDays(start, 14)
-  const { data } = await db.from('special_days').select('*').gte('day', start).lte('day', end).order('day')
-  const rows = data || []
+  // day_settings is the single source of truth. Surface kids-home / gintas-away
+  // / guest days (with resolved known-guest allergies) for this window.
+  const { data } = await db.from('day_settings').select('*').gte('day', start).lte('day', end).order('day')
+  const rows = (data || []).filter((r: Record<string, unknown>) =>
+    r.kids_home || r.gintas_away || ((r.guest_count as number) || 0) > 0)
 
-  // Resolve known guest members for guest days
   const allGuestIds: string[] = [...new Set(
     rows.flatMap((r: Record<string, unknown>) => (r.guest_family_member_ids as string[] | null) || [])
   )]
@@ -439,8 +441,12 @@ async function toolGetSpecialDays(input: Record<string, unknown>, db: DB) {
 
   return {
     special_days: rows.map((row: Record<string, unknown>) => ({
-      ...row,
+      day: row.day,
       day_name: dayNameFromDate(row.day as string),
+      kids_home: !!row.kids_home,
+      gintas_away: !!row.gintas_away,
+      guest_count: (row.guest_count as number) || 0,
+      guest_allergies: row.guest_allergies || [],
       known_guests: ((row.guest_family_member_ids as string[]) || [])
         .map(id => guestMemberMap[id])
         .filter(Boolean),
@@ -449,13 +455,14 @@ async function toolGetSpecialDays(input: Record<string, unknown>, db: DB) {
 }
 
 async function toolGetCommuteDays(db: DB) {
-  const { data } = await db.from('commute_days')
-    .select('day_of_week, label, notes, family_members(name)')
-    .eq('active', true).order('day_of_week')
+  // Commute days now live per-date on day_settings (not a recurring weekday rule).
+  const { data } = await db.from('day_settings')
+    .select('day, is_commute_day').eq('is_commute_day', true)
+    .gte('day', today()).order('day')
   return {
     commute_days: (data || []).map((row: Record<string, unknown>) => ({
-      ...row,
-      day_name: dayName(row.day_of_week as number),
+      day: row.day,
+      day_name: dayNameFromDate(row.day as string),
     })),
   }
 }
@@ -750,7 +757,7 @@ ${draft}
 
 Check each claim in the draft against the verified data above:
 1. WEEKDAY_NAME — Is each date labeled with the correct day name? Use day_name fields in existing_plan. Convention: 0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat.
-2. COMMUTE_DAY — Are commute days correctly identified per commute_days data?
+2. COMMUTE_DAY — Are commute days correctly identified per day_settings data?
 3. STASH_REF — Does the draft reference a recipe from stash that is not present in freezer_stash?
 4. ALLERGY — Does the draft suggest any fish or seafood (forbidden — hard allergy)?
 5. RECENCY — Does the draft call a recipe "not used recently" when it appears in existing_plan within 7 days?

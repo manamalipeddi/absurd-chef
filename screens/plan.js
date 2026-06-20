@@ -125,8 +125,8 @@ async function loadAndRender() {
       .gte('plan_date', startDate).lte('plan_date', endDate)
       .order('plan_date'),
     supabase
-      .from('special_days')
-      .select('day, type')
+      .from('day_settings')
+      .select('day, is_commute_day, kids_home, gintas_away, guest_count')
       .gte('day', startDate).lte('day', endDate),
     supabase
       .from('recipes')
@@ -158,7 +158,7 @@ async function loadAndRender() {
 
   const days = buildDayData(
     planRes.data  || [],
-    specialRes.data || [],
+    specialRes.data || [],   // day_settings rows
     startDate
   )
 
@@ -178,47 +178,32 @@ function computeGenWarning(row) {
   return null
 }
 
-function buildDayData(planRows, specialRows, startDate) {
-  // special_days map: date → Set of types
-  const specialMap = {}
-  for (const s of specialRows) {
-    if (!specialMap[s.day]) specialMap[s.day] = new Set()
-    specialMap[s.day].add(s.type)
-  }
+function buildDayData(planRows, daySettingsRows, startDate) {
+  // day_settings is the single source of truth for per-day context (live).
+  const dsMap = {}
+  for (const d of daySettingsRows) dsMap[d.day] = d
 
-  // plan rows grouped by date
+  // plan rows grouped by date (recipes/notes/outcome only — context is from day_settings)
   const planByDate = {}
   for (const row of planRows) {
-    if (!planByDate[row.plan_date]) planByDate[row.plan_date] = { meta: {}, slots: {} }
-    const entry = planByDate[row.plan_date]
-    entry.slots[row.meal_type] = row
-    // accumulate meta (any row for a date carries the day's context flags)
-    if (row.is_holiday)          entry.meta.isHoliday        = true
-    if (row.is_preschool_closed) entry.meta.isPreschoolClosed = true
-    if (row.is_commute_day)      entry.meta.isCommute         = true
-    if (row.guest_count > 0)     entry.meta.guestCount        = row.guest_count
+    if (!planByDate[row.plan_date]) planByDate[row.plan_date] = { slots: {} }
+    planByDate[row.plan_date].slots[row.meal_type] = row
   }
 
   return Array.from({ length: 14 }, (_, i) => {
     const date  = addDays(startDate, i)
-    const entry = planByDate[date] || { meta: {}, slots: {} }
-    const sset  = specialMap[date] || new Set()
-    // Kids-home reflects LIVE special_days (kids_home/preschool_closed/holiday)
-    // as well as the flags baked into the plan rows — so adding a kids-home day
-    // shows immediately, without needing to regenerate the plan.
-    const isKidsHome =
-      entry.meta.isHoliday || entry.meta.isPreschoolClosed ||
-      sset.has('kids_home') || sset.has('preschool_closed') || sset.has('holiday')
+    const entry = planByDate[date] || { slots: {} }
+    const ds    = dsMap[date]
+    const dow   = new Date(date + 'T12:00:00Z').getUTCDay()
+    // Read-time defaults where no day_settings row exists: kids_home true on weekends.
     return {
       date,
       slots: entry.slots,
       meta: {
-        isHoliday:        entry.meta.isHoliday        || false,
-        isPreschoolClosed: entry.meta.isPreschoolClosed || false,
-        isKidsHome,
-        isCommute:        entry.meta.isCommute         || false,
-        guestCount:       entry.meta.guestCount        || 0,
-        isGintasAway:     sset.has('gintas_away'),
+        isKidsHome:   ds ? !!ds.kids_home    : (dow === 0 || dow === 6),
+        isCommute:    ds ? !!ds.is_commute_day : false,
+        guestCount:   ds ? (ds.guest_count || 0) : 0,
+        isGintasAway: ds ? !!ds.gintas_away  : false,
       },
     }
   })

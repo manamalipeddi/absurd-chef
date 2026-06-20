@@ -23,6 +23,7 @@ interface PlanRequest {
   start_date?: string;
   days?: number;
   triggered_by?: "scheduled" | "manual";
+  target_dates?: string[];
 }
 
 interface Recipe {
@@ -48,9 +49,14 @@ interface TemplateRule {
   label: string;
 }
 
-interface CommuteDayRule {
-  day_of_week: number;
-  label: string;
+interface DaySetting {
+  day: string;
+  is_commute_day: boolean;
+  kids_home: boolean;
+  gintas_away: boolean;
+  guest_count: number;
+  guest_family_member_ids?: string[];
+  guest_allergies?: Array<{ substance: string; severity: string }>;
 }
 
 interface PreschoolMeal {
@@ -70,13 +76,6 @@ interface PreschoolTemplate {
   lunch_weight: string;
 }
 
-interface SpecialDay {
-  day: string;
-  type: string;
-  guest_count?: number;
-  guest_family_member_ids?: string[];
-  guest_allergies?: Array<{ substance: string; severity: string }>;
-}
 
 interface FamilyMember {
   id: string;
@@ -175,10 +174,9 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
   const [
     recipesRes,
     templateRes,
-    commuteRes,
+    daySettingsRes,
     preschoolRes,
     preschoolTemplateRes,
-    specialRes,
     stashRes,
     existingPlanRes,
     lockedSlotsRes,
@@ -193,10 +191,13 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
       .from("weekly_template")
       .select("*")
       .eq("active", true),
+    // Single source of truth for per-day context (commute / kids_home /
+    // gintas_away / guests). Read-time defaults apply where no row exists.
     supabase
-      .from("commute_days")
+      .from("day_settings")
       .select("*")
-      .eq("active", true),
+      .gte("day", startDate)
+      .lte("day", endDate),
     supabase
       .from("preschool_meals")
       .select("*")
@@ -207,11 +208,6 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
       .select("*")
       .eq("active", true)
       .order("day_of_week"),
-    supabase
-      .from("special_days")
-      .select("*")
-      .gte("day", startDate)
-      .lte("day", endDate),
     supabase
       .from("freezer_stash")
       .select("id, recipe_name, recipe_id, portions, notes")
@@ -241,10 +237,9 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
   return {
     recipes: recipesRes.data || [],
     template: templateRes.data || [],
-    commuteDays: commuteRes.data || [],
+    daySettings: daySettingsRes.data || [],
     preschoolMeals: preschoolRes.data || [],
     preschoolTemplate: preschoolTemplateRes.data || [],
-    specialDays: specialRes.data || [],
     stash: stashRes.data || [],
     existingPlan: existingPlanRes.data || [],
     lockedSlots: lockedSlotsRes.data || [],
@@ -287,12 +282,19 @@ function buildPrompt(
   const dateList = Array.from({ length: days }, (_, i) => {
     const date = addDays(startDate, i);
     const dow = dayOfWeek(date);
-    const isCommute = ctx.commuteDays.some(
-      (c: CommuteDayRule) => c.day_of_week === dow
-    );
-    const special = ctx.specialDays.find(
-      (s: SpecialDay) => s.day === date
-    );
+    // day_settings is the single source of truth; read-time defaults apply
+    // where no row exists (kids_home defaults true on weekends).
+    const ds = (ctx.daySettings as DaySetting[]).find(d => d.day === date);
+    const isCommute = ds?.is_commute_day ?? false;
+    const kidsHome = ds ? ds.kids_home : (dow === 0 || dow === 6);
+    // Adapt to the existing per-date shape used below (special.* / preschool_closed)
+    const special = (ds && (ds.guest_count > 0 || ds.gintas_away || ds.kids_home)) ? {
+      type: ds.guest_count > 0 ? "guests" : (ds.gintas_away ? "gintas_away" : "kids_home"),
+      guest_count: ds.guest_count || 0,
+      guest_family_member_ids: ds.guest_family_member_ids || [],
+      guest_allergies: ds.guest_allergies || [],
+      gintas_away: ds.gintas_away || false,
+    } : null;
     // 3-tier preschool lookup for this date
     const dateWeek = isoWeek(date);
     const t1 = dow >= 1 && dow <= 5
@@ -335,7 +337,7 @@ function buildPrompt(
       preschool_protein: preschoolMeal?.protein || null,
       preschool_weight: preschoolMeal?.lunch_weight || "medium",
       preschool_source: preschoolSource,
-      preschool_closed: special?.type === "kids_home" || special?.type === "preschool_closed",
+      preschool_closed: kidsHome,
       template_constraint_type: templateRule?.constraint_type || null,
       template_constraint_value: templateRule?.constraint_value || null,
       template_label: templateRule?.label || null,
@@ -504,7 +506,8 @@ Return ONLY valid JSON. No markdown. No explanation. No wrapper text.
 async function writePlan(
   supabase: ReturnType<typeof createClient>,
   plan: PlanDay[],
-  mode: string
+  mode: string,
+  targetDates?: string[]
 ) {
   // This planner writes 'dinner' rows only (the delete below is dinner-scoped).
   // Filter to dinner FIRST — the model can emit stray breakfast/snack/lunch
@@ -514,8 +517,13 @@ async function writePlan(
     .filter((p) => p.meal_type === "dinner")
     .sort((a, b) => a.date.localeCompare(b.date));
 
-  // For rolling_7: only write days 8–14 (don't touch existing days 1–7).
+  // rolling_7: only days 8–14. targeted: only the explicitly requested dates
+  // (scoped replan — a single cell/day change must not rewrite the whole plan).
   let toWrite = mode === "rolling_7" ? dinners.slice(7) : dinners;
+  if (mode === "targeted" && targetDates?.length) {
+    const want = new Set(targetDates);
+    toWrite = dinners.filter(p => want.has(p.date));
+  }
 
   // Verify stash references are still live before committing
   const stashPlanItems = toWrite.filter(p => p.cook_source === "freezer_stash" && p.stash_item_id)
@@ -663,14 +671,26 @@ Deno.serve(async (req: Request) => {
       .single();
     logId = logRow?.id ?? null;
 
+    // targeted: scoped replan of specific dates only (from the Day Settings
+    // grid). Window spans the requested dates; only those rows are written.
+    const targetDates = (mode === "targeted" && Array.isArray(body.target_dates))
+      ? [...new Set(body.target_dates)].filter(Boolean).sort()
+      : undefined;
+
     // start_date is optional: when omitted (e.g. the scheduled Sunday rolling
     // run) default to the Monday of the current week. With rolling_7 the
     // generator writes days 8–14, i.e. it extends the plan into next week.
     const start_date =
-      body.start_date ||
+      (targetDates?.length ? targetDates[0] : body.start_date) ||
       getMondayOf(new Date().toISOString().slice(0, 10));
 
-    const days = reqDays && reqDays >= 1 && reqDays <= 14 ? reqDays : 14;
+    let days = reqDays && reqDays >= 1 && reqDays <= 14 ? reqDays : 14;
+    if (targetDates?.length) {
+      const span = Math.round(
+        (new Date(targetDates[targetDates.length - 1] + "T12:00:00Z").getTime()
+         - new Date(targetDates[0] + "T12:00:00Z").getTime()) / 86400000) + 1;
+      days = Math.min(14, Math.max(1, span));
+    }
 
     console.log(`Planning ${mode} from ${start_date} (${triggeredBy})`);
 
@@ -713,11 +733,13 @@ Deno.serve(async (req: Request) => {
     );
 
     // 5. Write plan to DB
-    await writePlan(supabase, result.plan, mode);
+    await writePlan(supabase, result.plan, mode, targetDates);
 
     // dinner rows are the only ones written; report that count
     const dinnerCount = result.plan.filter((p) => p.meal_type === "dinner").length;
-    const daysPlanned = mode === "rolling_7" ? Math.max(0, dinnerCount - 7) : dinnerCount;
+    const daysPlanned = mode === "targeted"
+      ? (targetDates?.length || 0)
+      : mode === "rolling_7" ? Math.max(0, dinnerCount - 7) : dinnerCount;
 
     // Mark the log row succeeded.
     if (logId) {
