@@ -165,6 +165,12 @@ async function loadAndRender() {
   const days = buildDayData(planRes.data || [], dsRows, startDate)
 
   render(days, startDate, computeGenWarning(schedLogRes.data?.[0]), histRes.data || [], noteMap)
+
+  // Restore scroll when returning from Recipe Detail (back navigation).
+  if (navState.scrollPlan != null) {
+    const top = navState.scrollPlan; navState.scrollPlan = null
+    requestAnimationFrame(() => { screenEl.scrollTop = top })
+  }
 }
 
 // Decide whether to warn about scheduled generation. Returns null (all good),
@@ -493,7 +499,12 @@ function buildSlotRow(date, slot, entry, dayMeta, isPast = false) {
     // Name tap → Recipe Detail (only for a real, navigable recipe).
     if (disp.nav) {
       row.classList.add('day-slot--tap')
-      row.addEventListener('click', () => { navState.recipeId = disp.nav; navigateTo('recipe-detail') })
+      row.addEventListener('click', () => {
+        navState.recipeId = disp.nav
+        navState.recipeFrom = 'plan'
+        navState.scrollPlan = screenEl.scrollTop
+        navigateTo('recipe-detail')
+      })
     }
 
     // The single 🔁 action — present on every filled slot. Date decides intent:

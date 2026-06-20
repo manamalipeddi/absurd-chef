@@ -71,18 +71,19 @@ function renderList() {
 
 function buildRow(m, ruled) {
   const row = document.createElement('div')
-  row.className = 'su-list-row' + (ruled ? ' su-list-row--ruled' : '')
+  row.className = 'su-list-row su-mi-row' + (ruled ? ' su-list-row--ruled' : '')
 
+  // Single line: name + usage count + category badge.
   const centre = document.createElement('div')
-  centre.className = 'su-list-row__centre'
-  const main = document.createElement('div')
+  centre.className = 'su-mi-line'
+  const main = document.createElement('span')
   main.className = 'su-list-row__main'
   main.textContent = m.canonical_name
   const n = usageFor(m.id).length
-  const sub = document.createElement('div')
-  sub.className = 'su-list-row__sub'
-  sub.textContent = n ? `Used in ${n} recipe${n !== 1 ? 's' : ''}` : 'Not used yet'
-  centre.append(main, sub)
+  const count = document.createElement('span')
+  count.className = 'su-mi-count'
+  count.textContent = n ? `· ${n} recipe${n !== 1 ? 's' : ''}` : '· unused'
+  centre.append(main, count)
 
   const badge = document.createElement('span')
   badge.className = 'su-cat-badge'

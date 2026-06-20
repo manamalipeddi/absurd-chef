@@ -27,7 +27,7 @@ export function init(el) {
 
   tabBarEl = document.createElement('div')
   tabBarEl.className = 'pn-tabbar'
-  ;[['inventory','Inventory'],['freezer','Freezer'],['prepped','Prepped'],['grocery','Grocery']].forEach(([id, label]) => {
+  ;[['inventory','Inventory'],['freezer','Freezer Meals'],['prepped','Prepped'],['grocery','Grocery']].forEach(([id, label]) => {
     const btn = document.createElement('button')
     btn.className = 'pn-tab'
     btn.dataset.tab = id
@@ -77,21 +77,33 @@ async function loadAndShow(tab) {
 // ═══════════════════════════════════════════════════════════
 
 async function loadInventory() {
-  const { data } = await supabase.from('inventory').select('*').order('name')
+  // Inventory + prepped components (the latter shown read-only within Inventory
+  // for a single "everything available to cook with" view).
+  const [{ data }, { data: prepped }] = await Promise.all([
+    supabase.from('inventory').select('*').order('name'),
+    supabase.from('prepped_components').select('*, recipes(id, name, emoji)')
+      .eq('active', true).gt('batches_remaining', 0).order('made_date', { ascending: false }),
+  ])
   inventoryData = data || []
+  preppedData = prepped || []
 }
 
 function renderInventory() {
   contentEl.innerHTML = ''
 
-  const addBtn = mkAddBtn('+ Add item', () => openInventoryForm(null, 'pantry'))
-  contentEl.appendChild(addBtn)
-
+  // Add + Tell on one row.
+  const actionRow = document.createElement('div')
+  actionRow.className = 'pn-inv-actions'
+  const addBtn = document.createElement('button')
+  addBtn.className = 'pn-inv-action'
+  addBtn.textContent = '+ Add item'
+  addBtn.addEventListener('click', () => openInventoryForm(null, 'pantry'))
   const tellBtn = document.createElement('button')
-  tellBtn.className = 'pn-tell-btn'
-  tellBtn.textContent = '🎤 Tell me what\'s in stock'
+  tellBtn.className = 'pn-inv-action pn-inv-action--alt'
+  tellBtn.textContent = "🎤 Tell me what's in stock"
   tellBtn.addEventListener('click', () => navigateTo('chat'))
-  contentEl.appendChild(tellBtn)
+  actionRow.append(addBtn, tellBtn)
+  contentEl.appendChild(actionRow)
 
   const active = inventoryData.filter(i => i.active !== false)
   const hidden = inventoryData.filter(i => i.active === false)
@@ -115,6 +127,13 @@ function renderInventory() {
     hasAny = true
     contentEl.appendChild(buildInventorySection(catKey, items))
   })
+
+  // Prepped components — read-only visibility within Inventory (own grouping).
+  if (preppedData.length) {
+    hasAny = true
+    contentEl.appendChild(buildPreppedInventoryGroup(preppedData))
+  }
+
   if (!hasAny) contentEl.appendChild(mkEmpty('No inventory items. Tap + to add.'))
 
   // Hidden items toggle
@@ -205,15 +224,15 @@ function buildInventorySection(catKey, items) {
 function buildInventoryRow(item, ruled) {
   const isOut = item.quantity == null || Number(item.quantity) === 0
   const row = document.createElement('div')
-  row.className = 'pn-row' + (ruled ? ' pn-row--ruled' : '') + (isOut ? ' pn-row--out' : '')
+  row.className = 'pn-row pn-row--compact' + (ruled ? ' pn-row--ruled' : '') + (isOut ? ' pn-row--out' : '')
 
   const centre = document.createElement('div')
-  centre.className = 'pn-row__centre'
-  const main = document.createElement('div')
+  centre.className = 'pn-row__centre pn-row__line'
+  const main = document.createElement('span')
   main.className = 'pn-row__main'
   main.textContent = item.name
   const meta = document.createElement('div')
-  meta.className = 'pn-row__meta'
+  meta.className = 'pn-row__meta-inline'
   const parts = []
   if (!isOut && item.quantity != null) parts.push(item.quantity + (item.unit ? ' ' + item.unit : ''))
   if (item.expiry_date) parts.push('exp ' + fmtShortDate(item.expiry_date))
@@ -233,6 +252,36 @@ function buildInventoryRow(item, ruled) {
 
   row.addEventListener('click', () => openInventoryForm(item.id, item.category || 'pantry'))
   return row
+}
+
+// Read-only "Prepped" grouping inside Inventory (visibility of the same data).
+function buildPreppedInventoryGroup(items) {
+  const wrap = document.createElement('div')
+  wrap.className = 'pn-section'
+  const header = document.createElement('div')
+  header.className = 'pn-section-header'
+  header.innerHTML = `<span class="pn-section-toggle" style="cursor:default">
+    <span class="pn-section-label">🧩 Prepped</span>
+    <span class="pn-section-count">(${items.length})</span></span>`
+  const card = document.createElement('div')
+  card.className = 'card pn-section-card'
+  items.forEach((comp, i) => {
+    const row = document.createElement('div')
+    row.className = 'pn-row pn-row--compact' + (i < items.length - 1 ? ' pn-row--ruled' : '')
+    const centre = document.createElement('div')
+    centre.className = 'pn-row__centre pn-row__line'
+    const main = document.createElement('span'); main.className = 'pn-row__main'; main.textContent = comp.name
+    const meta = document.createElement('div'); meta.className = 'pn-row__meta-inline'
+    const parts = [`${comp.batches_remaining} batch${comp.batches_remaining !== 1 ? 'es' : ''}`]
+    if (comp.recipes) parts.push(comp.recipes.name)
+    meta.textContent = parts.join(' · ')
+    centre.append(main, meta)
+    row.appendChild(centre)
+    card.appendChild(row)
+  })
+  const body = document.createElement('div'); body.className = 'pn-section-body'; body.appendChild(card)
+  wrap.append(header, body)
+  return wrap
 }
 
 // ── Inventory form ─────────────────────────────────────────
@@ -330,11 +379,11 @@ async function loadFreezer() {
 function renderFreezer() {
   contentEl.innerHTML = ''
 
-  const addBtn = mkAddBtn('+ Add to freezer stash', () => openFreezerForm(null))
+  const addBtn = mkAddBtn('+ Add freezer meal', () => openFreezerForm(null))
   contentEl.appendChild(addBtn)
 
   if (!freezerData.length) {
-    contentEl.appendChild(mkEmpty('Freezer stash is empty.'))
+    contentEl.appendChild(mkEmpty('No freezer meals yet.'))
   } else {
     const card = document.createElement('div')
     card.className = 'card su-card'

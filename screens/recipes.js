@@ -83,6 +83,12 @@ function render() {
   }
 
   renderFooter()
+
+  // Restore scroll when returning from Recipe Detail (back navigation).
+  if (navState.scrollRecipes != null) {
+    const top = navState.scrollRecipes; navState.scrollRecipes = null
+    requestAnimationFrame(() => { screenEl.scrollTop = top })
+  }
 }
 
 function renderFooter() {
@@ -202,6 +208,8 @@ function buildRow(recipe, fallbackEmoji) {
 
   row.addEventListener('click', () => {
     navState.recipeId = recipe.id
+    navState.recipeFrom = 'recipes'
+    navState.scrollRecipes = screenEl?.scrollTop ?? 0
     navigateTo('recipe-detail')
   })
 

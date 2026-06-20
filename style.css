@@ -838,10 +838,10 @@ body {
 /* ── Recipe row ──────────────────────────────────────────── */
 .recipe-row {
   display: grid;
-  grid-template-columns: 44px 1fr 40px 36px;
+  grid-template-columns: 34px 1fr 36px 30px;
   align-items: center;
   gap: 0 10px;
-  padding: 9px 12px;
+  padding: 6px 12px;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
   transition: background 0.12s;
@@ -850,24 +850,24 @@ body {
 .recipe-row--ruled { border-bottom: 1px solid var(--border); }
 
 .recipe-row__emoji {
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
   background: var(--bg);
   border: 1px solid var(--border);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 23.3px;
+  font-size: 18px;
   flex-shrink: 0;
 }
 
-.recipe-row__centre { min-width: 0; }
+/* Compact: name + sub inline on one line, wrapping only when too long. */
+.recipe-row__centre { min-width: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; }
 
 .recipe-row__name {
-  display: block;
-  font-size: 15.9px;
-  font-weight: 500;
+  font-size: 15px;
+  font-weight: 600;
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
@@ -875,10 +875,8 @@ body {
 }
 
 .recipe-row__sub {
-  display: block;
-  font-size: 12.7px;
+  font-size: 12.4px;
   color: var(--text-muted);
-  margin-top: 2px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1747,6 +1745,27 @@ body {
   line-height: 1.4;
 }
 .rd-prepped { padding-bottom: 16px; }
+.rd-prepped__toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  padding: 6px 0;
+  font-family: var(--font);
+  font-size: 11.7px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-align: left;
+  -webkit-tap-highlight-color: transparent;
+}
+.rd-prepped__chev { font-size: 11px; line-height: 1; }
+.rd-prepped__body { margin-top: 8px; }
+.rd-prepped__body--hidden { display: none; }
 .rd-prepped__item {
   display: flex;
   flex-direction: column;
@@ -2104,7 +2123,10 @@ body {
 }
 .su-add-btn:active { opacity: 0.88; transform: scale(0.99); }
 .su-empty { padding: 16px; color: var(--text-on-page-muted); font-size: 14.8px; font-weight: 500; text-align: center; }
-.su-card { margin: 0 16px 16px; }
+/* flex-shrink:0 stops a tall card being squeezed (and clipped via overflow:hidden)
+   to viewport height inside the flex-column screen — that was the no-scroll bug. */
+.su-card { margin: 0 16px 16px; flex-shrink: 0; }
+.pn-hidden-card { flex-shrink: 0; }
 
 /* List rows ──────────────────────────────────────────────── */
 .su-list-row {
@@ -2120,6 +2142,12 @@ body {
 .su-list-row__centre { flex: 1; min-width: 0; }
 .su-list-row__main { font-size: 14.8px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .su-list-row__sub { font-size: 12.7px; color: var(--text-muted); margin-top: 2px; }
+
+/* Compact master-ingredient rows (single line) */
+.su-mi-row { padding: 8px 16px; }
+.su-mi-line { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 6px; overflow: hidden; }
+.su-mi-line .su-list-row__main { white-space: nowrap; }
+.su-mi-count { font-size: 12px; color: var(--text-muted); white-space: nowrap; flex-shrink: 0; }
 .su-allergy-badge {
   font-size: 11.7px;
   background: #fef3c7;
@@ -2683,34 +2711,31 @@ body {
 /* Segmented tab bar ──────────────────────────────────────── */
 .pn-tabbar {
   display: flex;
-  padding: 10px 16px 0;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
+  gap: 4px;
+  padding: 10px 12px;
+  background: var(--page);   /* burgundy — clearly delineates the sub-nav */
+  border-bottom: none;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.12);
   flex-shrink: 0;
 }
 .pn-tab {
   flex: 1;
-  padding: 8px 4px;
-  border: 1.5px solid var(--border);
-  margin-right: -1.5px;
-  background: var(--bg);
+  padding: 7px 4px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: rgba(255,255,255,0.10);
   font-family: var(--font);
   font-size: 12.7px;
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--text-on-page-muted);
   cursor: pointer;
-  position: relative;
   -webkit-tap-highlight-color: transparent;
   transition: background 0.1s;
 }
-.pn-tab:first-child { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
-.pn-tab:last-child  { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; margin-right: 0; }
 .pn-tab--active {
-  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-light) 100%);
-  color: #fff;
-  border-color: var(--primary);
+  background: var(--surface);
+  color: var(--primary);
   font-weight: 700;
-  z-index: 1;
 }
 .pn-content {
   flex: 1;
@@ -2782,11 +2807,36 @@ body {
 .pn-row--ruled { border-bottom: 1px solid var(--border); }
 .pn-row:active { background: #f4f2f0; }
 .pn-row--out .pn-row__main { color: var(--text-muted); }
+.pn-row--compact { padding: 8px 16px; }
 .pn-row__centre { flex: 1; min-width: 0; }
+/* compact single-line: name + qty + sub all on one row */
+.pn-row__line { display: flex; align-items: baseline; gap: 6px; overflow: hidden; }
+.pn-row__line .pn-row__main { white-space: nowrap; }
+.pn-row__qty { font-size: 13.2px; color: var(--text-muted); flex-shrink: 0; }
+.pn-row__sub { font-size: 11.7px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pn-row__meta-inline { font-size: 12.7px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pn-row__main { font-size: 14.8px; font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pn-row__main--muted { color: var(--text-muted); }
 .pn-row__meta { font-size: 12.7px; color: var(--text-muted); margin-top: 2px; }
 .pn-row__right { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
+
+/* Inventory header actions (Add + Tell on one row) */
+.pn-inv-actions { display: flex; gap: 8px; padding: 12px 16px 6px; }
+.pn-inv-action {
+  flex: 1;
+  padding: 10px 8px;
+  border-radius: 12px;
+  border: 1.5px solid var(--primary);
+  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-light) 100%);
+  color: #fff;
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.pn-inv-action--alt { background: var(--surface); color: var(--primary); }
+.pn-inv-action:active { opacity: 0.88; }
 
 /* Badges ─────────────────────────────────────────────────── */
 .pn-badge { font-size: 11.7px; border-radius: 4px; padding: 2px 5px; flex-shrink: 0; }

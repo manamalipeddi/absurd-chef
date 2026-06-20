@@ -26,7 +26,8 @@ export async function activate({ headerLeft, headerRight }) {
         <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5"/>
       </svg>
     </button>`
-  document.getElementById('btn-back').addEventListener('click', () => navigateTo('recipes'))
+  // Context-aware back: return to wherever we came from (Plan or Recipes).
+  document.getElementById('btn-back').addEventListener('click', () => navigateTo(navState.recipeFrom || 'recipes'))
 
   const recipeId = navState.recipeId
   if (!recipeId) return
@@ -276,10 +277,11 @@ function buildContent() {
 
   if (!isOriginal && av?.notes) wrap.appendChild(buildVariantNotes(av.notes))
 
-  wrap.appendChild(buildPreppedSection())
   wrap.appendChild(buildActions())
   wrap.appendChild(buildAIActions())
   if (scaleResult) wrap.appendChild(buildScaleResult())
+  // Prepped Components last, collapsed by default.
+  wrap.appendChild(buildPreppedSection())
 
   return wrap
 }
@@ -565,10 +567,22 @@ function buildPreppedOverlay(pc) {
 function buildPreppedSection() {
   const section = document.createElement('div')
   section.className = 'rd-section rd-prepped'
-  const lbl = document.createElement('div')
-  lbl.className = 'rd-section__title'
-  lbl.textContent = 'Prepped components'
-  section.appendChild(lbl)
+
+  // Collapsed by default — header toggles the body.
+  const toggle = document.createElement('button')
+  toggle.className = 'rd-prepped__toggle'
+  toggle.setAttribute('aria-expanded', 'false')
+  const n = preppedComponents.length
+  toggle.innerHTML = `<span class="rd-prepped__chev">▸</span> Prepped components${n ? ` (${n})` : ''}`
+  const body = document.createElement('div')
+  body.className = 'rd-prepped__body rd-prepped__body--hidden'
+  toggle.addEventListener('click', () => {
+    const open = body.classList.toggle('rd-prepped__body--hidden') === false
+    toggle.setAttribute('aria-expanded', String(open))
+    toggle.querySelector('.rd-prepped__chev').textContent = open ? '▾' : '▸'
+  })
+  section.appendChild(toggle)
+  section.appendChild(body)
 
   for (const pc of preppedComponents) {
     const item = document.createElement('div')
@@ -576,7 +590,7 @@ function buildPreppedSection() {
     item.innerHTML = `
       <span class="rd-prepped__name">${pc.name}</span>
       <span class="rd-prepped__meta">${pc.batches_remaining ?? '?'} batch${(pc.batches_remaining ?? 0) !== 1 ? 'es' : ''} left${pc.storage_notes ? ' · ' + pc.storage_notes : ''}</span>`
-    section.appendChild(item)
+    body.appendChild(item)
   }
 
   // Add form (expandable)
@@ -602,7 +616,7 @@ function buildPreppedSection() {
   addBtn.addEventListener('click', () => { form.hidden = !form.hidden })
   form.querySelector('#pc-save').addEventListener('click', () => savePreppedComponent(form))
   addItem.append(addBtn, form)
-  section.appendChild(addItem)
+  body.appendChild(addItem)
   return section
 }
 
