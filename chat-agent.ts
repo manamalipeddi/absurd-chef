@@ -58,6 +58,7 @@ BEHAVIOR:
 - When citing inventory for substitutions, add a brief hedge — inventory may not be fully current.
 - Day-of-week convention used throughout: 0=Sunday, 1=Monday, 2=Tuesday, 3=Wednesday, 4=Thursday, 5=Friday, 6=Saturday. Tool results include pre-computed day_name fields — always use day_name directly, never convert day_of_week integers yourself.
 - stash_still_valid: false in a tool result means a meal planned from freezer_stash has no matching valid stash entry — always flag this to the user.
+- Freezer stash items with source = "store_bought" are bought ready-made (no recipe to open) — refer to them as store-bought (e.g. "🛒 store-bought lasagna"). A store-bought item at portions 0 with typically_restocked = true is one the user normally keeps stocked and can rebuy on a grocery run.
 - Guest days: get_special_days returns known_guests[] (resolved member data) and guest_allergies[] (one-off). Both are hard allergy constraints for that date only — treat them with the same enforcement strength as household allergens when suggesting meals for that specific day.
 - Inventory item names follow the pattern "Category - Variant" (e.g. "Milk - Oat", "Bread - Lingon Grova"). When the user describes what they have in stock, call update_inventory_from_description. The tool handles parsing, matching, and writing; your job is to relay what was done and ask about any ambiguous items it surfaces.
 - WHY-NOTES: when you change a plan slot via update_plan_slot and there's a reason ("swap Thursday, Gintas is craving curry"), pass it as the reason argument — one short sentence. It's saved to the slot's notes and shown on the plan card, separate from the audit log. If the user gives no reason, omit it (the card then shows nothing for that slot).
@@ -372,8 +373,9 @@ async function toolGetInventory(input: Record<string, unknown>, db: DB) {
 
 async function toolGetFreezerStash(db: DB) {
   const { data } = await db.from('freezer_stash')
-    .select('id, recipe_name, recipe_id, portions, frozen_date, use_by_date, notes')
-    .eq('used', false).eq('active', true).gt('portions', 0)
+    .select('id, recipe_name, recipe_id, portions, frozen_date, use_by_date, notes, source, typically_restocked')
+    .eq('used', false).eq('active', true)
+    .or('portions.gt.0,typically_restocked.eq.true')
     .order('frozen_date', { ascending: false })
   return { stash: data || [] }
 }

@@ -211,9 +211,10 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
       .order("day_of_week"),
     supabase
       .from("freezer_stash")
-      .select("id, recipe_name, recipe_id, portions, notes")
-      .eq("used", false)
-      .gt("portions", 0),
+      .select("id, recipe_name, recipe_id, portions, notes, source, typically_restocked")
+      .eq("used", false).eq("active", true)
+      // include 0-portion items that are typically restocked (week-2 eligible)
+      .or("portions.gt.0,typically_restocked.eq.true"),
     // recently_used reads ACTUAL outcome: when a past day was made differently
     // (actually_made = false) use actual_recipe_id; otherwise the planned recipe.
     supabase
@@ -313,6 +314,9 @@ function buildPrompt(
       (t: TemplateRule) =>
         t.day_of_week === dow && t.meal_type === "dinner"
     );
+    const lunchRule = ctx.template.find(
+      (t: TemplateRule) => t.day_of_week === dow && t.meal_type === "lunch"
+    );
 
     // Compute date-scoped guest allergens from known guests + one-off entries
     const guestAllergens: string[] = [];
@@ -331,7 +335,12 @@ function buildPrompt(
       date,
       day_of_week: dow,
       day_name: ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][dow],
+      week: i < 7 ? 1 : 2,                       // week-relative inventory (rule 16)
       is_commute: isCommute,
+      kids_home: kidsHome,
+      weekday_kids_home: kidsHome && dow >= 1 && dow <= 5,   // effort chain (rule 15)
+      needs_lunch: !!lunchRule || kidsHome,      // lunch trigger (rule 14)
+      lunch_template: lunchRule?.label || lunchRule?.constraint_value || null,
       special_type: special?.type || null,
       guest_count: special?.guest_count || 0,
       guest_allergens: guestAllergens.length > 0 ? guestAllergens : undefined,
@@ -382,6 +391,8 @@ function buildPrompt(
     name: s.recipe_name,
     recipe_id: s.recipe_id,
     portions: s.portions,
+    source: (s as Record<string, unknown>).source || "homemade",
+    typically_restocked: !!(s as Record<string, unknown>).typically_restocked,
   }));
 
   return `You are AbsurdChef, an autonomous meal planning agent for a busy family.
@@ -398,7 +409,7 @@ PLANNING PERIOD
 - Days to plan: ${days}
 
 PLANNING RULES
-1. Plan dinner for every day. Add lunch only on kids_home days (special_type = 'kids_home').
+1. Plan dinner for every day. ALSO plan a lunch for any day where needs_lunch = true (this covers both weekend template lunches and weekday kids-home days — see rule 14). Output lunch as a separate plan entry with meal_type "lunch".
 2. No recipe repeat within 14 days (check recently_used below).
 3. No same protein two days in a row.
 4. Match each day's template constraint (protein or style).
@@ -417,7 +428,7 @@ PLANNING RULES
    guest_allergens, those are HARD constraints for that date only —
    treat them exactly like household allergens (do not suggest any
    recipe whose contains_allergen list intersects with guest_allergens).
-8. On kids_home days: plan a lunch too (light, quick).
+8. needs_lunch days: plan a lunch (light, quick). Weekend lunches follow the lunch template (see WEEKLY TEMPLATE LUNCH). Weekday kids-home lunches follow the weekday kids-home effort chain (rule 15).
 9. Mark one dinner per week as batch_cook if recipe is freezable —
    this builds the freezer stash.
 10. Prefer dump recipes on days adjacent to commute days too
@@ -443,9 +454,33 @@ PLANNING RULES
     "Matches Thursday's red meat template, hasn't been made in 18 days"
     Keep it to one sentence. Never leave notes empty for a chosen recipe.
     Do not restate the recipe name; give the reason.
+15. WEEKDAY KIDS-HOME (weekday_kids_home = true, i.e. a Mon–Fri kids-home day) —
+    effort-reduction priority chain for BOTH that day's lunch and dinner, same
+    shape as commute days:
+    a. Freezer stash matching the slot with portions > 0 (homemade OR store-bought,
+       no distinction) — use cook_source "freezer_stash" + stash_item_id.
+    b. A store-bought-style stash item at portions 0 BUT typically_restocked = true,
+       ONLY if that date is in week 2 (see rule 16) — assign it (the restock is
+       surfaced on the Grocery List).
+    c. A dump/slow_cook recipe matching the slot (same dump pool as commute days).
+    d. Otherwise remap/swap with an adjacent day, then fall back to unresolved.
+16. WEEK-RELATIVE INVENTORY (each day has week = 1 or 2):
+    - WEEK 1 (days 1–7): plan strictly against CURRENT stock. A freezer_stash item
+      at portions 0 is NOT available this week. Do not rely on buying something new.
+    - WEEK 2 (days 8–14): a full week of lead time exists. You MAY assign a
+      portions-0 stash item that is typically_restocked, or a recipe whose missing
+      ingredients are ordinary grocery items the user can buy this week. The need
+      will appear on the Grocery List for the user to order. Do not do this for
+      rare/specialty ingredients — use sensible judgement.
+17. STORE-BOUGHT stash items (source = "store_bought") need no cooking instructions;
+    treat them exactly like homemade stash for assignment. Keep cook_source
+    "freezer_stash" and reference stash_item_id.
 
-WEEKLY TEMPLATE
+WEEKLY TEMPLATE (dinner)
 ${JSON.stringify(ctx.template.filter((t: TemplateRule) => t.meal_type === "dinner"), null, 2)}
+
+WEEKLY TEMPLATE LUNCH
+${JSON.stringify(ctx.template.filter((t: TemplateRule) => t.meal_type === "lunch"), null, 2)}
 
 DAYS TO PLAN (with context)
 ${JSON.stringify(dateList, null, 2)}
@@ -464,12 +499,14 @@ ${JSON.stringify(lockedList, null, 2)}
 
 OUTPUT FORMAT
 Return ONLY valid JSON. No markdown. No explanation. No wrapper text.
+The "plan" array holds one entry per dinner for every day, PLUS one entry with
+meal_type "lunch" for each day where needs_lunch = true (rule 1/8).
 
 {
   "plan": [
     {
       "date": "YYYY-MM-DD",
-      "meal_type": "dinner",
+      "meal_type": "dinner | lunch",
       "recipe_id": "uuid or null",
       "recipe_name": "string",
       "cook_source": "home | freezer_stash | slow_cook | store_bought",
@@ -509,74 +546,65 @@ async function writePlan(
   supabase: ReturnType<typeof createClient>,
   plan: PlanDay[],
   mode: string,
-  targetDates?: string[]
+  targetDates?: string[],
+  startDate?: string,
 ) {
-  // This planner writes 'dinner' rows only (the delete below is dinner-scoped).
-  // Filter to dinner FIRST — the model can emit stray breakfast/snack/lunch
-  // entries, and slicing before filtering would misalign the rolling window.
-  // Sort by date so slice(7) reliably yields days 8–14.
-  const dinners = plan
-    .filter((p) => p.meal_type === "dinner")
-    .sort((a, b) => a.date.localeCompare(b.date));
+  const MEALS = ["dinner", "lunch"];          // the planner writes these two
+  const lockedKey = (d: string, m: string) => `${d}|${m}`;
 
-  // rolling_7: only days 8–14. targeted: only the explicitly requested dates
-  // (scoped replan — a single cell/day change must not rewrite the whole plan).
-  let toWrite = mode === "rolling_7" ? dinners.slice(7) : dinners;
-  if (mode === "targeted" && targetDates?.length) {
-    const want = new Set(targetDates);
-    toWrite = dinners.filter(p => want.has(p.date));
-  }
+  // Keep dinner + lunch; drop stray breakfast/snack. The day set is driven by
+  // dinners (one per day); lunch rides along for the same dates.
+  let rowsAll = plan.filter((p) => MEALS.includes(p.meal_type));
+  const dinnerDates = [...new Set(rowsAll.filter(p => p.meal_type === "dinner").map(p => p.date))].sort();
 
-  // Verify stash references are still live before committing
-  const stashPlanItems = toWrite.filter(p => p.cook_source === "freezer_stash" && p.stash_item_id)
+  let writeDates: Set<string>;
+  if (mode === "rolling_7") writeDates = new Set(dinnerDates.slice(7));   // days 8–14
+  else if (mode === "targeted" && targetDates?.length) writeDates = new Set(targetDates);
+  else writeDates = new Set(dinnerDates);
+  let toWrite = rowsAll.filter((p) => writeDates.has(p.date));
+
+  // Week-relative stash validation: a stash ref is normally only valid when
+  // portions > 0, BUT a typically_restocked item is also allowed in WEEK 2
+  // (date >= startDate+7) even at portions 0 — the user has a week of lead time
+  // to restock, and the need is surfaced on the Grocery List.
+  const week2From = startDate ? addDays(startDate, 7) : null;
+  const stashPlanItems = toWrite.filter(p => p.cook_source === "freezer_stash" && p.stash_item_id);
   if (stashPlanItems.length > 0) {
-    const { data: validStash } = await supabase.from("freezer_stash")
-      .select("id")
-      .in("id", stashPlanItems.map(p => p.stash_item_id!))
-      .eq("used", false).eq("active", true).gt("portions", 0)
-    const validIds = new Set((validStash || []).map((s: { id: string }) => s.id))
+    const { data: stashRows } = await supabase.from("freezer_stash")
+      .select("id, portions, used, active, typically_restocked")
+      .in("id", stashPlanItems.map(p => p.stash_item_id!));
+    const byId = new Map((stashRows || []).map((s: Record<string, unknown>) => [s.id, s]));
     toWrite = toWrite.map(p => {
-      if (p.cook_source === "freezer_stash" && p.stash_item_id && !validIds.has(p.stash_item_id)) {
-        return {
-          ...p,
-          cook_source: "home" as const,
-          stash_item_id: null,
-          notes: (p.notes ? p.notes + " | " : "") + "[stash ref invalidated at write time — reverted to home]",
+      if (p.cook_source === "freezer_stash" && p.stash_item_id) {
+        const s = byId.get(p.stash_item_id) as Record<string, unknown> | undefined;
+        const live = s && !s.used && s.active && (s.portions as number) > 0;
+        const week2Restock = s && s.active && s.typically_restocked && week2From && p.date >= week2From;
+        if (!live && !week2Restock) {
+          return { ...p, cook_source: "home" as const, stash_item_id: null,
+            notes: (p.notes ? p.notes + " | " : "") + "[stash ref invalidated at write time — reverted to home]" };
         }
       }
-      return p
-    })
+      return p;
+    });
   }
 
-  const dates = toWrite.map((p) => p.date);
+  const dates = [...writeDates];
 
-  // ── HARD RULE: never overwrite a manually-locked slot ──────────────────────
-  // Any meal_plans row with slot_locked = true is a deliberate user assignment
-  // (manual Plan-card pick, or chat update_plan_slot). The planner — scheduled
-  // OR manual — must leave it exactly as-is: skip the delete AND the insert for
-  // that date+meal_type. This is absolute and independent of date-range logic.
+  // ── HARD RULE: never overwrite a manually-locked slot (dinner OR lunch). ────
   const { data: lockedRows } = await supabase
     .from("meal_plans")
     .select("plan_date, meal_type")
     .in("plan_date", dates)
-    .eq("meal_type", "dinner")
+    .in("meal_type", MEALS)
     .eq("slot_locked", true);
-  const lockedKey = (d: string, m: string) => `${d}|${m}`;
   const lockedSet = new Set(
-    (lockedRows || []).map((r: { plan_date: string; meal_type: string }) =>
-      lockedKey(r.plan_date, r.meal_type)
-    )
+    (lockedRows || []).map((r: { plan_date: string; meal_type: string }) => lockedKey(r.plan_date, r.meal_type))
   );
-  if (lockedSet.size > 0) {
-    console.log(`Skipping ${lockedSet.size} locked slot(s): ${[...lockedSet].join(", ")}`);
-  }
+  if (lockedSet.size > 0) console.log(`Skipping ${lockedSet.size} locked slot(s)`);
 
-  // Only write slots that are NOT locked.
   toWrite = toWrite.filter((p) => !lockedSet.has(lockedKey(p.date, p.meal_type)));
 
-  // Dedup by date+meal_type — the model can occasionally emit the same date
-  // twice (e.g. via a remap); without this the batch insert violates the
-  // (plan_date, meal_type) unique constraint and the whole write rolls back.
+  // Dedup by date+meal_type (model can emit a date twice via remap).
   const seen = new Set<string>();
   toWrite = toWrite.filter((p) => {
     const k = lockedKey(p.date, p.meal_type);
@@ -585,17 +613,13 @@ async function writePlan(
     return true;
   });
 
-  const deletableDates = toWrite.map((p) => p.date);
-
-  // Delete existing (unlocked) plan entries for exactly these dates. The list
-  // already excludes locked dates; the slot_locked guard is defense-in-depth so
-  // a locked row can never be deleted even if lock detection above missed it.
-  if (deletableDates.length > 0) {
+  // Delete existing (unlocked) dinner+lunch entries for these dates, then insert.
+  if (dates.length > 0) {
     await supabase
       .from("meal_plans")
       .delete()
-      .in("plan_date", deletableDates)
-      .eq("meal_type", "dinner")
+      .in("plan_date", dates)
+      .in("meal_type", MEALS)
       .or("slot_locked.is.null,slot_locked.eq.false");
   }
 
@@ -622,16 +646,19 @@ async function writePlan(
     if (error) throw new Error(`Failed to write plan: ${error.message}`);
   }
 
-  // Mark used stash items
-  const usedStashIds = toWrite
-    .filter((p) => p.stash_item_id)
-    .map((p) => p.stash_item_id!);
-
-  if (usedStashIds.length > 0) {
-    await supabase
-      .from("freezer_stash")
-      .update({ used: true, used_date: new Date().toISOString().slice(0, 10) })
-      .in("id", usedStashIds);
+  // Mark used stash items — but only those with portions remaining. A week-2
+  // restock assignment (portions 0, typically_restocked) is a future need, not
+  // a consumption, so it must NOT be marked used.
+  const stashIds = toWrite.filter(p => p.stash_item_id).map(p => p.stash_item_id!);
+  if (stashIds.length > 0) {
+    const { data: live } = await supabase.from("freezer_stash")
+      .select("id").in("id", stashIds).eq("active", true).gt("portions", 0);
+    const liveIds = (live || []).map((s: { id: string }) => s.id);
+    if (liveIds.length > 0) {
+      await supabase.from("freezer_stash")
+        .update({ used: true, used_date: new Date().toISOString().slice(0, 10) })
+        .in("id", liveIds);
+    }
   }
 }
 
@@ -735,7 +762,7 @@ Deno.serve(async (req: Request) => {
     );
 
     // 5. Write plan to DB
-    await writePlan(supabase, result.plan, mode, targetDates);
+    await writePlan(supabase, result.plan, mode, targetDates, start_date);
 
     // dinner rows are the only ones written; report that count
     const dinnerCount = result.plan.filter((p) => p.meal_type === "dinner").length;

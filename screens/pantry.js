@@ -470,8 +470,11 @@ function buildFreezerRow(entry, ruled) {
 
   const right = document.createElement('div')
   right.className = 'pn-row__right'
+  if (entry.source === 'store_bought') {
+    const b = document.createElement('span'); b.className = 'pn-badge pn-badge-bought'; b.textContent = '🛒 store-bought'; right.appendChild(b)
+  }
   if (isEmpty) {
-    const b = document.createElement('span'); b.className = 'pn-badge pn-badge-out'; b.textContent = 'Empty'; right.appendChild(b)
+    const b = document.createElement('span'); b.className = 'pn-badge pn-badge-out'; b.textContent = entry.typically_restocked ? 'Restock' : 'Empty'; right.appendChild(b)
   }
   if (entry.notes) {
     const b = document.createElement('span'); b.className = 'pn-badge pn-badge-note'; b.textContent = '📝'; b.title = entry.notes; right.appendChild(b)
@@ -502,8 +505,24 @@ function openFreezerForm(id) {
     if (chosen && !nameInp.value.trim()) nameInp.value = chosen.name
   })
 
+  // Source toggle (Homemade / Store-bought); restock checkbox shows for store-bought.
+  const sourceSel = mkSelect([['homemade', '🏠 Homemade'], ['store_bought', '🛒 Store-bought']], entry?.source || 'homemade')
+  const restockField = document.createElement('label')
+  restockField.className = 'pn-check-row'
+  const restockCb = document.createElement('input')
+  restockCb.type = 'checkbox'; restockCb.checked = !!entry?.typically_restocked
+  const restockTxt = document.createElement('span')
+  restockTxt.textContent = 'I usually keep this stocked (restock on normal grocery runs)'
+  restockField.append(restockCb, restockTxt)
+  restockField.style.display = sourceSel.value === 'store_bought' ? '' : 'none'
+  sourceSel.addEventListener('change', () => {
+    restockField.style.display = sourceSel.value === 'store_bought' ? '' : 'none'
+  })
+
   form.append(
     mkField('Recipe name *', nameInp),
+    mkField('Type', sourceSel),
+    restockField,
     mkField('Link to recipe (optional)', recipeSel),
     mkField('Portions', portionsInp),
     mkField('Frozen date (optional)', frozenInp),
@@ -526,6 +545,8 @@ function openFreezerForm(id) {
       frozen_date:  frozenInp.value || null,
       use_by_date:  useByInp.value  || null,
       notes:        notesInp.value.trim() || null,
+      source:               sourceSel.value,
+      typically_restocked:  sourceSel.value === 'store_bought' ? restockCb.checked : false,
     }
     saveBtn.disabled = true; saveBtn.textContent = 'Saving…'
     const op = id
@@ -647,7 +668,7 @@ async function loadGrocery() {
   const today = new Date().toISOString().split('T')[0]
   const end   = new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0]
 
-  const [{ data: invData }, { data: planData }, { data: activeMasterData }] = await Promise.all([
+  const [{ data: invData }, { data: planData }, { data: activeMasterData }, { data: stashPlanData }] = await Promise.all([
     supabase.from('inventory').select('*').eq('active', true),
     supabase.from('meal_plans')
       .select('plan_date, recipe_id, cook_source, recipes(id, name, emoji, default_variant_id)')
@@ -655,6 +676,13 @@ async function loadGrocery() {
       .not('recipe_id', 'is', null)
       .order('plan_date'),
     supabase.from('master_ingredients').select('id').eq('active', true),
+    // Freezer-stash assignments in the window → surface any that need restocking
+    // (portions 0 + typically_restocked, i.e. a week-2 restock assignment).
+    supabase.from('meal_plans')
+      .select('plan_date, stash_item_id, freezer_stash(recipe_name, portions, typically_restocked)')
+      .gte('plan_date', today).lte('plan_date', end)
+      .eq('cook_source', 'freezer_stash').not('stash_item_id', 'is', null)
+      .order('plan_date'),
   ])
 
   const allInventory = invData || []
@@ -732,6 +760,17 @@ async function loadGrocery() {
       needed.push({ name: data.displayName, usages: data.usages, matchedInventoryId: match?.id || null })
     }
   }
+
+  // Restockable freezer/store-bought meals assigned upcoming but currently empty.
+  const restockByName = {}
+  for (const row of stashPlanData || []) {
+    const fs = row.freezer_stash
+    if (!fs || !fs.typically_restocked || Number(fs.portions) > 0) continue
+    const key = fs.recipe_name
+    if (!restockByName[key]) restockByName[key] = { name: `🛒 ${fs.recipe_name}`, usages: [], matchedInventoryId: null }
+    restockByName[key].usages.push({ recipe_id: row.stash_item_id, recipeName: fs.recipe_name, date: row.plan_date, dateLabel: fmtPlanDate(row.plan_date) })
+  }
+  needed.push(...Object.values(restockByName))
 
   groceryData = { outOfStock: annotatedOOS, needed }
 }
