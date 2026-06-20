@@ -17,10 +17,11 @@ const RECIPE_CATEGORY = {
 }
 
 // ── State ─────────────────────────────────────────────────
-let screenEl       = null
-let allRecipes     = []   // for the recipe picker
-let generating     = false
-let householdCount = 0
+let screenEl        = null
+let allRecipes      = []   // for the recipe picker
+let generating      = false
+let householdCount  = 0
+let currentStartDate = null  // start of the currently displayed plan window
 
 // ── Date helpers ──────────────────────────────────────────
 function addDays(s, n) {
@@ -48,6 +49,21 @@ function fmtDate(s) {
   const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getUTCMonth()]
   return `${dow} ${d.getUTCDate()} ${mon}`
 }
+function fmtDayMon(s) {
+  const d = new Date(s + 'T12:00:00Z')
+  const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getUTCMonth()]
+  return `${d.getUTCDate()} ${mon}`
+}
+// ISO 8601 week number (weeks start Monday; week 1 contains the first Thursday).
+function isoWeek(s) {
+  const d = new Date(s + 'T12:00:00Z')
+  const day = (d.getUTCDay() + 6) % 7        // Mon=0 … Sun=6
+  d.setUTCDate(d.getUTCDate() - day + 3)      // Thursday of this week
+  const firstThu = new Date(Date.UTC(d.getUTCFullYear(), 0, 4))
+  const ft = (firstThu.getUTCDay() + 6) % 7
+  firstThu.setUTCDate(firstThu.getUTCDate() - ft + 3)
+  return 1 + Math.round((d - firstThu) / (7 * 86400000))
+}
 
 // ── Lifecycle ─────────────────────────────────────────────
 export function init(el) {
@@ -56,11 +72,8 @@ export function init(el) {
 }
 
 export async function activate({ headerLeft, headerRight }) {
-  headerRight.innerHTML = `
-    <button class="header-btn" id="btn-generate" aria-label="Generate plan">
-      ${sparklesSvg()}
-    </button>`
-  document.getElementById('btn-generate').addEventListener('click', onGenerate)
+  // Generation actions now live as labelled buttons in the plan body.
+  headerRight.innerHTML = ''
   await loadAndRender()
 }
 
@@ -81,6 +94,7 @@ async function loadAndRender() {
   screenEl.innerHTML = `<div class="loading-row"><div class="spinner"></div>Loading…</div>`
 
   const { startDate, endDate } = await getPlanWindow()
+  currentStartDate = startDate
   const today = todayStr()
   // History covers past dinners older than the forward window (no overlap with
   // the current-week past days shown in the forward cards).
@@ -178,15 +192,23 @@ function buildDayData(planRows, specialRows, startDate) {
   return Array.from({ length: 14 }, (_, i) => {
     const date  = addDays(startDate, i)
     const entry = planByDate[date] || { meta: {}, slots: {} }
+    const sset  = specialMap[date] || new Set()
+    // Kids-home reflects LIVE special_days (kids_home/preschool_closed/holiday)
+    // as well as the flags baked into the plan rows — so adding a kids-home day
+    // shows immediately, without needing to regenerate the plan.
+    const isKidsHome =
+      entry.meta.isHoliday || entry.meta.isPreschoolClosed ||
+      sset.has('kids_home') || sset.has('preschool_closed') || sset.has('holiday')
     return {
       date,
       slots: entry.slots,
       meta: {
         isHoliday:        entry.meta.isHoliday        || false,
         isPreschoolClosed: entry.meta.isPreschoolClosed || false,
+        isKidsHome,
         isCommute:        entry.meta.isCommute         || false,
         guestCount:       entry.meta.guestCount        || 0,
-        isGintasAway:     (specialMap[date] || new Set()).has('gintas_away'),
+        isGintasAway:     sset.has('gintas_away'),
       },
     }
   })
@@ -205,6 +227,7 @@ function render(days, startDate, genWarning, history) {
     return
   }
 
+  screenEl.appendChild(buildPlanSubhead(startDate))
   screenEl.appendChild(buildActionBar())
 
   const wrap = document.createElement('div')
@@ -213,6 +236,20 @@ function render(days, startDate, genWarning, history) {
   screenEl.appendChild(wrap)
 
   if (history && history.length) screenEl.appendChild(buildHistorySection(history))
+}
+
+// Date range + ISO week numbers for the displayed 14-day window.
+function buildPlanSubhead(startDate) {
+  const endDate = addDays(startDate, 13)
+  const w1 = isoWeek(startDate)
+  const w2 = isoWeek(endDate)
+  const weeks = w1 === w2 ? `Week ${w1}` : `Weeks ${w1}–${w2}`
+  const el = document.createElement('div')
+  el.className = 'plan-subhead'
+  el.innerHTML = `
+    <span class="plan-subhead__dates">${fmtDayMon(startDate)} – ${fmtDayMon(endDate)}</span>
+    <span class="plan-subhead__weeks">${weeks}</span>`
+  return el
 }
 
 // ── History (past actual outcomes) ────────────────────────
@@ -235,6 +272,7 @@ function buildHistorySection(historyRows) {
       meta: {
         isHoliday: row.is_holiday || false,
         isPreschoolClosed: row.is_preschool_closed || false,
+        isKidsHome: row.is_holiday || row.is_preschool_closed || false,
         isCommute: row.is_commute_day || false,
         guestCount: row.guest_count || 0,
         isGintasAway: false,
@@ -246,16 +284,26 @@ function buildHistorySection(historyRows) {
   return section
 }
 
-// Manual "generate next week now" action, near the top of the plan.
+// Two generation actions near the top of the plan:
+//  • Regenerate plan  — full_14 rebuild of the current window (current params)
+//  • Generate next week — rolling_7 failsafe if Sunday's cron didn't run
 function buildActionBar() {
   const bar = document.createElement('div')
   bar.className = 'plan-actionbar'
-  const btn = document.createElement('button')
-  btn.className = 'plan-roll-btn'
-  btn.id = 'btn-roll-week'
-  btn.innerHTML = '🔄 Generate next week now'
-  btn.addEventListener('click', onRollNextWeek)
-  bar.appendChild(btn)
+
+  const regen = document.createElement('button')
+  regen.className = 'plan-roll-btn'
+  regen.id = 'btn-regenerate'
+  regen.innerHTML = '🔄 Regenerate plan'
+  regen.addEventListener('click', onRegeneratePlan)
+
+  const next = document.createElement('button')
+  next.className = 'plan-roll-btn plan-roll-btn--alt'
+  next.id = 'btn-roll-week'
+  next.innerHTML = '📅 Generate next week'
+  next.addEventListener('click', onRollNextWeek)
+
+  bar.append(regen, next)
   return bar
 }
 
@@ -352,7 +400,7 @@ function buildContextStrip(day) {
   const badges = document.createElement('div')
   badges.className = 'day-card__badges'
 
-  if (day.meta.isHoliday || day.meta.isPreschoolClosed)
+  if (day.meta.isKidsHome)
     badges.appendChild(badge('🏠', 'Kids home'))
   if (day.meta.isCommute)
     badges.appendChild(badge('🚗', 'Commute'))
@@ -688,8 +736,39 @@ async function onRollNextWeek() {
     return
   } catch (e) {
     toast(`Couldn't generate next week: ${e.message || 'unknown error'}. Try again, or ask in Chat.`, { error: true, duration: 6000 })
-    if (btn) { btn.disabled = false; btn.innerHTML = '🔄 Generate next week now' }
+    if (btn) { btn.disabled = false; btn.innerHTML = '📅 Generate next week' }
     if (banner) { banner.disabled = false; banner.textContent = "⚠ Last automatic update didn't complete — tap to retry" }
+  } finally {
+    generating = false
+  }
+}
+
+// Regenerate the whole current 14-day window from current parameters
+// (full_14, respects locked slots). Logged as a manual run.
+async function onRegeneratePlan() {
+  if (generating) return
+  if (!confirm('Regenerate the current plan from your current settings? Locked days stay as they are.')) return
+  generating = true
+  const btn = document.getElementById('btn-regenerate')
+  if (btn) { btn.disabled = true; btn.innerHTML = `<span class="spinner spinner--sm"></span> Regenerating…` }
+
+  try {
+    const res  = await fetch(`${FUNCTIONS_URL}/plan-generator`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'full_14', start_date: currentStartDate, triggered_by: 'manual' }),
+    })
+    const json = await res.json()
+    if (!json.success) throw new Error(json.error || 'Generation failed')
+    toast(`Plan regenerated — ${json.days_planned} day(s)`)
+    if (json.unresolved?.length)
+      setTimeout(() => toast(`${json.unresolved.length} day(s) need input — check Chat`, { duration: 5000 }), 600)
+    generating = false
+    await loadAndRender()
+    return
+  } catch (e) {
+    toast(`Couldn't regenerate: ${e.message || 'unknown error'}. Try again, or ask in Chat.`, { error: true, duration: 6000 })
+    if (btn) { btn.disabled = false; btn.innerHTML = '🔄 Regenerate plan' }
   } finally {
     generating = false
   }
