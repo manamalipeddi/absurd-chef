@@ -1,4 +1,4 @@
-import { supabase, navigateTo, navState } from '../app.js'
+import { supabase, navigateTo, navState, mkFab } from '../app.js'
 
 // ── Section config ────────────────────────────────────────
 const SECTIONS = [
@@ -24,13 +24,7 @@ export function init(el) {
 
 export async function activate({ headerLeft, headerRight }) {
   if (!screenEl) return
-  headerRight.innerHTML = `
-    <button class="header-btn" id="btn-add-recipe" aria-label="Add recipe">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/>
-      </svg>
-    </button>`
-  document.getElementById('btn-add-recipe').addEventListener('click', () => navigateTo('add-recipe'))
+  headerRight.innerHTML = ''   // adding a recipe is now the standard FAB
   screenEl.innerHTML = `<div class="loading-row"><div class="spinner"></div>Loading recipes…</div>`
   await loadData()
   render()
@@ -83,6 +77,8 @@ function render() {
   }
 
   renderFooter()
+
+  screenEl.appendChild(mkFab(() => navigateTo('add-recipe'), 'Add recipe'))
 
   // Restore scroll when returning from Recipe Detail (back navigation).
   if (navState.scrollRecipes != null) {

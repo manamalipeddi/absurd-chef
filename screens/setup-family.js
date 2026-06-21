@@ -1,4 +1,4 @@
-import { supabase, navigateTo, toast, pushView } from '../app.js'
+import { supabase, navigateTo, toast, pushView, mkFab } from '../app.js'
 
 let screenEl = null
 let members  = []
@@ -30,15 +30,16 @@ async function load() {
 // ── List ──────────────────────────────────────────────────
 function renderList() {
   screenEl.innerHTML = ''
-  const addBtn = mkAddBtn('+ Add family member', () => openForm(null))
-  screenEl.appendChild(addBtn)
 
-  if (!members.length) { screenEl.appendChild(mkEmpty('No family members yet.')); return }
+  if (!members.length) { screenEl.appendChild(mkEmpty('No family members yet.')) }
+  else {
+    const card = document.createElement('div')
+    card.className = 'card su-card'
+    members.forEach((m, i) => card.appendChild(buildRow(m, i < members.length - 1)))
+    screenEl.appendChild(card)
+  }
 
-  const card = document.createElement('div')
-  card.className = 'card su-card'
-  members.forEach((m, i) => card.appendChild(buildRow(m, i < members.length - 1)))
-  screenEl.appendChild(card)
+  screenEl.appendChild(mkFab(() => openForm(null), 'Add family member'))
 }
 
 function buildRow(m, ruled) {

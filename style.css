@@ -58,20 +58,24 @@ body {
   justify-content: space-between;
   padding: 0 18px;
   padding-top: env(safe-area-inset-top, 0px);
-  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-light) 100%);
+  /* Burgundy banner — the deep green (#015041) is reserved as an accent only,
+     never the header background. */
+  background: linear-gradient(135deg, var(--page) 0%, var(--page-deep) 100%);
   border: none;
   /* Deliberate full-width banner: flush to the top/side edges with a rounded
      bottom so it reads as a shaped header, not a floating rectangle. */
   border-radius: 0 0 20px 20px;
-  box-shadow: 0 3px 18px rgba(34, 97, 92, 0.28);
+  box-shadow: 0 3px 18px rgba(0, 0, 0, 0.25);
   position: relative;
   z-index: 10;
 }
 
 #screen-title {
-  font-size: 22.3px;
-  font-weight: 700;
-  letter-spacing: -0.3px;
+  /* Single deliberate flourish: the title is the only text in Barriecito. */
+  font-family: 'Barriecito', var(--font);
+  font-size: 24px;
+  font-weight: 400;
+  letter-spacing: 0.4px;
   color: #ffffff;
 }
 
@@ -3102,6 +3106,37 @@ body {
   margin-top: 3px;
   line-height: 1.4;
 }
+/* Standard floating action button (create-new entry point, every list screen) */
+.fab {
+  position: fixed;
+  right: 18px;
+  bottom: calc(var(--nav-h) + var(--safe-bottom) + 18px);
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  box-shadow: 0 5px 16px rgba(1, 80, 65, 0.42);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.12s, box-shadow 0.12s;
+}
+.fab:active { transform: scale(0.93); box-shadow: 0 3px 10px rgba(1, 80, 65, 0.4); }
+.fab svg { width: 26px; height: 26px; }
+/* Scroll clearance so the last row isn't trapped under the FAB on FAB screens.
+   (.pn-content is pantry's own scroll container; the setup/recipe screens scroll
+   on the screen element itself.) */
+.pn-content,
+#screen-recipes, #screen-setup-family,
+#screen-setup-ingredients, #screen-setup-weekly-template {
+  padding-bottom: 96px;
+}
+
 /* Shortfall line on a needed item: "Need 400g, have ~150g — buy 250g more" */
 .pn-grocery-shortfall {
   font-size: 12.4px;

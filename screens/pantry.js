@@ -1,4 +1,4 @@
-import { supabase, navigateTo, navState, toast, pushView } from '../app.js'
+import { supabase, navigateTo, navState, toast, pushView, mkFab } from '../app.js'
 
 // ── Module state ──────────────────────────────────────────
 let screenEl  = null
@@ -144,25 +144,28 @@ async function loadInventory() {
     supabase.from('prepped_components').select('*, recipes(id, name, emoji)')
       .eq('active', true).gt('batches_remaining', 0).order('made_date', { ascending: false }),
   ])
-  inventoryData = data || []
+  // Two stacked alphabetical sorts: actively-checked items (last_updated_at set)
+  // first, then never-checked items (null) as a distinct group at the bottom.
+  inventoryData = (data || []).sort((a, b) => {
+    const an = a.last_updated_at == null, bn = b.last_updated_at == null
+    if (an !== bn) return an ? 1 : -1
+    return (a.name || '').localeCompare(b.name || '')
+  })
   preppedData = prepped || []
 }
 
 function renderInventory() {
   contentEl.innerHTML = ''
 
-  // Add + Tell on one row.
+  // "Tell me what's in stock" stays inline (a chat shortcut, not a create-new
+  // action). Adding a new item is the standard FAB (appended below).
   const actionRow = document.createElement('div')
   actionRow.className = 'pn-inv-actions'
-  const addBtn = document.createElement('button')
-  addBtn.className = 'pn-inv-action'
-  addBtn.textContent = '+ Add item'
-  addBtn.addEventListener('click', () => openInventoryForm(null, 'pantry'))
   const tellBtn = document.createElement('button')
   tellBtn.className = 'pn-inv-action pn-inv-action--alt'
   tellBtn.textContent = "🎤 Tell me what's in stock"
   tellBtn.addEventListener('click', () => navigateTo('chat'))
-  actionRow.append(addBtn, tellBtn)
+  actionRow.append(tellBtn)
   contentEl.appendChild(actionRow)
 
   const active = inventoryData.filter(i => i.active !== false)
@@ -233,6 +236,8 @@ function renderInventory() {
       contentEl.appendChild(card)
     }
   }
+
+  contentEl.appendChild(mkFab(() => openInventoryForm(null, 'pantry'), 'Add inventory item'))
 }
 
 function buildInventorySection(catKey, items) {
@@ -254,13 +259,8 @@ function buildInventorySection(catKey, items) {
       <path stroke-linecap="round" stroke-linejoin="round" d="m19 9-7 7-7-7"/>
     </svg>`
 
-  const addCatBtn = document.createElement('button')
-  addCatBtn.className = 'pn-section-add'
-  addCatBtn.textContent = '+'
-  addCatBtn.title = `Add to ${catKey}`
-  addCatBtn.addEventListener('click', e => { e.stopPropagation(); openInventoryForm(null, catKey) })
-
-  header.append(toggleBtn, addCatBtn)
+  // Per-section "+" removed — adding is now the single standard FAB.
+  header.append(toggleBtn)
 
   const body = document.createElement('div')
   body.className = 'pn-section-body' + (isOpen ? '' : ' pn-section-body--hidden')
@@ -577,9 +577,6 @@ async function loadFreezer() {
 function renderFreezer() {
   contentEl.innerHTML = ''
 
-  const addBtn = mkAddBtn('+ Add freezer meal', () => openFreezerForm(null))
-  contentEl.appendChild(addBtn)
-
   if (!freezerData.length) {
     contentEl.appendChild(mkEmpty('No freezer meals yet.'))
   } else {
@@ -588,6 +585,8 @@ function renderFreezer() {
     freezerData.forEach((entry, i) => card.appendChild(buildFreezerRow(entry, i < freezerData.length - 1)))
     contentEl.appendChild(card)
   }
+
+  contentEl.appendChild(mkFab(() => openFreezerForm(null), 'Add freezer meal'))
 
   // Hidden entries
   loadHiddenFreezerToggle()

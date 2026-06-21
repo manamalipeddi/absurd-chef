@@ -1,4 +1,4 @@
-import { supabase, navigateTo, toast, pushView } from '../app.js'
+import { supabase, navigateTo, toast, pushView, mkFab } from '../app.js'
 
 const DAYS        = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']
 const DAY_SHORT   = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
@@ -35,25 +35,28 @@ function closeForm() { const h = formView; formView = null; if (h) h.done(); loa
 // ── List ──────────────────────────────────────────────────
 function renderList() {
   screenEl.innerHTML = ''
-  screenEl.appendChild(mkAddBtn('+ Add template rule', () => openForm(null)))
 
-  if (!rows.length) { screenEl.appendChild(mkEmpty('No template rules yet.')); return }
+  if (!rows.length) {
+    screenEl.appendChild(mkEmpty('No template rules yet.'))
+  } else {
+    // Group by day_of_week
+    const byDay = {}
+    rows.forEach(r => { (byDay[r.day_of_week] = byDay[r.day_of_week] || []).push(r) })
 
-  // Group by day_of_week
-  const byDay = {}
-  rows.forEach(r => { (byDay[r.day_of_week] = byDay[r.day_of_week] || []).push(r) })
-
-  const card = document.createElement('div')
-  card.className = 'card su-card'
-  let isFirst = true
-  Object.keys(byDay).sort((a, b) => a - b).forEach(day => {
-    byDay[day].forEach((r, i) => {
-      const row = buildRow(r, !isFirst || i > 0)
-      card.appendChild(row)
-      isFirst = false
+    const card = document.createElement('div')
+    card.className = 'card su-card'
+    let isFirst = true
+    Object.keys(byDay).sort((a, b) => a - b).forEach(day => {
+      byDay[day].forEach((r, i) => {
+        const row = buildRow(r, !isFirst || i > 0)
+        card.appendChild(row)
+        isFirst = false
+      })
     })
-  })
-  screenEl.appendChild(card)
+    screenEl.appendChild(card)
+  }
+
+  screenEl.appendChild(mkFab(() => openForm(null), 'Add template rule'))
 }
 
 function buildRow(r, ruled) {

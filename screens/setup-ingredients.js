@@ -1,4 +1,4 @@
-import { supabase, navigateTo, navState, toast, pushView } from '../app.js'
+import { supabase, navigateTo, navState, toast, pushView, mkFab } from '../app.js'
 
 let screenEl = null
 let items    = []                 // all master_ingredients
@@ -58,7 +58,6 @@ function usageFor(id) { return usageByMaster.get(id) || [] }
 // ── List ──────────────────────────────────────────────────
 function renderList() {
   screenEl.innerHTML = ''
-  screenEl.appendChild(mkAddBtn('+ Add ingredient', () => openForm(null)))
 
   const active = items.filter(i => i.active !== false)
   const hidden = items.filter(i => i.active === false)
@@ -73,6 +72,8 @@ function renderList() {
   }
 
   if (hidden.length) appendHiddenSection(hidden)
+
+  screenEl.appendChild(mkFab(() => openForm(null), 'Add ingredient'))
 }
 
 function buildRow(m, ruled) {

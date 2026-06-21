@@ -148,6 +148,20 @@ navBtns.forEach(btn =>
   btn.addEventListener('click', () => navigateTo(btn.dataset.screen))
 )
 
+// ── Floating action button ────────────────────────────────
+// Standard FAB: circular, fixed bottom-right above the nav, accent-green fill.
+// Append it to a screen's (re-rendered) content so it hides with the screen and
+// refreshes on re-render; wire onClick to that screen's existing add action.
+export function mkFab(onClick, label = 'Add') {
+  const b = document.createElement('button')
+  b.className = 'fab'
+  b.type = 'button'
+  b.setAttribute('aria-label', label)
+  b.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>`
+  b.addEventListener('click', onClick)
+  return b
+}
+
 // ── Toast ─────────────────────────────────────────────────
 const toastContainer = document.createElement('div')
 toastContainer.id = 'toast-container'
