@@ -4,13 +4,13 @@
 :root {
   --page:               #5e2536;   /* deep burgundy — the app background */
   --page-deep:          #4c1d2c;
-  /* Warm cream neutrals — lower contrast against the burgundy than the old cool
-     mint-whites, and cohesive with the cream used on the burgundy itself.
-     (Alt palettes to try: blush #efe4e3 / #e7d9d8 / #ddccca · greige
+  /* Tonal blush neutrals — surfaces tinted toward the burgundy itself for a
+     near-monochrome, very soft, low-contrast look.
+     (Alt palettes to try: cream #f4ecde / #ece0cd / #e3d6c4 · greige
      #efe9e2 / #e4ddd3 / #ddd4c8.) */
-  --bg:                 #ece0cd;   /* soft cream fill inside cards / inputs / active rows */
-  --surface:            #f4ecde;   /* warm cream — card surfaces */
-  --border:             #e3d6c4;   /* warm cream border */
+  --bg:                 #e7d9d8;   /* soft blush fill inside cards / inputs / active rows */
+  --surface:            #efe4e3;   /* tonal blush — card surfaces */
+  --border:             #ddccca;   /* blush border */
   --primary:            #013F33;  /* deep green — the contrast / action colour */
   --primary-light:      #047a5f;   /* lighter green — gradient partner for --primary */
   --primary-bg:         #d6e9e2;   /* pale green tint for icon backgrounds, badges */
