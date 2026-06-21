@@ -1804,20 +1804,40 @@ body {
 /* ── Recipe detail — hacks ───────────────────────────────── */
 .rd-hacks { padding-bottom: 4px; }
 .rd-hacks__list { margin-bottom: 8px; }
-.rd-hacks__btn {
-  margin: 4px 0 12px;
-  padding: 8px 14px;
-  background: var(--primary-bg);
+/* Unified action button for the whole Recipe Detail page — one consistent,
+   non-overpowering treatment (light accent-green fill, no heavy solid blocks,
+   no primary/secondary tiering). */
+.rd-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 14px;
   border: 1.5px solid var(--primary);
   border-radius: var(--radius-sm);
+  background: var(--primary-bg);
+  color: var(--primary);
   font-family: var(--font);
   font-size: 13.8px;
-  font-weight: 500;
-  color: var(--primary);
+  font-weight: 600;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
-.rd-hacks__btn:active { opacity: 0.75; }
+.rd-btn:active   { opacity: 0.8; }
+.rd-btn:disabled { opacity: 0.55; cursor: default; }
+.rd-actions__row .rd-btn { flex: 1; }       /* three actions share the row width */
+.rd-hacks__btn { margin: 4px 0 12px; }       /* spacing only — styling comes from .rd-btn */
+
+/* AI action header: section label (left) + reveal/run button (right) */
+.rd-ai-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 16px;
+}
+.rd-ai-head__title { font-size: 14px; font-weight: 600; color: var(--text); min-width: 0; }
+.rd-ai-head .rd-btn { flex-shrink: 0; }
 .rd-hacks__loading {
   display: flex;
   align-items: center;

@@ -22,7 +22,7 @@ export function init(el) {
   inputArea.id = 'chat-input-area'
   inputArea.innerHTML = `
     <textarea id="chat-input" rows="1"
-      placeholder="Ask me anything…"
+      placeholder="Tell me what's in stock  🪄"
       aria-label="Message AbsurdChef"></textarea>
     <button id="chat-send" aria-label="Send">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

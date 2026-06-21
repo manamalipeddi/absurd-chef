@@ -708,53 +708,92 @@ async function loadHiddenFreezerToggle() {
   }
 }
 
+// Compact freezer item — same row + stepper treatment as Inventory (portions
+// are small discrete counts, so a numeric stepper alone; no status pill).
 function buildFreezerRow(entry, ruled) {
-  const isEmpty = entry.portions == null || Number(entry.portions) === 0
-  const useByStatus = expiryStatus(entry.use_by_date)
+  const wrap = document.createElement('div')
+  renderFreezerItem(wrap, entry, ruled)
+  return wrap
+}
+
+function renderFreezerItem(wrap, entry, ruled) {
+  wrap.innerHTML = ''
+  wrap.className = 'pn-inv-item' + (ruled ? ' pn-row--ruled' : '')
 
   const row = document.createElement('div')
-  row.className = 'pn-row' + (ruled ? ' pn-row--ruled' : '') + (isEmpty ? ' pn-row--out' : '')
+  row.className = 'pn-row pn-inv-row'
 
-  const centre = document.createElement('div')
-  centre.className = 'pn-row__centre'
-  const main = document.createElement('div')
-  main.className = 'pn-row__main'
-  main.textContent = entry.recipe_name || '(unnamed)'
-  const meta = document.createElement('div')
-  meta.className = 'pn-row__meta'
-  const parts = []
-  if (!isEmpty && entry.portions != null) parts.push(entry.portions + ' portion' + (entry.portions !== 1 ? 's' : ''))
-  if (entry.frozen_date) parts.push('frozen ' + fmtShortDate(entry.frozen_date))
+  const tap = document.createElement('div')
+  tap.className = 'pn-inv-tap'
+  const name = document.createElement('div')
+  name.className = 'pn-row__main pn-inv-name'
+  name.textContent = entry.recipe_name || '(unnamed)'
+
+  const sub = document.createElement('div')
+  sub.className = 'pn-inv-sub'
+  const stor = document.createElement('span')
+  stor.textContent = entry.source === 'store_bought' ? '🛒 Store-bought' : 'Freezer'
+  sub.appendChild(stor)
+  if (entry.frozen_date) sub.appendChild(document.createTextNode(' · frozen ' + fmtShortDate(entry.frozen_date)))
   if (entry.use_by_date) {
-    const dateStr = 'use by ' + fmtShortDate(entry.use_by_date)
-    if (useByStatus) {
-      const span = document.createElement('span')
-      span.className = `pn-expiry-${useByStatus}`
-      span.textContent = dateStr
-      meta.textContent = parts.join(' · ') + (parts.length ? ' · ' : '')
-      meta.appendChild(span)
-    } else {
-      parts.push(dateStr)
-    }
+    sub.appendChild(document.createTextNode(' · '))
+    const status = expiryStatus(entry.use_by_date)
+    const e = document.createElement('span')
+    e.textContent = 'use by ' + fmtShortDate(entry.use_by_date)
+    if (status) e.className = 'pn-sub-warn'
+    sub.appendChild(e)
   }
-  if (!entry.use_by_date || !useByStatus) meta.textContent = parts.join(' · ')
-  centre.append(main, meta)
-  row.appendChild(centre)
+  if ((entry.portions == null || Number(entry.portions) === 0) && entry.typically_restocked) {
+    const r = document.createElement('span'); r.className = 'pn-sub-warn'; r.textContent = ' · restock'
+    sub.appendChild(r)
+  }
+  tap.append(name, sub)
+  tap.addEventListener('click', () => openFreezerForm(entry.id))
+  row.appendChild(tap)
 
-  const right = document.createElement('div')
-  right.className = 'pn-row__right'
-  if (entry.source === 'store_bought') {
-    const b = document.createElement('span'); b.className = 'pn-badge pn-badge-bought'; b.textContent = '🛒 store-bought'; right.appendChild(b)
-  }
-  if (isEmpty) {
-    const b = document.createElement('span'); b.className = 'pn-badge pn-badge-out'; b.textContent = entry.typically_restocked ? 'Restock' : 'Empty'; right.appendChild(b)
-  }
-  if (entry.notes) {
-    const b = document.createElement('span'); b.className = 'pn-badge pn-badge-note'; b.textContent = '📝'; b.title = entry.notes; right.appendChild(b)
-  }
-  row.appendChild(right)
-  row.addEventListener('click', () => openFreezerForm(entry.id))
-  return row
+  row.appendChild(buildPortionsStepper(wrap, entry, ruled))
+  wrap.appendChild(row)
+}
+
+async function setFreezerPortions(wrap, entry, ruled, newPortions) {
+  const { data, error } = await supabase.from('freezer_stash').update({ portions: newPortions }).eq('id', entry.id).select('*').single()
+  if (error || !data) { toast('Update failed', { error: true }); return }
+  Object.assign(entry, data)
+  const idx = freezerData.findIndex(x => x.id === entry.id)
+  if (idx >= 0) freezerData[idx] = { ...freezerData[idx], ...data }
+  renderFreezerItem(wrap, entry, ruled)
+}
+
+function buildPortionsStepper(wrap, entry, ruled) {
+  const c = document.createElement('div')
+  c.className = 'pn-stepper'
+  const mk = (txt, cls) => { const b = document.createElement('button'); b.className = 'pn-step-btn ' + cls; b.textContent = txt; return b }
+  const minus = mk('−', 'pn-step-btn--minus')
+  const plus  = mk('+', 'pn-step-btn--plus')
+  const num = document.createElement('button')
+  num.className = 'pn-step-num'
+  num.textContent = fmtQty(entry.portions)
+
+  minus.addEventListener('click', e => { e.stopPropagation(); setFreezerPortions(wrap, entry, ruled, Math.max(0, (Number(entry.portions) || 0) - 1)) })
+  plus.addEventListener('click',  e => { e.stopPropagation(); setFreezerPortions(wrap, entry, ruled, (Number(entry.portions) || 0) + 1) })
+  num.addEventListener('click', e => {
+    e.stopPropagation()
+    const inp = document.createElement('input')
+    inp.type = 'number'; inp.className = 'pn-qty-input'; inp.min = 0; inp.step = '1'
+    inp.value = entry.portions ?? ''
+    num.replaceWith(inp); inp.focus(); inp.select()
+    let done = false
+    const commit = () => { if (done) return; done = true; const v = inp.value === '' ? 0 : Math.max(0, parseInt(inp.value) || 0); setFreezerPortions(wrap, entry, ruled, v) }
+    const cancel = () => { if (done) return; done = true; renderFreezerItem(wrap, entry, ruled) }
+    inp.addEventListener('click', e2 => e2.stopPropagation())
+    inp.addEventListener('blur', commit)
+    inp.addEventListener('keydown', e2 => {
+      if (e2.key === 'Enter') { e2.preventDefault(); inp.blur() }
+      else if (e2.key === 'Escape') { e2.preventDefault(); cancel() }
+    })
+  })
+  c.append(minus, num, plus)
+  return c
 }
 
 // ── Freezer form ───────────────────────────────────────────

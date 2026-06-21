@@ -470,7 +470,7 @@ function buildHacks(hacks) {
     section.appendChild(loading)
   } else {
     const btn = document.createElement('button')
-    btn.className = 'rd-hacks__btn'
+    btn.className = 'rd-btn rd-hacks__btn'
     btn.textContent = '💡 Check for more tips'
     btn.addEventListener('click', () => addMoreHacks())
     section.appendChild(btn)
@@ -619,19 +619,19 @@ function buildActions() {
   row.className = 'rd-actions__row'
 
   const btnUse = document.createElement('button')
-  btnUse.className   = 'btn-outline'
+  btnUse.className   = 'rd-btn'
   btnUse.textContent = 'Use tonight'
   btnUse.addEventListener('click', () => toast('Coming soon — use Chat to change a day'))
 
   const btnSched = document.createElement('button')
-  btnSched.className   = 'btn-outline'
+  btnSched.className   = 'rd-btn'
   btnSched.textContent = 'Schedule…'
   btnSched.addEventListener('click', () => toast('Coming soon'))
 
   // Open-ended chat about this recipe (questions, not a saved variant) — distinct
   // from the AI generation actions below. Same pre-fill pattern as the Plan card.
   const btnDiscuss = document.createElement('button')
-  btnDiscuss.className = 'btn-outline'
+  btnDiscuss.className = 'rd-btn'
   btnDiscuss.textContent = '💬 Discuss'
   btnDiscuss.title = 'Discuss this recipe'
   btnDiscuss.addEventListener('click', () => {
@@ -665,57 +665,60 @@ function buildAIActions() {
   return wrap
 }
 
-function buildEasierAction() {
+// Section label + unified button on one row; the input is revealed below only
+// once the button is tapped (matches the Inventory status-pill expansion). The
+// same button then runs the action once an input value is present.
+function buildRevealAction({ title, btnText, loadingText, inputHtml, getValue, run }) {
   const container = document.createElement('div')
   container.className = 'rd-ai-item'
-  const btn   = document.createElement('button')
-  btn.className   = 'rd-ai-btn'
-  btn.textContent = '✨ Suggest an easier version'
+
+  const head = document.createElement('div')
+  head.className = 'rd-ai-head'
+  const titleEl = document.createElement('span')
+  titleEl.className = 'rd-ai-head__title'
+  titleEl.textContent = title
+  const btn = document.createElement('button')
+  btn.className = 'rd-btn'
+  btn.textContent = btnText
+  head.append(titleEl, btn)
+
   const panel = document.createElement('div')
   panel.className = 'rd-ai-panel'
   panel.hidden = true
-  panel.innerHTML = `
-    <textarea class="rd-ai-panel__input" rows="2"
-      placeholder="What's the situation? e.g. didn't prep anything last night"></textarea>
-    <div class="rd-ai-panel__row">
-      <button class="rd-ai-panel__submit">Generate</button>
-    </div>`
-  btn.addEventListener('click', () => { panel.hidden = !panel.hidden })
-  panel.querySelector('.rd-ai-panel__submit').addEventListener('click', async () => {
-    const constraint = panel.querySelector('textarea').value.trim()
-    if (!constraint) { panel.querySelector('textarea').focus(); return }
-    panel.querySelector('.rd-ai-panel__row').innerHTML =
-      `<div class="rd-ai-panel__loading"><div class="spinner"></div>Thinking…</div>`
-    await runSuggestEasier(constraint)
+  panel.innerHTML = inputHtml
+
+  btn.addEventListener('click', async () => {
+    if (panel.hidden) { panel.hidden = false; panel.querySelector('textarea, input')?.focus(); return }
+    const val = getValue(panel)
+    if (!val) { panel.querySelector('textarea, input')?.focus(); return }
+    panel.innerHTML = `<div class="rd-ai-panel__loading"><div class="spinner"></div>${loadingText}</div>`
+    await run(val)
   })
-  container.append(btn, panel)
+
+  container.append(head, panel)
   return container
 }
 
-function buildScaleAction() {
-  const container = document.createElement('div')
-  container.className = 'rd-ai-item'
-  const btn   = document.createElement('button')
-  btn.className   = 'rd-ai-btn'
-  btn.textContent = '📏 Scale this recipe'
-  const panel = document.createElement('div')
-  panel.className = 'rd-ai-panel'
-  panel.hidden = true
-  panel.innerHTML = `
-    <input class="rd-ai-panel__input" type="text" placeholder="e.g. 8 people or double it">
-    <div class="rd-ai-panel__row">
-      <button class="rd-ai-panel__submit">Calculate</button>
-    </div>`
-  btn.addEventListener('click', () => { panel.hidden = !panel.hidden })
-  panel.querySelector('.rd-ai-panel__submit').addEventListener('click', async () => {
-    const target = panel.querySelector('input').value.trim()
-    if (!target) { panel.querySelector('input').focus(); return }
-    panel.querySelector('.rd-ai-panel__row').innerHTML =
-      `<div class="rd-ai-panel__loading"><div class="spinner"></div>Scaling…</div>`
-    await runScaleRecipe(target)
+function buildEasierAction() {
+  return buildRevealAction({
+    title: '✨ Suggest an easier version',
+    btnText: 'Generate',
+    loadingText: 'Thinking…',
+    inputHtml: `<textarea class="rd-ai-panel__input" rows="2" placeholder="What's the situation? e.g. didn't prep anything last night"></textarea>`,
+    getValue: p => p.querySelector('textarea').value.trim(),
+    run: v => runSuggestEasier(v),
   })
-  container.append(btn, panel)
-  return container
+}
+
+function buildScaleAction() {
+  return buildRevealAction({
+    title: '📏 Scale this recipe',
+    btnText: 'Calculate',
+    loadingText: 'Scaling…',
+    inputHtml: `<input class="rd-ai-panel__input" type="text" placeholder="e.g. 8 people or double it">`,
+    getValue: p => p.querySelector('input').value.trim(),
+    run: v => runScaleRecipe(v),
+  })
 }
 
 // ── Scale result ──────────────────────────────────────────
