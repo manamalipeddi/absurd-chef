@@ -1,4 +1,4 @@
-import { supabase, navigateTo, navState, toast } from '../app.js'
+import { supabase, navigateTo, navState, toast, pushView } from '../app.js'
 
 // ── Module state ──────────────────────────────────────────
 let screenEl  = null
@@ -99,13 +99,22 @@ export async function activate({ headerLeft, headerRight }) {
   showHiddenInventory = false
   showHiddenFreezer   = false
   activeTab = 'inventory'
+  invFormView = freezerFormView = null   // drop any stale form handles on re-entry
   await loadAndShow('inventory')
 }
 
 async function switchTab(tab) {
+  // The tab bar is always visible — if a form is open, balance its history entry
+  // before switching so the pushed entry isn't orphaned.
+  dismissOpenForms()
   activeTab = tab
   updateTabBar()
   await loadAndShow(tab)
+}
+
+function dismissOpenForms() {
+  if (invFormView)     { invFormView.done();     invFormView = null }
+  if (freezerFormView) { freezerFormView.done(); freezerFormView = null }
 }
 
 function updateTabBar() {
@@ -452,9 +461,21 @@ function buildPreppedInventoryGroup(items) {
 }
 
 // ── Inventory form ─────────────────────────────────────────
+let invFormView = null
+async function showInventoryList() { await loadInventory(); renderInventory() }
+// Dismiss the edit form from its own UI (Cancel/Save/Hide): balance the pushed
+// history entry, then restore the list. Back-swipe takes the pushView onBack path.
+function closeInventoryForm() {
+  const h = invFormView; invFormView = null
+  if (h) h.done()
+  showInventoryList()
+}
+
 function openInventoryForm(id, defaultCat = 'pantry') {
   const item = id ? inventoryData.find(x => x.id === id) : null
   contentEl.innerHTML = ''
+  // Real history entry so Back/▷-swipe returns to the inventory list, not out of the tab.
+  invFormView = pushView(() => { invFormView = null; showInventoryList() })
 
   const form = document.createElement('div')
   form.className = 'pn-form'
@@ -492,7 +513,7 @@ function openInventoryForm(id, defaultCat = 'pantry') {
   actions.className = 'su-actions'
   const cancelBtn = document.createElement('button'); cancelBtn.className = 'su-btn-ghost'; cancelBtn.textContent = 'Cancel'
   const saveBtn   = document.createElement('button'); saveBtn.className   = 'su-btn-primary'; saveBtn.textContent = 'Save'
-  cancelBtn.addEventListener('click', async () => { await loadInventory(); renderInventory() })
+  cancelBtn.addEventListener('click', () => closeInventoryForm())
   saveBtn.addEventListener('click', async () => {
     const name = nameInp.value.trim()
     if (!name) { toast('Name is required', { error: true }); return }
@@ -513,7 +534,7 @@ function openInventoryForm(id, defaultCat = 'pantry') {
     const { error } = await op
     if (error) { toast('Save failed', { error: true }); saveBtn.disabled = false; saveBtn.textContent = 'Save'; return }
     toast('Saved')
-    await loadInventory(); renderInventory()
+    closeInventoryForm()
   })
   actions.append(cancelBtn, saveBtn)
   form.appendChild(actions)
@@ -529,7 +550,7 @@ function openInventoryForm(id, defaultCat = 'pantry') {
       hideBtn.disabled = true
       await supabase.from('inventory').update({ active: false }).eq('id', id)
       toast('Item hidden')
-      await loadInventory(); renderInventory()
+      closeInventoryForm()
     })
     danger.appendChild(hideBtn)
     form.appendChild(danger)
@@ -662,9 +683,19 @@ function buildFreezerRow(entry, ruled) {
 }
 
 // ── Freezer form ───────────────────────────────────────────
+let freezerFormView = null
+async function showFreezerList() { await loadFreezer(); renderFreezer() }
+function closeFreezerForm() {
+  const h = freezerFormView; freezerFormView = null
+  if (h) h.done()
+  showFreezerList()
+}
+
 function openFreezerForm(id) {
   const entry = id ? freezerData.find(x => x.id === id) : null
   contentEl.innerHTML = ''
+  // Real history entry so Back/▷-swipe returns to the freezer list, not out of the tab.
+  freezerFormView = pushView(() => { freezerFormView = null; showFreezerList() })
   const form = document.createElement('div')
   form.className = 'pn-form'
 
@@ -711,7 +742,7 @@ function openFreezerForm(id) {
   actions.className = 'su-actions'
   const cancelBtn = document.createElement('button'); cancelBtn.className = 'su-btn-ghost';    cancelBtn.textContent = 'Cancel'
   const saveBtn   = document.createElement('button'); saveBtn.className   = 'su-btn-primary';  saveBtn.textContent   = 'Save'
-  cancelBtn.addEventListener('click', async () => { await loadFreezer(); renderFreezer() })
+  cancelBtn.addEventListener('click', () => closeFreezerForm())
   saveBtn.addEventListener('click', async () => {
     const name = nameInp.value.trim()
     if (!name) { toast('Recipe name is required', { error: true }); return }
@@ -732,7 +763,7 @@ function openFreezerForm(id) {
     const { error } = await op
     if (error) { toast('Save failed', { error: true }); saveBtn.disabled = false; saveBtn.textContent = 'Save'; return }
     toast('Saved')
-    await loadFreezer(); renderFreezer()
+    closeFreezerForm()
   })
   actions.append(cancelBtn, saveBtn)
   form.appendChild(actions)
@@ -749,7 +780,7 @@ function openFreezerForm(id) {
       const today = new Date().toISOString().split('T')[0]
       await supabase.from('freezer_stash').update({ used: true, used_date: today }).eq('id', id)
       toast('Marked as used')
-      await loadFreezer(); renderFreezer()
+      closeFreezerForm()
     })
 
     const hideBtn = document.createElement('button')
@@ -759,7 +790,7 @@ function openFreezerForm(id) {
       hideBtn.disabled = true
       await supabase.from('freezer_stash').update({ active: false }).eq('id', id)
       toast('Item hidden')
-      await loadFreezer(); renderFreezer()
+      closeFreezerForm()
     })
 
     danger.append(usedBtn, hideBtn)

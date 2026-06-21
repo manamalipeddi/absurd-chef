@@ -657,6 +657,20 @@ function buildActions() {
   btnSched.addEventListener('click', () => toast('Coming soon'))
   row.append(btnUse, btnSched)
 
+  // Open-ended chat about this recipe — same lightweight pre-fill pattern as the
+  // Plan card's "💬 Discuss this day". Distinct from the AI generation actions
+  // (Suggest easier / Scale) lower down: this is for questions, not a saved variant.
+  const discussRow = document.createElement('div')
+  discussRow.className = 'rd-actions__row'
+  const btnDiscuss = document.createElement('button')
+  btnDiscuss.className = 'btn-outline'
+  btnDiscuss.textContent = '💬 Discuss this recipe'
+  btnDiscuss.addEventListener('click', () => {
+    navState.chatPrefill = `About ${recipe.name}: `
+    navigateTo('chat')
+  })
+  discussRow.appendChild(btnDiscuss)
+
   const defId       = recipe.default_variant_id
   const isDefault   = (activeTabId === 'original' && defId == null) || activeTabId === defId
   const btnDef = document.createElement('button')
@@ -665,7 +679,7 @@ function buildActions() {
   btnDef.disabled    = isDefault
   btnDef.addEventListener('click', makeDefault)
 
-  wrap.append(row, btnDef)
+  wrap.append(row, discussRow, btnDef)
   return wrap
 }
 

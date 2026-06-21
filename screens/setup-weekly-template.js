@@ -1,4 +1,4 @@
-import { supabase, navigateTo, toast } from '../app.js'
+import { supabase, navigateTo, toast, pushView } from '../app.js'
 
 const DAYS        = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']
 const DAY_SHORT   = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
@@ -8,6 +8,7 @@ const CON_TYPES   = [['protein','Protein'],['style','Style'],['free','Free text'
 let screenEl = null
 let rows     = []
 let editId   = null
+let formView = null
 
 export function init(el) { screenEl = el }
 
@@ -16,6 +17,7 @@ export async function activate({ headerLeft, headerRight }) {
   headerRight.innerHTML = ''
   document.getElementById('swt-back').addEventListener('click', () => history.back())
   editId = null
+  formView = null
   await load()
   renderList()
 }
@@ -26,6 +28,9 @@ async function load() {
     .eq('active', true).order('day_of_week').order('meal_type')
   rows = data || []
 }
+
+async function backToList() { formView = null; await load(); renderList() }
+function closeForm() { const h = formView; formView = null; if (h) h.done(); load().then(renderList) }
 
 // ── List ──────────────────────────────────────────────────
 function renderList() {
@@ -79,6 +84,7 @@ function openForm(id) {
   editId = id
   const r = id ? rows.find(x => x.id === id) : null
   screenEl.innerHTML = ''
+  formView = pushView(() => backToList())
   const form = document.createElement('div')
   form.className = 'su-form'
 
@@ -108,7 +114,7 @@ function openForm(id) {
   form.appendChild(mkCheckboxRow('Active', r?.active ?? true, 'activeCheck'))
 
   const { save, cancel } = mkActions()
-  cancel.addEventListener('click', async () => { await load(); renderList() })
+  cancel.addEventListener('click', () => closeForm())
   save.addEventListener('click', async () => {
     const payload = {
       day_of_week:       parseInt(daySelEl.value),
@@ -126,7 +132,7 @@ function openForm(id) {
     const { error } = await op
     if (error) { toast('Save failed', { error: true }); save.disabled = false; save.textContent = 'Save'; return }
     toast('Saved')
-    await load(); renderList()
+    closeForm()
   })
 
   const actionsWrap = document.createElement('div')

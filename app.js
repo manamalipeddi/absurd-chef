@@ -105,6 +105,27 @@ export function closeModal(el) {
   history.back()
 }
 
+// In-place sub-views (a form that REPLACES a tab/list's content, not an overlay)
+// also need a real history entry — otherwise Back/▷-swipe escapes the whole
+// screen (e.g. Inventory edit → Recipes) instead of returning to the list. On
+// open, register `onBack` (restores the underlying list); Back runs it. Call the
+// returned .done() when the view is dismissed by its own UI (Cancel/Save) so the
+// pushed entry is balanced without re-running onBack.
+export function pushView(onBack) {
+  const entry = { onClose: onBack }
+  modalStack.push(entry)
+  history.pushState({ modal: true }, '')
+  return {
+    done() {
+      const i = modalStack.indexOf(entry)
+      if (i === -1) return
+      modalStack.splice(i)
+      suppressPop = true
+      history.back()
+    },
+  }
+}
+
 window.addEventListener('popstate', async (e) => {
   if (suppressPop) { suppressPop = false; return }
   // 1. A modal is open → Back closes just the top modal.

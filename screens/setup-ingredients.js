@@ -1,9 +1,10 @@
-import { supabase, navigateTo, navState, toast } from '../app.js'
+import { supabase, navigateTo, navState, toast, pushView } from '../app.js'
 
 let screenEl = null
 let items    = []                 // all master_ingredients
 let usageByMaster = new Map()     // master id -> [{id, name}] of active recipes
 let editId   = null
+let formView = null               // history entry for the in-place edit form
 
 const CAT_LABELS = { fridge: '🧊 Fridge', freezer: '❄️ Freezer', pantry: '🥫 Pantry' }
 
@@ -14,9 +15,14 @@ export async function activate({ headerLeft, headerRight }) {
   headerRight.innerHTML = ''
   document.getElementById('mi-back').addEventListener('click', () => history.back())
   editId = null
+  formView = null
   await load()
   renderList()
 }
+
+// Restore the list (back-swipe path) / close the form from its own UI.
+async function backToList() { formView = null; await load(); renderList() }
+function closeForm() { const h = formView; formView = null; if (h) h.done(); load().then(renderList) }
 
 async function load() {
   // master ingredients + everything needed to compute "used in" per ingredient
@@ -138,6 +144,8 @@ function openForm(id) {
   editId = id
   const m = id ? items.find(x => x.id === id) : null
   screenEl.innerHTML = ''
+  // History entry so Back returns to the ingredient list, not out to Setup.
+  formView = pushView(() => backToList())
   const form = document.createElement('div')
   form.className = 'su-form'
 
@@ -156,7 +164,7 @@ function openForm(id) {
     () => aliasContainer.appendChild(mkAliasRow(''))))
 
   const { save, cancel } = mkActions()
-  cancel.addEventListener('click', async () => { await load(); renderList() })
+  cancel.addEventListener('click', () => closeForm())
   save.addEventListener('click', async () => {
     const name = nameInp.value.trim()
     if (!name) { toast('Canonical name is required', { error: true }); return }
@@ -170,7 +178,7 @@ function openForm(id) {
     const { error } = await op
     if (error) { toast('Save failed', { error: true }); save.disabled = false; save.textContent = 'Save'; return }
     toast('Saved')
-    await load(); renderList()
+    closeForm()
   })
 
   const actionsWrap = document.createElement('div')
@@ -233,7 +241,7 @@ function buildDeactivate(id, m) {
     const { error } = await supabase.from('master_ingredients').update({ active: false }).eq('id', id)
     if (error) { toast('Failed', { error: true }); btn.disabled = false; return }
     toast(`${m?.canonical_name || 'Ingredient'} deactivated`)
-    await load(); renderList()
+    closeForm()
   })
   wrap.appendChild(btn)
   return wrap
