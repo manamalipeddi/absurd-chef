@@ -832,7 +832,12 @@ Deno.serve(async (req: Request) => {
         // worst-case generation time (and worker resource use) in check.
         model: "claude-sonnet-4-6",
         max_tokens: 11000,
-        messages: [{ role: "user", content: prompt }],
+        // Prefill the assistant turn with "{" so the model starts the JSON
+        // object directly — no "I'll create…" preamble that breaks JSON.parse.
+        messages: [
+          { role: "user", content: prompt },
+          { role: "assistant", content: "{" },
+        ],
       }),
     });
 
@@ -842,11 +847,23 @@ Deno.serve(async (req: Request) => {
     }
 
     const claudeData = await claudeRes.json();
-    const rawText = claudeData.content[0].text.trim();
+    // The assistant turn was prefilled with "{", so prepend it to the response.
+    const rawText = "{" + (claudeData.content?.[0]?.text ?? "");
 
-    // 4. Parse response
-    const clean = rawText.replace(/```json|```/g, "").trim();
-    const result: PlanResult = JSON.parse(clean);
+    // 4. Parse response — robust to stray prose/fences around the JSON object.
+    let clean = rawText.replace(/```json|```/g, "").trim();
+    const firstBrace = clean.indexOf("{");
+    const lastBrace = clean.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      clean = clean.slice(firstBrace, lastBrace + 1);
+    }
+    let result: PlanResult;
+    try {
+      result = JSON.parse(clean);
+    } catch (_e) {
+      console.error("Plan JSON parse failed. First 500 chars:", clean.slice(0, 500));
+      throw new Error("The planner returned an unreadable response — please try again.");
+    }
 
     console.log(
       `Plan: ${result.plan.length} days, ${result.unresolved.length} unresolved`
