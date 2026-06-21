@@ -146,10 +146,10 @@ async function loadAndRender() {
       .eq('triggered_by', 'scheduled')
       .order('started_at', { ascending: false })
       .limit(1),
+    // History: ALL meal types (not just dinner) so every logged slot shows.
     supabase
       .from('meal_plans')
       .select(planSelect)
-      .eq('meal_type', 'dinner')
       .gte('plan_date', histFrom).lt('plan_date', histBefore)
       .order('plan_date', { ascending: false }),
   ])
@@ -294,22 +294,30 @@ function buildHistorySection(historyRows, noteMap = {}) {
   heading.textContent = '📜 History'
   section.appendChild(heading)
 
+  // Group all meal rows by date so each history card shows every logged slot
+  // (breakfast/lunch/dinner/snack), not just dinner. Rows arrive newest-first.
+  const byDate = new Map()
+  for (const row of historyRows) {
+    if (!byDate.has(row.plan_date)) {
+      byDate.set(row.plan_date, {
+        date: row.plan_date,
+        slots: {},
+        meta: {
+          isKidsHome: row.is_holiday || row.is_preschool_closed || false,
+          isCommute: row.is_commute_day || false,
+          guestCount: row.guest_count || 0,
+          isGintasAway: false,
+          note: noteMap[row.plan_date] || null,
+        },
+      })
+    }
+    byDate.get(row.plan_date).slots[row.meal_type] = row
+  }
+
   const cards = document.createElement('div')
   cards.className = 'plan-cards'
-  for (const row of historyRows) {
-    // each history row is a single dinner entry; wrap it as a day for reuse
-    const day = {
-      date: row.plan_date,
-      slots: { dinner: row },
-      meta: {
-        isKidsHome: row.is_holiday || row.is_preschool_closed || false,
-        isCommute: row.is_commute_day || false,
-        guestCount: row.guest_count || 0,
-        isGintasAway: false,
-        note: noteMap[row.plan_date] || null,
-      },
-    }
-    cards.appendChild(buildDayCard(day, { history: true, note: noteMap[row.plan_date] }))
+  for (const day of byDate.values()) {
+    cards.appendChild(buildDayCard(day, { history: true, note: noteMap[day.date] }))
   }
   section.appendChild(cards)
   return section
@@ -378,9 +386,9 @@ function buildDayCard(day, opts = {}) {
 
   card.appendChild(hr())
 
-  // History cards are dinner-only; full cards show all slots.
-  const slots = opts.history ? MEAL_SLOTS.filter(s => s.type === 'dinner') : MEAL_SLOTS
-  slots.forEach(slot => {
+  // All four meal slots on every card — upcoming AND history. (History was once
+  // dinner-only, which hid real logged breakfast/lunch/snack outcomes.)
+  MEAL_SLOTS.forEach(slot => {
     const entry = day.slots[slot.type]
     card.appendChild(buildSlotRow(day.date, slot, entry, day.meta, isPast))
     if (entry?.notes && !(entry.recipes && entry.recipes.is_placeholder)) card.appendChild(buildSlotNote(entry.notes))
@@ -523,11 +531,12 @@ function buildSlotRow(date, slot, entry, dayMeta, isPast = false) {
       })
     }
 
-    // The single 🔁 action — present on every filled slot. Date decides intent:
+    // The single 🔄 action — present on every filled slot. Date decides intent:
     // future = change the plan; today/past = log what actually happened.
+    // 🔄 (blue on Apple) deliberately, not 🔁 (orange) — matches the app palette.
     const swap = document.createElement('button')
     swap.className = 'day-slot__swap'
-    swap.textContent = '🔁'
+    swap.textContent = '🔄'
     swap.title = 'Change / log this meal'
     swap.addEventListener('click', (e) => { e.stopPropagation(); showPicker(date, slot.type) })
     val.appendChild(swap)
@@ -646,7 +655,8 @@ function showPicker(date, slotType) {
   overlay.appendChild(sheet)
   document.body.appendChild(overlay)
   openModal(overlay, () => overlay.remove())
-  requestAnimationFrame(() => search.focus())
+  // Deliberately NOT auto-focusing the search — keep the keyboard closed until
+  // the user taps into the field, so it doesn't immediately obscure the list.
 }
 
 // Delete the meal_plans row for this date+meal_type → slot returns to empty,
