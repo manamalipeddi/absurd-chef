@@ -7,6 +7,9 @@ let guestMembers = []    // family_members role=guest active
 let paint = { is_commute_day: null, kids_home: null, gintas_away: null, is_vacation: null, guests: null }
 let dirty = new Set()    // dates touched this editing session (unsaved)
 let saving = false
+let plannedThrough = null  // furthest meal_plans.plan_date (boundary: planned vs future weeks)
+let regenDates = new Set() // saved dates within the planned range, awaiting an optional regenerate
+let regenerating = false
 
 const COLS = [
   { key: 'is_commute_day', label: 'Commute',     icon: '🚗' },
@@ -38,9 +41,23 @@ export async function activate({ headerLeft, headerRight }) {
   document.getElementById('ds-back').addEventListener('click', () => history.back())
   paint = { is_commute_day: null, kids_home: null, gintas_away: null, is_vacation: null, guests: null }
   dirty = new Set()
+  regenDates = new Set()
+  regenerating = false
   await load()
   render()
 }
+
+// ISO 8601 week number (weeks start Monday) — matches the Plan tab.
+function isoWeek(s) {
+  const d = new Date(s + 'T12:00:00Z')
+  const day = (d.getUTCDay() + 6) % 7
+  d.setUTCDate(d.getUTCDate() - day + 3)
+  const firstThu = new Date(Date.UTC(d.getUTCFullYear(), 0, 4))
+  const ft = (firstThu.getUTCDay() + 6) % 7
+  firstThu.setUTCDate(firstThu.getUTCDate() - ft + 3)
+  return 1 + Math.round((d - firstThu) / (7 * 86400000))
+}
+const isPlanned = (date) => !!plannedThrough && date <= plannedThrough
 
 // Navigation guard — called by app.js before leaving this screen.
 export function canLeave() {
@@ -53,12 +70,15 @@ export function canLeave() {
 
 async function load() {
   const start = todayStr()
-  const [{ data: ds }, { data: gm }] = await Promise.all([
+  const [{ data: ds }, { data: gm }, { data: maxPlan }] = await Promise.all([
     // All rows from today forward (the lookahead rule keeps these = plan + 14).
     supabase.from('day_settings').select('*').gte('day', start).order('day'),
     supabase.from('family_members').select('id, name, allergies').eq('role', 'guest').eq('active', true).order('name'),
+    // Furthest planned date — the boundary between "Planned" and "Future" weeks.
+    supabase.from('meal_plans').select('plan_date').order('plan_date', { ascending: false }).limit(1),
   ])
   guestMembers = gm || []
+  plannedThrough = maxPlan?.[0]?.plan_date || null
   const byDay = {}
   // Window spans at least 14 days, extended to the furthest day_settings row so
   // the grid grows with the plan instead of capping at a fixed count.
@@ -77,13 +97,13 @@ function render() {
   screenEl.innerHTML = ''
   const intro = document.createElement('p')
   intro.className = 'ds-intro'
-  intro.textContent = 'Tap a cell to toggle. Once set, tapping another cell in the same column copies that value forward. Changes save when you tap Save.'
+  intro.textContent = 'Tap a cell to toggle; tapping another cell in the same column copies that value forward. Tap Save to store your changes — if they affect weeks already planned, you can then Regenerate the plan.'
   screenEl.appendChild(intro)
 
   const grid = document.createElement('div')
   grid.className = 'ds-grid'
 
-  // header row: blank corner + 4 column headers
+  // header row: blank corner + column headers (sticky)
   grid.appendChild(cell('ds-corner', ''))
   for (const col of COLS) {
     const h = document.createElement('div')
@@ -92,35 +112,67 @@ function render() {
     grid.appendChild(h)
   }
 
-  // 14 data rows
-  rows.forEach((row, idx) => {
-    const today = todayStr()
-    const lbl = document.createElement('div')
-    lbl.className = 'ds-rowlabel' + (row.date === today ? ' ds-rowlabel--today' : '')
-    lbl.textContent = fmtDate(row.date)
-    grid.appendChild(lbl)
-    for (const col of COLS) grid.appendChild(buildCell(row, idx, col))
-  })
+  // Split into Planned Weeks (dates already covered by a plan) and Future Weeks.
+  const planned = rows.filter(r => isPlanned(r.date))
+  const future  = rows.filter(r => !isPlanned(r.date))
+  appendSection(grid, 'Planned Weeks', planned)
+  appendSection(grid, 'Future Weeks', future)
 
   screenEl.appendChild(grid)
   renderSaveBar()
 }
 
+// Append a labelled section (full-width header) with per-ISO-week dividers.
+function appendSection(grid, title, sectionRows) {
+  if (!sectionRows.length) return
+  const today = todayStr()
+  const hdr = document.createElement('div')
+  hdr.className = 'ds-section'
+  hdr.textContent = title
+  grid.appendChild(hdr)
+
+  let curWeek = null
+  for (const row of sectionRows) {
+    const wk = isoWeek(row.date)
+    if (wk !== curWeek) {
+      curWeek = wk
+      const wd = document.createElement('div')
+      wd.className = 'ds-weekdiv'
+      wd.textContent = `Week ${wk}`
+      grid.appendChild(wd)
+    }
+    const idx = rows.indexOf(row)
+    const lbl = document.createElement('div')
+    lbl.className = 'ds-rowlabel' + (row.date === today ? ' ds-rowlabel--today' : '')
+    lbl.textContent = fmtDate(row.date)
+    grid.appendChild(lbl)
+    for (const col of COLS) grid.appendChild(buildCell(row, idx, col))
+  }
+}
+
 function renderSaveBar() {
   const old = document.getElementById('ds-savebar')
   if (old) old.remove()
-  if (dirty.size === 0) return
+  if (dirty.size === 0 && regenDates.size === 0) return
   const bar = document.createElement('div')
   bar.className = 'ds-savebar'
   bar.id = 'ds-savebar'
   const btn = document.createElement('button')
   btn.className = 'ds-savebar__btn'
-  btn.id = 'ds-save'
-  btn.textContent = saving
-    ? 'Saving…'
-    : `Save ${dirty.size} day${dirty.size !== 1 ? 's' : ''}`
-  btn.disabled = saving
-  btn.addEventListener('click', saveAll)
+  if (dirty.size > 0) {
+    // Unsaved edits → Save (saving no longer regenerates the plan).
+    btn.id = 'ds-save'
+    btn.textContent = saving ? 'Saving…' : `Save ${dirty.size} day${dirty.size !== 1 ? 's' : ''}`
+    btn.disabled = saving
+    btn.addEventListener('click', saveAll)
+  } else {
+    // Saved changes that touch already-planned weeks → optional Regenerate.
+    btn.id = 'ds-regen'
+    btn.classList.add('ds-savebar__btn--regen')
+    btn.textContent = regenerating ? 'Regenerating…' : '🔄 Regenerate plan'
+    btn.disabled = regenerating
+    btn.addEventListener('click', regeneratePlan)
+  }
   bar.appendChild(btn)
   screenEl.appendChild(bar)
 }
@@ -185,7 +237,8 @@ function clearGuests(row) {
   render()
 }
 
-// ── Save: batch upsert all touched rows + ONE scoped replan ──
+// ── Save: just persist the touched rows (no replan). If any saved date falls
+// inside the already-planned range, queue it for an optional Regenerate. ──
 async function saveAll() {
   if (saving || dirty.size === 0) return
   saving = true
@@ -206,7 +259,27 @@ async function saveAll() {
   const { error } = await supabase.from('day_settings').upsert(payload, { onConflict: 'day' })
   if (error) { toast('Save failed', { error: true }); saving = false; renderSaveBar(); return }
 
-  // exactly one scoped replan covering every affected date
+  // Saved dates within the planned range can be regenerated; future-week dates
+  // don't need it (the generator will pick up the settings when it plans them).
+  for (const d of dates) if (isPlanned(d)) regenDates.add(d)
+  dirty = new Set()
+  saving = false
+  // Day-card context (badges/notes) is read live from day_settings, so refresh
+  // the Plan tab even though recipes haven't changed.
+  document.dispatchEvent(new Event('plan-updated'))
+  render()
+  const n = dates.length
+  toast(regenDates.size > 0
+    ? `Saved ${n} day${n !== 1 ? 's' : ''} — regenerate to update the planned weeks`
+    : `Saved ${n} day${n !== 1 ? 's' : ''}`)
+}
+
+// ── Optional regenerate: replan just the saved dates that touch planned weeks ──
+async function regeneratePlan() {
+  if (regenerating || regenDates.size === 0) return
+  regenerating = true
+  renderSaveBar()
+  const dates = [...regenDates]
   try {
     const res = await fetch(`${FUNCTIONS_URL}/plan-generator`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -214,17 +287,16 @@ async function saveAll() {
     })
     const json = await res.json()
     if (!json.success) throw new Error(json.error)
-    dirty = new Set()
-    saving = false
+    regenDates = new Set()
+    regenerating = false
     document.dispatchEvent(new Event('plan-updated'))
-    toast(`Saved — ${dates.length} day${dates.length !== 1 ? 's' : ''} replanned`)
+    render()
+    toast(`Plan regenerated — ${dates.length} day${dates.length !== 1 ? 's' : ''}`)
     navigateTo('plan')
   } catch {
-    // settings are saved; only the replan failed
-    dirty = new Set()
-    saving = false
+    regenerating = false
     renderSaveBar()
-    toast('Saved, but replan failed — open Plan and use Regenerate', { error: true, duration: 6000 })
+    toast('Regenerate failed — try again', { error: true })
   }
 }
 
