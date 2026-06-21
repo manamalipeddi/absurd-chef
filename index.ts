@@ -374,19 +374,33 @@ function buildPrompt(
     name: (p.planned && !p.planned.is_placeholder) ? p.planned.name : null,
   }));
 
-  // Lean payload — only fields the planning rules actually use. Dropping tags,
-  // last_made and prep/cook minutes meaningfully shrinks the prompt (×~64
-  // recipes), reducing the worker's memory/processing footprint. Recency is
-  // already covered by recently_used; dump detection uses method/slot.
-  const recipeList = safeRecipes.map((r: Recipe) => ({
-    id: r.id,
-    name: r.name,
-    protein: r.protein,
-    style: r.style,
-    method: r.cooking_method,
-    slot: r.template_slot,
-    freezable: r.is_freezable,
-  }));
+  // Lean payload — only fields the planning rules use. We PRECOMPUTE wkh_quick
+  // (eligibility for the weekday kids-home quick/kid-safe tier, rule 15c) here
+  // rather than shipping raw tags + prep/cook minutes for all ~64 recipes, which
+  // keeps the prompt small (the worker is memory-sensitive). Recency is already
+  // covered by recently_used.
+  const recipeList = safeRecipes.map((r: Recipe) => {
+    const tags = r.tags || [];
+    // Numeric fallback: only counts as a time signal if at least one of
+    // prep/cook is known — an all-null recipe must NOT auto-qualify as quick.
+    const hasTime = r.prep_time_min != null || r.cook_time_min != null;
+    const quickByTime = hasTime && ((r.prep_time_min || 0) + (r.cook_time_min || 0)) <= 20;
+    const wkh_quick =
+      tags.includes("dump") ||                                // zero hands-on
+      r.cooking_method === "slow_cook" ||                     // dump/slow-cook pool
+      (tags.includes("quick") && tags.includes("kidproof")) || // fast + kid-safe
+      quickByTime;                                            // ≤20 min combined
+    return {
+      id: r.id,
+      name: r.name,
+      protein: r.protein,
+      style: r.style,
+      method: r.cooking_method,
+      slot: r.template_slot,
+      freezable: r.is_freezable,
+      wkh_quick,   // true → eligible for weekday kids-home quick tier (rule 15c)
+    };
+  });
 
   const stashList = ctx.stash.map((s: StashItem) => ({
     id: s.id,
@@ -417,8 +431,25 @@ PLANNING RULES
    absence of a plan, not a gap to fill. This takes precedence over kids_home,
    commute, guests, template — ignore all other day-type logic for that date.
 1. Plan dinner for every NON-vacation day. ALSO plan a lunch for any non-vacation day where needs_lunch = true (this covers both weekend template lunches and weekday kids-home days — see rule 14). Output lunch as a separate plan entry with meal_type "lunch".
-2. No recipe repeat within 14 days (check recently_used below).
-3. No same protein two days in a row.
+2. NO-REPEAT — SOFT PREFERENCE, NEVER A HARD BLOCK. The 14-day no-repeat window
+   (recently_used below) is a PREFERENCE applied only AFTER every hard constraint
+   is satisfied. It must NEVER, on its own, leave a slot unfilled or push it to
+   unresolved. This holds in EVERY context — normal days, commute days, weekday
+   kids-home days, guest days, batch-cook selection.
+   ORDER OF OPERATIONS for every slot:
+   (1) Satisfy ALL hard constraints first: household allergens + any guest
+       allergens, the template protein/style match, and whichever day-type tier
+       logic applies (freezer stash / store-bought / quick-kidproof / dump pool).
+   (2) Among the options that pass (1), PREFER one not used in the last 14 days
+       (and secondarily not the same protein as the day before — rule 3).
+   (3) If EVERY option that passes (1) was used within 14 days, DROP the no-repeat
+       preference for this slot and assign the best (1)-valid option anyway, even
+       though it repeats. A repeat is ALWAYS better than an empty/unresolved slot.
+   TRANSPARENCY: whenever you assign a recipe specifically because no-repeat had
+   to be dropped per (3), set "notes" to make that visible, e.g.
+   "Repeating sooner than usual — nothing else fit this slot this week".
+   (That replaces the usual why-note for that slot.)
+3. No same protein two days in a row (a preference, secondary to rule 2's hard constraints).
 4. Match each day's template constraint (protein or style).
 5. COMMUTE DAYS — strict priority order:
    a. Use freezer stash item matching template slot if available
@@ -426,7 +457,10 @@ PLANNING RULES
    c. If neither works: try remapping — swap this day with an adjacent
       non-commute day that has a suitable dump recipe, then assign the
       non-dump recipe to the non-commute day
-   d. Only if ALL of a/b/c fail: add to unresolved
+   d. Only if ALL of a/b/c fail on HARD grounds (no usable stash and no
+      slot-matching dump recipe exists at all): add to unresolved. A recipe
+      being used recently is NOT a reason to fail here — apply rule 2 step (3)
+      and repeat rather than leave the slot unresolved.
 6. Preschool protein conflict: if dinner protein matches preschool lunch
    protein that day, silently swap to another day in the same week.
    Log the swap in remap_log.
@@ -469,8 +503,18 @@ PLANNING RULES
     b. A store-bought-style stash item at portions 0 BUT typically_restocked = true,
        ONLY if that date is in week 2 (see rule 16) — assign it (the restock is
        surfaced on the Grocery List).
-    c. A dump/slow_cook recipe matching the slot (same dump pool as commute days).
-    d. Otherwise remap/swap with an adjacent day, then fall back to unresolved.
+    c. A recipe matching the slot with wkh_quick = true — i.e. a genuinely quick /
+       kid-safe option. wkh_quick is precomputed and true for: a dump recipe, a
+       slow-cooker dump, a recipe tagged BOTH quick and kidproof, OR any recipe
+       whose prep+cook time is ≤20 min. This pool is deliberately WIDER than the
+       commute dump pool (tier c there), so a genuinely quick 15-min pasta is fair
+       game — important for sustaining variety across long consecutive kids-home
+       stretches (e.g. school holidays) where the narrow freezer/dump pool alone
+       would be exhausted fast.
+    d. Otherwise remap/swap with an adjacent day; only add to unresolved if NO
+       wkh_quick recipe and NO usable stash exists at all for the slot — never
+       purely because the only options were used recently (rule 2 is soft:
+       repeat instead of going unresolved).
 16. WEEK-RELATIVE INVENTORY (each day has week = 1 or 2):
     - WEEK 1 (days 1–7): plan strictly against CURRENT stock. A freezer_stash item
       at portions 0 is NOT available this week. Do not rely on buying something new.
