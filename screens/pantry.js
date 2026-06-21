@@ -1034,9 +1034,10 @@ async function loadGrocery() {
   const [{ data: invData }, { data: planData }, { data: activeMasterData }, { data: stashPlanData }] = await Promise.all([
     supabase.from('inventory').select('*').eq('active', true),
     supabase.from('meal_plans')
-      .select('plan_date, recipe_id, cook_source, recipes(id, name, emoji, default_variant_id)')
+      .select('plan_date, recipe_id, cook_source, meal_type, recipes(id, name, emoji, default_variant_id)')
       .gte('plan_date', today).lte('plan_date', end)
       .not('recipe_id', 'is', null)
+      .neq('meal_type', 'snack')   // snack is never planned — ignore any legacy rows
       .order('plan_date'),
     supabase.from('master_ingredients').select('id').eq('active', true),
     // Freezer-stash assignments in the window → surface any that need restocking

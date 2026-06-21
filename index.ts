@@ -10,11 +10,11 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 // ── Planning rules ─────────────────────────────────────────────────────────
-// BREAKFAST IS NEVER PLANNED BY THE AI.
-// Breakfast is decided same-day by the user based on energy/mood/freezer stash.
-// This planner writes meal_plans rows for 'dinner' only.
-// 'lunch' rows are written only on weekends (day_of_week IN [0,6]) or special_days
-// where type = 'kids_home'.
+// BREAKFAST AND SNACK ARE NEVER PLANNED BY THE AI.
+// Breakfast is decided same-day by Manasa based on energy/mood/freezer stash;
+// snack is treated the same way. This planner writes meal_plans rows for 'dinner'
+// only. 'lunch' rows are written only on weekends (day_of_week IN [0,6]) or
+// special_days where type = 'kids_home'. Snack/breakfast are never written.
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -430,7 +430,7 @@ PLANNING RULES
    "plan" at all, and never put it in "unresolved". A vacation day is a deliberate
    absence of a plan, not a gap to fill. This takes precedence over kids_home,
    commute, guests, template — ignore all other day-type logic for that date.
-1. Plan dinner for every NON-vacation day. ALSO plan a lunch for any non-vacation day where needs_lunch = true (this covers both weekend template lunches and weekday kids-home days — see rule 14). Output lunch as a separate plan entry with meal_type "lunch".
+1. Plan dinner for every NON-vacation day. ALSO plan a lunch for any non-vacation day where needs_lunch = true (this covers both weekend template lunches and weekday kids-home days — see rule 14). Output lunch as a separate plan entry with meal_type "lunch". SNACK IS NEVER PLANNED, same as breakfast — never emit a "snack" (or "breakfast") entry under any condition. Only "dinner" (every day) and "lunch" (weekends / holidays / kids_home days) are ever generated.
 2. NO-REPEAT — SOFT PREFERENCE, NEVER A HARD BLOCK. The 14-day no-repeat window
    (recently_used below) is a PREFERENCE applied only AFTER every hard constraint
    is satisfied. It must NEVER, on its own, leave a slot unfilled or push it to

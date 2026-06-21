@@ -322,6 +322,7 @@ async function toolGetPlan(input: Record<string, unknown>, db: DB) {
   const { data } = await db.from('meal_plans')
     .select('plan_date, meal_type, cook_source, is_commute_day, is_holiday, guest_count, slot_locked, notes, stash_item_id, actually_made, actual_recipe_id, actual_notes, recipes!meal_plans_recipe_id_fkey(id, name, emoji, protein, cooking_method, template_slot), actual_recipe:recipes!meal_plans_actual_recipe_id_fkey(id, name, emoji)')
     .gte('plan_date', start).lte('plan_date', end)
+    .in('meal_type', ['dinner', 'lunch'])   // snack & breakfast are not planned — out of scope here
     .order('plan_date').order('meal_type')
 
   const entries = (data || []) as Record<string, unknown>[]

@@ -1,11 +1,11 @@
 import { supabase, FUNCTIONS_URL, toast, navigateTo, navState, openModal, closeModal } from '../app.js'
 
 // ── Slot config ───────────────────────────────────────────
+// Snack (like breakfast) is never planned and no longer shown as a slot.
 const MEAL_SLOTS = [
   { type: 'breakfast', label: 'Breakfast', icon: '🍳' },
   { type: 'lunch',     label: 'Lunch',     icon: '🥗' },
   { type: 'dinner',    label: 'Dinner',    icon: '🍽️' },
-  { type: 'snack',     label: 'Snack',     icon: '🍿' },
 ]
 
 // Recipes for these meal_plan slot types come from these recipe categories
