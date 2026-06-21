@@ -602,10 +602,28 @@ async function writePlan(
   targetDates?: string[],
   startDate?: string,
   vacationDates?: string[],
+  daySettings?: DaySetting[],
 ) {
   const MEALS = ["dinner", "lunch"];          // the planner writes these two
   const lockedKey = (d: string, m: string) => `${d}|${m}`;
   const vacSet = new Set(vacationDates || []);
+
+  // Day context written to meal_plans is sourced from day_settings (the single
+  // source of truth) — NOT from the model's echoed output, which can drift and
+  // wrongly mark days as commute / kids-home / guests. Read-time defaults match
+  // the rest of the app (kids_home defaults true on weekends).
+  const dsByDay: Record<string, DaySetting> = {};
+  for (const d of (daySettings || [])) dsByDay[d.day] = d;
+  const dayContext = (date: string) => {
+    const ds = dsByDay[date];
+    const dow = dayOfWeek(date);
+    return {
+      is_commute_day: ds?.is_commute_day ?? false,
+      is_preschool_closed: ds ? !!ds.kids_home : (dow === 0 || dow === 6),
+      is_holiday: false,   // day_settings has no holiday concept; kids_home covers it
+      guest_count: ds?.guest_count ?? 0,
+    };
+  };
 
   // Keep dinner + lunch; drop stray breakfast/snack. The day set is driven by
   // dinners (one per day); lunch rides along for the same dates.
@@ -693,15 +711,15 @@ async function writePlan(
       .or("slot_locked.is.null,slot_locked.eq.false");
   }
 
-  // Insert new plan
+  // Insert new plan — day-context columns come from day_settings, not the model.
   const rows = toWrite.map((p) => ({
     plan_date: p.date,
     meal_type: p.meal_type,
     recipe_id: p.recipe_id,
-    is_commute_day: p.is_commute_day,
-    is_holiday: p.is_holiday,
-    is_preschool_closed: p.is_preschool_closed || false,
-    guest_count: p.guest_count || 0,
+    is_commute_day: dayContext(p.date).is_commute_day,
+    is_holiday: dayContext(p.date).is_holiday,
+    is_preschool_closed: dayContext(p.date).is_preschool_closed,
+    guest_count: dayContext(p.date).guest_count,
     cook_source: p.cook_source,
     stash_item_id: p.stash_item_id,
     remap_log: p.remap_log,
@@ -836,7 +854,7 @@ Deno.serve(async (req: Request) => {
 
     // 5. Write plan to DB (skip & clear vacation days)
     const vacationDates = (ctx.daySettings as DaySetting[]).filter(d => d.is_vacation).map(d => d.day);
-    await writePlan(supabase, result.plan, mode, targetDates, start_date, vacationDates);
+    await writePlan(supabase, result.plan, mode, targetDates, start_date, vacationDates, ctx.daySettings as DaySetting[]);
 
     // dinner rows are the only ones written; report that count
     const dinnerCount = result.plan.filter((p) => p.meal_type === "dinner").length;
