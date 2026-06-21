@@ -1,4 +1,4 @@
-import { supabase, navigateTo, navState, toast, pushView, mkFab } from '../app.js'
+import { supabase, navigateTo, navState, toast, pushView, mkFab, openModal, closeModal } from '../app.js'
 
 // ── Module state ──────────────────────────────────────────
 let screenEl  = null
@@ -10,6 +10,7 @@ let inventoryData = []
 let freezerData   = []
 let preppedData   = []
 let recipeList    = []   // for freezer link-to-recipe select
+let masterList    = []   // active master_ingredients (for the Linked-ingredient editor)
 let groceryData   = { outOfStock: [], needed: [] }
 
 let showHiddenInventory = false
@@ -139,11 +140,14 @@ async function loadAndShow(tab) {
 async function loadInventory() {
   // Inventory + prepped components (the latter shown read-only within Inventory
   // for a single "everything available to cook with" view).
-  const [{ data }, { data: prepped }] = await Promise.all([
+  const [{ data }, { data: prepped }, { data: masters }] = await Promise.all([
     supabase.from('inventory').select('*').order('name'),
     supabase.from('prepped_components').select('*, recipes(id, name, emoji)')
       .eq('active', true).gt('batches_remaining', 0).order('made_date', { ascending: false }),
+    supabase.from('master_ingredients').select('id, canonical_name, aliases, default_category')
+      .eq('active', true).order('canonical_name'),
   ])
+  masterList = masters || []
   // Two stacked alphabetical sorts: actively-checked items (last_updated_at set)
   // first, then never-checked items (null) as a distinct group at the bottom.
   inventoryData = (data || []).sort((a, b) => {
@@ -471,6 +475,121 @@ function closeInventoryForm() {
   showInventoryList()
 }
 
+// ── Linked master ingredient (edit form) ──────────────────
+function normName(s) { return String(s || '').toLowerCase().trim() }
+
+// Best-guess master for an inventory name: exact canonical/alias first, then a
+// substring match either direction. null when nothing is confident enough.
+function suggestMaster(name) {
+  const q = normName(name); if (!q) return null
+  for (const m of masterList) {
+    if (normName(m.canonical_name) === q) return m
+    if ((m.aliases || []).some(a => normName(a) === q)) return m
+  }
+  for (const m of masterList) {
+    const c = normName(m.canonical_name)
+    if (c && (c.includes(q) || q.includes(c))) return m
+    if ((m.aliases || []).some(a => { const an = normName(a); return an && (an.includes(q) || q.includes(an)) })) return m
+  }
+  return null
+}
+
+// Searchable master-ingredient picker (same modal pattern as the recipe picker).
+// onPick(master) gets the chosen/created row; defaultCat seeds a created row's
+// default_category. Not auto-focused (consistent with the recipe picker).
+function openMasterSearch(query, defaultCat, onPick) {
+  const overlay = document.createElement('div'); overlay.className = 'picker-overlay'
+  const sheet = document.createElement('div'); sheet.className = 'picker-sheet'
+  const head = document.createElement('div'); head.className = 'picker-header'
+  head.innerHTML = `<span class="picker-title">Link ingredient</span><button class="picker-close" aria-label="Close">✕</button>`
+  head.querySelector('.picker-close').addEventListener('click', () => closeModal(overlay))
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(overlay) })
+
+  const search = document.createElement('input')
+  search.type = 'text'; search.className = 'picker-search'; search.placeholder = 'Search ingredients…'
+  search.value = query || ''
+  const list = document.createElement('div'); list.className = 'picker-list'
+
+  const mkRow = (label, onClick, cls) => {
+    const b = document.createElement('button')
+    b.className = 'picker-row' + (cls ? ' ' + cls : '')
+    b.innerHTML = `<span class="picker-row__name"></span>`
+    b.querySelector('.picker-row__name').textContent = label
+    b.addEventListener('click', onClick)
+    return b
+  }
+  function renderResults(q) {
+    const lq = normName(q)
+    list.innerHTML = ''
+    const hits = lq
+      ? masterList.filter(m => normName(m.canonical_name).includes(lq) || (m.aliases || []).some(a => normName(a).includes(lq)))
+      : masterList.slice(0, 60)
+    for (const m of hits) list.appendChild(mkRow(m.canonical_name, () => { closeModal(overlay); onPick(m) }))
+    // Genuine create-new (a real master_ingredients row, not a placeholder).
+    if (lq && !masterList.some(m => normName(m.canonical_name) === lq)) {
+      list.appendChild(mkRow(`+ Create new ingredient: “${q.trim()}”`, async () => {
+        const { data, error } = await supabase.from('master_ingredients')
+          .insert({ canonical_name: q.trim(), default_category: defaultCat, active: true }).select().single()
+        if (error || !data) { toast('Create failed', { error: true }); return }
+        toast('Ingredient created')
+        closeModal(overlay); onPick(data)
+      }, 'picker-row--other'))
+    }
+  }
+  search.addEventListener('input', () => renderResults(search.value))
+  renderResults(search.value)
+
+  sheet.append(head, search, list)
+  overlay.appendChild(sheet)
+  document.body.appendChild(overlay)
+  openModal(overlay, () => overlay.remove())
+}
+
+// The "Linked ingredient" field: current link / best-guess suggestion / not
+// linked, all editable. Updates linkState.id; the form writes it on Save.
+function buildLinkField(linkState, nameInp, catSel, item) {
+  const wrap = document.createElement('div'); wrap.className = 'su-field'
+  const lbl = document.createElement('label'); lbl.className = 'su-label'; lbl.textContent = 'Linked ingredient'
+  const body = document.createElement('div'); body.className = 'pn-link'
+  wrap.append(lbl, body)
+
+  const getName = () => nameInp.value.trim() || item?.name || ''
+  const chip = (text, fn, cls) => {
+    const b = document.createElement('button'); b.type = 'button'
+    b.className = 'pn-link-btn' + (cls ? ' ' + cls : ''); b.textContent = text
+    b.addEventListener('click', fn); return b
+  }
+  function pick(master) {
+    linkState.id = master.id
+    if (!masterList.some(m => m.id === master.id)) masterList.push(master)
+    render()
+  }
+  function render() {
+    body.innerHTML = ''
+    if (linkState.id) {
+      const name = masterList.find(m => m.id === linkState.id)?.canonical_name || '(linked)'
+      const n = document.createElement('span'); n.className = 'pn-link-name'; n.textContent = name
+      body.append(n, chip('change', () => openMasterSearch(getName(), catSel.value, pick)))
+    } else {
+      const sug = suggestMaster(getName())
+      if (sug) {
+        const q = document.createElement('span'); q.className = 'pn-link-suggest'
+        q.textContent = `Did you mean: ${sug.canonical_name}?`
+        body.append(
+          q,
+          chip('Confirm', () => pick(sug), 'pn-link-btn--confirm'),
+          chip('Not this', () => openMasterSearch(getName(), catSel.value, pick)),
+        )
+      } else {
+        const none = document.createElement('span'); none.className = 'pn-link-none'; none.textContent = 'Not linked'
+        body.append(none, chip('link it', () => openMasterSearch(getName(), catSel.value, pick)))
+      }
+    }
+  }
+  render()
+  return wrap
+}
+
 function openInventoryForm(id, defaultCat = 'pantry') {
   const item = id ? inventoryData.find(x => x.id === id) : null
   contentEl.innerHTML = ''
@@ -499,10 +618,16 @@ function openInventoryForm(id, defaultCat = 'pantry') {
   catRow.className = 'pn-form-row'
   catRow.append(mkField('Stored in', catSel, 'pn-form-col'), mkField('Food type', foodSel, 'pn-form-col'))
 
+  // Linked master ingredient: show the current link, the best-guess suggestion,
+  // or "Not linked" — all editable. The chosen id is written on Save (payload).
+  const linkState = { id: item?.master_ingredient_id || null }
+  const linkField = buildLinkField(linkState, nameInp, catSel, item)
+
   form.append(
     mkField('Name *', nameInp),
     qtyRow,
     catRow,
+    linkField,
     mkField('Typical amount (baseline for status — optional)', typicalInp),
     mkField('Expiry date (optional)', expInp),
     mkField('Notes (optional)', notesInp),
@@ -519,13 +644,14 @@ function openInventoryForm(id, defaultCat = 'pantry') {
     if (!name) { toast('Name is required', { error: true }); return }
     const payload = {
       name,
-      quantity:         qtyInp.value !== '' ? parseFloat(qtyInp.value) : null,
-      unit:             unitInp.value.trim() || null,
-      typical_quantity: typicalInp.value !== '' ? parseFloat(typicalInp.value) : null,
-      category:         catSel.value,
-      food_category:    foodSel.value,
-      expiry_date:      expInp.value || null,
-      notes:            notesInp.value.trim() || null,
+      quantity:           qtyInp.value !== '' ? parseFloat(qtyInp.value) : null,
+      unit:               unitInp.value.trim() || null,
+      typical_quantity:   typicalInp.value !== '' ? parseFloat(typicalInp.value) : null,
+      category:           catSel.value,
+      food_category:      foodSel.value,
+      master_ingredient_id: linkState.id,   // the user-confirmed / corrected link
+      expiry_date:        expInp.value || null,
+      notes:              notesInp.value.trim() || null,
     }
     saveBtn.disabled = true; saveBtn.textContent = 'Saving…'
     const op = id

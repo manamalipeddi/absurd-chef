@@ -3070,6 +3070,22 @@ body {
 .pn-form-col  { flex: 1; }
 .pn-form-col-sm { flex: 0 0 110px; }
 
+/* Linked-ingredient editor row */
+.pn-link { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 30px; }
+.pn-link-name    { font-size: 14.8px; font-weight: 600; color: var(--text); }
+.pn-link-suggest { font-size: 14px; color: var(--text); }
+.pn-link-none    { font-size: 14px; color: var(--text-muted); }
+.pn-link-btn {
+  background: none; border: none; padding: 3px 4px;
+  color: var(--primary); font-family: var(--font); font-size: 13.5px; font-weight: 700;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.pn-link-btn--confirm {
+  color: #fff; background: var(--primary);
+  border-radius: 8px; padding: 5px 12px;
+}
+.pn-link-btn--confirm:active { opacity: 0.85; }
+
 /* Danger zone (hide / mark used) ─────────────────────────── */
 .pn-danger-zone {
   margin-top: 20px;
