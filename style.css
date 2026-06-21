@@ -2619,7 +2619,9 @@ body {
   /* Flat, quiet treatment: same burgundy as the screen, thin light outline,
      square (flat-edged) corners — colour is never the on/off signal. */
   background: var(--page);
-  border: 1px solid var(--text-on-page-muted);
+  /* Hairline, barely-there outline — soft structural definition that recedes
+     behind the tick marks rather than reading as a visible grid. */
+  border: 0.5px solid rgba(246, 232, 218, 0.13);
   border-radius: 0;
   font-size: 14px;
   font-weight: 700;
