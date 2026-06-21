@@ -14,7 +14,7 @@ let regenerating = false
 const COLS = [
   { key: 'is_commute_day', label: 'Commute',     icon: '🚗' },
   { key: 'kids_home',      label: 'Kids Home',   icon: '🏠' },
-  { key: 'gintas_away',    label: 'Gintas Away', icon: '🍃' },
+  { key: 'gintas_away',    label: 'Gintas Away', icon: '💼' },
   { key: 'is_vacation',    label: 'Vacation',    icon: '🏖' },
   { key: 'guests',         label: 'Guests',      icon: '👥' },
 ]
