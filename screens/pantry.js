@@ -1106,17 +1106,31 @@ async function loadGrocery() {
       const setQty   = avail.value > 0 ? Math.round(Number(match.quantity) * need.value / avail.value * 100) / 100 : null
       needed.push({
         name: data.displayName, usages: data.usages, matchedInventoryId: match.id,
-        shortfall: { neededVal: need.value, availVal: avail.value, dim: need.dim, estimate, statusLabel: estimate ? STATUS_LABEL[match.status] : null, setQty },
+        shortfall: { kind: 'short', neededVal: need.value, availVal: avail.value, dim: need.dim, estimate, statusLabel: estimate ? STATUS_LABEL[match.status] : null, setQty },
       })
       continue
     }
 
-    // Fallback: units not reconcilable. A matched item with stock counts as
-    // covered (presence/absence); an unmatched ingredient is bought.
-    if (match) continue
+    // Fallback — units couldn't be reconciled (e.g. qty in the ingredient name,
+    // or a non-numeric inventory unit). Still be quantity-aware:
+    if (match) {
+      // Has stock but we can't verify it's enough. If we know a specific amount
+      // is needed, surface a soft "you have some — double-check" nudge; tapping
+      // "got it" normalises the item to the needed amount in a comparable unit.
+      if (need) {
+        needed.push({
+          name: data.displayName, usages: data.usages, matchedInventoryId: match.id,
+          shortfall: { kind: 'have_some', neededVal: need.value, dim: need.dim, haveRaw: fmtRaw(match.quantity, match.unit), setQty: need.value, setUnit: canonUnitFor(need.dim) },
+        })
+      }
+      // No structured need → presence of stock is enough; not listed.
+      continue
+    }
+    // No inventory item at all → "not in stock" (you're out), with the needed
+    // amount when we can compute it.
     needed.push({
       name: data.displayName, usages: data.usages, matchedInventoryId: null,
-      shortfall: need ? { neededVal: need.value, availVal: 0, dim: need.dim, estimate: false, statusLabel: null, setQty: null } : null,
+      shortfall: need ? { kind: 'need', neededVal: need.value, dim: need.dim } : { kind: 'out' },
     })
   }
 
@@ -1190,6 +1204,13 @@ function fmtCanonical(dim, v) {
   if (dim === 'volume') return v >= 1000 ? `${+(v / 1000).toFixed(2)}L`  : `${Math.round(v)}ml`
   return `${Math.round(v * 100) / 100}`   // count — bare number
 }
+// Raw inventory amount as-is (for the "you have some (…)" hint when units don't reconcile).
+function fmtRaw(q, u) {
+  if (q == null) return 'some'
+  return `${fmtQty(q)}${u ? ' ' + u : ''}`
+}
+// Canonical unit a needed amount is expressed in (for normalising on "got it").
+function canonUnitFor(dim) { return dim === 'mass' ? 'g' : dim === 'volume' ? 'ml' : '' }
 
 function findInventoryMatch(ingNorm, inventoryItems) {
   return inventoryItems.find(item => {
@@ -1278,18 +1299,24 @@ function buildGroceryNeededRow(item, ruled) {
   name.textContent = item.name
   body.appendChild(name)
 
-  // Shortfall line — shown together with the recipe context, not instead of it.
-  // "~" marks an estimate derived from a status tap (a fuzzy input, not a count).
+  // Availability hint, shown with (not instead of) the recipe context.
+  // Quantity-aware even when units don't reconcile: precise shortfall when we can
+  // compute it, else a softer "you have some" / "not in stock".
   const s = item.shortfall
   if (s) {
     const sl = document.createElement('div')
     sl.className = 'pn-grocery-shortfall'
-    if (item.matchedInventoryId && s.availVal > 0) {
+    if (s.kind === 'short') {
       const have = `${s.estimate ? '~' : ''}${fmtCanonical(s.dim, s.availVal)}`
       const est  = s.estimate ? ` (estimated from ‘${s.statusLabel}’)` : ''
       sl.textContent = `Need ${fmtCanonical(s.dim, s.neededVal)}, have ${have}${est} — buy at least ${fmtCanonical(s.dim, s.neededVal - s.availVal)} more`
-    } else {
-      sl.textContent = `Need ${fmtCanonical(s.dim, s.neededVal)}`
+    } else if (s.kind === 'have_some') {
+      sl.className += ' pn-grocery-shortfall--soft'
+      sl.textContent = `Need ${fmtCanonical(s.dim, s.neededVal)} · you have some (${s.haveRaw}) — double-check it's enough`
+    } else if (s.kind === 'need') {
+      sl.textContent = `Need ${fmtCanonical(s.dim, s.neededVal)} · not in stock`
+    } else {   // 'out'
+      sl.textContent = 'Not in stock'
     }
     body.appendChild(sl)
   }
@@ -1327,10 +1354,12 @@ async function gotItOOS(itemId) {
 async function gotItNeeded(item) {
   const s = item.shortfall
   if (item.matchedInventoryId && s && s.setQty != null) {
-    // Known shortfall on an existing item → top up to the needed amount. This is
-    // a real purchase, so clear the status estimate; the trigger refreshes
-    // last_updated_at + (for perishables) expiry_date on the quantity increase.
-    await supabase.from('inventory').update({ quantity: s.setQty, status: null }).eq('id', item.matchedInventoryId)
+    // Top up to the needed amount. For a 'have_some' item we also normalise the
+    // unit to the comparable one (s.setUnit) so it reconciles next time. Clearing
+    // status marks it a real count; the trigger refreshes last_updated_at/expiry.
+    const upd = { quantity: s.setQty, status: null }
+    if (s.setUnit) upd.unit = s.setUnit
+    await supabase.from('inventory').update(upd).eq('id', item.matchedInventoryId)
   } else if (item.matchedInventoryId) {
     // Shortfall not confidently known (presence/absence) → simple default.
     await supabase.from('inventory').update({ quantity: 1, status: null }).eq('id', item.matchedInventoryId)
