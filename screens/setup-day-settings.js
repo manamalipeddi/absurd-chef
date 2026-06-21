@@ -17,6 +17,7 @@ const COLS = [
 ]
 
 function addDays(s, n) { const d = new Date(s + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10) }
+function daysBetween(a, b) { return Math.round((new Date(b + 'T12:00:00Z') - new Date(a + 'T12:00:00Z')) / 86400000) }
 function todayStr() { return new Date().toISOString().slice(0, 10) }
 function dow(date) { return new Date(date + 'T12:00:00Z').getUTCDay() }
 function fmtDate(s) {
@@ -51,15 +52,20 @@ export function canLeave() {
 }
 
 async function load() {
-  const start = todayStr(), end = addDays(start, 13)
+  const start = todayStr()
   const [{ data: ds }, { data: gm }] = await Promise.all([
-    supabase.from('day_settings').select('*').gte('day', start).lte('day', end),
+    // All rows from today forward (the lookahead rule keeps these = plan + 14).
+    supabase.from('day_settings').select('*').gte('day', start).order('day'),
     supabase.from('family_members').select('id, name, allergies').eq('role', 'guest').eq('active', true).order('name'),
   ])
   guestMembers = gm || []
   const byDay = {}
-  for (const r of ds || []) byDay[r.day] = r
-  rows = Array.from({ length: 14 }, (_, i) => {
+  // Window spans at least 14 days, extended to the furthest day_settings row so
+  // the grid grows with the plan instead of capping at a fixed count.
+  let end = addDays(start, 13)
+  for (const r of ds || []) { byDay[r.day] = r; if (r.day > end) end = r.day }
+  const count = daysBetween(start, end) + 1
+  rows = Array.from({ length: count }, (_, i) => {
     const date = addDays(start, i)
     const existing = byDay[date]
     return { date, dow: dow(date), ds: existing ? { ...defaultDs(date), ...existing } : defaultDs(date) }
