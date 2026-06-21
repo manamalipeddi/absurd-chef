@@ -61,7 +61,7 @@ BEHAVIOR:
 - Freezer stash items with source = "store_bought" are bought ready-made (no recipe to open) — refer to them as store-bought (e.g. "🛒 store-bought lasagna"). A store-bought item at portions 0 with typically_restocked = true is one the user normally keeps stocked and can rebuy on a grocery run.
 - Guest days: get_special_days returns known_guests[] (resolved member data) and guest_allergies[] (one-off). Both are hard allergy constraints for that date only — treat them with the same enforcement strength as household allergens when suggesting meals for that specific day.
 - Inventory item names follow the pattern "Category - Variant" (e.g. "Milk - Oat", "Bread - Lingon Grova"). When the user describes what they have in stock, call update_inventory_from_description. The tool handles parsing, matching, and writing; your job is to relay what was done and ask about any ambiguous items it surfaces.
-- GROCERY ORDER IMPORT: when the user pastes a block of grocery receipt / order-confirmation text (ICA, Mathem, etc.), call import_grocery_order with the verbatim text (and source if they named the store, else 'other'). This is a TWO-STEP, REVIEW-FIRST flow — it does NOT write anything yet. Present the returned review clearly: items to add (name · qty · category), restocks (show old → new quantity), anything flagged_for_review (unsure category or possible duplicate — call these out for a decision), and list the excluded_non_food items collapsed at the end ("Skipped N non-food items: …") so the user sees they were recognised, not missed. Then ask the user to confirm or edit. Only AFTER explicit confirmation, call commit_grocery_import — passing adjustments for any edits the user asked for (remove a row, change a category/quantity/name, force new-vs-restock), or no adjustments for a clean approve-all. You usually won't have the batch_id on the confirmation turn — that's fine, omit it and the latest pending import is used. Reference items by the idx shown in the review. Never call commit_grocery_import without that confirmation. After committing, report the summary (added / restocked / skipped).
+- GROCERY ORDER IMPORT: when the user pastes a block of grocery receipt / order-confirmation text (ICA, Mathem, etc.), call import_grocery_order with the verbatim text (and source if they named the store, else 'other'). This is a TWO-STEP, REVIEW-FIRST flow — it does NOT write anything yet. Present the returned review clearly: items to add (name · qty · category), restocks (show old → new quantity), anything flagged_for_review (unsure category or possible duplicate — call these out for a decision), and list the excluded_non_food items collapsed at the end ("Skipped N non-food items: …") so the user sees they were recognised, not missed. Then ask the user to confirm or edit. Only AFTER explicit confirmation, call commit_grocery_import — passing adjustments for any edits the user asked for (remove a row, change a category/quantity/name, force new-vs-restock), or no adjustments for a clean approve-all. You usually won't have the batch_id on the confirmation turn — that's fine, omit it and the latest pending import is used. Reference items by the idx shown in the review. Never call commit_grocery_import without that confirmation. If a restock carries a leftover_warning (a perishable that still had stock left), pass that nudge along to the user — once, plainly. After committing, report the summary (added / restocked / skipped) and relay any leftover_notices returned.
 - WHY-NOTES: when you change a plan slot via update_plan_slot and there's a reason ("swap Thursday, Gintas is craving curry"), pass it as the reason argument — one short sentence. It's saved to the slot's notes and shown on the plan card, separate from the audit log. If the user gives no reason, omit it (the card then shows nothing for that slot).
 - ACTUAL vs PLANNED: meal_plans records what was planned AND what was actually eaten. When the user says they made something different on a past day ("we ended up ordering pizza Monday", "I made tacos instead of the curry Tuesday"), call update_actual_outcome with that date — actual_recipe_id if it's a tracked recipe, else actual_notes for an untracked meal (takeout, leftovers). Use made_as_planned: true if they confirm they made the plan. get_plan returns actually_made / actual_recipe / actual_notes so you can report what really happened. The recipe actually eaten is what counts for no-repeat — never claim a planned recipe was eaten if actually_made is false.
 - Today: ${today()}`
@@ -612,6 +612,7 @@ type GroceryItem = {
   package_size: string | null
   category: 'fridge' | 'freezer' | 'pantry'
   category_confident: boolean
+  food_category: string                       // meat|seafood|produce|dairy|eggs|pantry|other
   is_food: boolean
   exclude_reason: string | null
   matched_inventory_id: string | null
@@ -620,6 +621,9 @@ type GroceryItem = {
   match_uncertain: boolean
   note: string | null
 }
+
+const FOOD_CATS = ['meat', 'seafood', 'produce', 'dairy', 'eggs', 'pantry', 'other']
+const PERISHABLE = new Set(['meat', 'seafood', 'produce', 'dairy', 'eggs'])
 
 function normaliseSource(s: unknown): string {
   const v = String(s || '').toLowerCase().trim()
@@ -632,7 +636,7 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB) {
   if (!rawText.trim()) return { error: 'No order text provided to parse.' }
 
   const [{ data: inv }, { data: masters }] = await Promise.all([
-    db.from('inventory').select('id, name, category, quantity, unit, master_ingredient_id')
+    db.from('inventory').select('id, name, category, food_category, quantity, unit, master_ingredient_id')
       .eq('active', true).order('name'),
     db.from('master_ingredients').select('id, canonical_name, aliases')
       .eq('active', true).order('canonical_name'),
@@ -655,8 +659,9 @@ For EACH item output these fields:
 - name: cleaned, human-readable. Prefer "Category - Variant" when natural (e.g. raw "Eggs Free Range ECO M/L 1060g 20 pcs" → "Eggs - Free Range"; "ICA Havregryn 1,5kg" → "Oats - Rolled"). Strip brand/marketing/size noise from the NAME; the size goes in package_size.
 - quantity_purchased: the Number/quantity column — how many units were bought — as a number (e.g. 2 from "2,00"). null if genuinely unclear.
 - package_size: the per-package size string, separate from quantity_purchased (e.g. "1060g", "250 ml", "20 pcs"). null if none. NOTE "2 x 1060g" means quantity_purchased=2, package_size="1060g".
-- category: best guess — fridge | freezer | pantry. Frozen → freezer; fresh dairy/produce/meat/eggs → fridge; dry/canned/oils/spices/bread/shelf-stable → pantry. ALWAYS give a best guess even when unsure.
-- category_confident: false when you are genuinely unsure which category fits.
+- category: best guess of WHERE it is stored — fridge | freezer | pantry. Frozen → freezer; fresh dairy/produce/meat/eggs → fridge; dry/canned/oils/spices/bread/shelf-stable → pantry. ALWAYS give a best guess even when unsure.
+- category_confident: false when you are genuinely unsure which storage category fits.
+- food_category: WHAT KIND of food it is (drives shelf-life), one of: meat | seafood | produce | dairy | eggs | pantry | other. meat=any animal flesh incl. sausages/mince; seafood=fish/shellfish; produce=fresh fruit/veg/herbs; dairy=milk/cheese/yoghurt/butter/cream (NOT plant milks → other); eggs=eggs; pantry=dry/canned/shelf-stable/oils/spices/bread/supplements; other=anything else (incl. plant milks, drinks). Always provide a value.
 - is_food, exclude_reason (null unless is_food=false).
 - matched_inventory_id: if this clearly RESTOCKS an existing inventory row (same item), that row's id; else null. If similar but you're not sure it's the same, leave null and set match_uncertain=true with a one-line note.
 - master_ingredient_id: if the item confidently equals a master ingredient (by canonical_name or any alias), that id; else null.
@@ -671,7 +676,7 @@ ${rawText}
 """
 
 Return ONLY valid JSON, no prose, no markdown fences:
-{"items":[{"name":"","quantity_purchased":null,"package_size":null,"category":"pantry","category_confident":true,"is_food":true,"exclude_reason":null,"matched_inventory_id":null,"master_ingredient_id":null,"match_uncertain":false,"note":null}]}`
+{"items":[{"name":"","quantity_purchased":null,"package_size":null,"category":"pantry","category_confident":true,"food_category":"other","is_food":true,"exclude_reason":null,"matched_inventory_id":null,"master_ingredient_id":null,"match_uncertain":false,"note":null}]}`
 
   let parsed: Partial<GroceryItem>[] = []
   try {
@@ -699,6 +704,7 @@ Return ONLY valid JSON, no prose, no markdown fences:
       package_size: p.package_size ? String(p.package_size) : null,
       category: cat(p.category),
       category_confident: p.category_confident !== false,
+      food_category: FOOD_CATS.includes(p.food_category as string) ? (p.food_category as string) : 'other',
       is_food: p.is_food !== false,
       exclude_reason: p.is_food === false ? (p.exclude_reason || 'non-food item') : null,
       matched_inventory_id: matchedId,
@@ -723,12 +729,20 @@ Return ONLY valid JSON, no prose, no markdown fences:
   // "approve all" works; flagged ones are surfaced for a decision too.
   const food = items.filter(i => i.is_food)
   const toRestock = food.filter(i => i.matched_inventory_id).map(i => {
-    const cur = Number(invById.get(i.matched_inventory_id!)!.quantity) || 0
+    const existing = invById.get(i.matched_inventory_id!)!
+    const cur = Number(existing.quantity) || 0
     const add = i.quantity_purchased ?? 1
+    // Leftover nudge: restocking a perishable that still had stock left. The
+    // existing row's food_category determines perishability + the fresh-date refresh.
+    const perishable = PERISHABLE.has((existing.food_category as string) || '')
+    const leftover_warning = (perishable && cur > 0)
+      ? `You still had ${cur} left before this restock — use the older stock first.`
+      : null
     return {
       idx: i.idx, name: i.name, restocks: i.matched_inventory_name,
       current_quantity: cur, add_quantity: add, projected_quantity: cur + add,
       package_size: i.package_size, category: i.category,
+      leftover_warning,
       flagged: i.match_uncertain, flag_reason: i.match_uncertain ? (i.note || 'not sure this is the same item') : null,
     }
   })
@@ -752,7 +766,7 @@ Return ONLY valid JSON, no prose, no markdown fences:
     to_add: toAdd,
     to_restock: toRestock,
     excluded_non_food: excluded,
-    next_step: 'Show this as a review list (new items, restocks with old→new quantity, anything flagged for a decision, and the excluded non-food items collapsed for transparency). Do NOT write anything yet. After the user confirms or asks for edits, call commit_grocery_import with this batch_id (and adjustments for any edits).',
+    next_step: 'Show this as a review list (new items, restocks with old→new quantity, anything flagged for a decision, and the excluded non-food items collapsed for transparency). If any restock has a leftover_warning, surface that one-liner to the user (they still had perishable stock left before this restock — use older stock first). Do NOT write anything yet. After the user confirms or asks for edits, call commit_grocery_import with this batch_id (and adjustments for any edits).',
   }
 }
 
@@ -790,18 +804,19 @@ async function toolCommitGroceryImport(input: Record<string, unknown>, db: DB) {
   const restockIds = [...new Set(items
     .map(i => adjByIdx.get(i.idx)?.matched_inventory_id ?? i.matched_inventory_id)
     .filter(Boolean) as string[])]
-  const curQty = new Map<string, { quantity: number; unit: string | null; name: string }>()
+  const curQty = new Map<string, { quantity: number; unit: string | null; name: string; food_category: string }>()
   if (restockIds.length) {
     const { data: rows } = await db.from('inventory')
-      .select('id, quantity, unit, name').in('id', restockIds).eq('active', true)
+      .select('id, quantity, unit, name, food_category').in('id', restockIds).eq('active', true)
     for (const r of (rows || []) as Record<string, unknown>[])
-      curQty.set(r.id as string, { quantity: Number(r.quantity) || 0, unit: (r.unit as string) || null, name: r.name as string })
+      curQty.set(r.id as string, { quantity: Number(r.quantity) || 0, unit: (r.unit as string) || null, name: r.name as string, food_category: (r.food_category as string) || 'other' })
   }
 
   const added: { name: string; quantity: number; category: string }[] = []
   const restocked: { name: string; from: number; to: number }[] = []
   const skipped: { name: string; reason: string }[] = []
   const removed: string[] = []
+  const leftover_notices: string[] = []
 
   for (const item of items) {
     const adj = adjByIdx.get(item.idx)
@@ -821,6 +836,11 @@ async function toolCommitGroceryImport(input: Record<string, unknown>, db: DB) {
     if (matchedId && curQty.has(matchedId)) {
       const cur = curQty.get(matchedId)!
       const to = cur.quantity + qty
+      // Leftover nudge: perishable still had stock when fresh stock arrives.
+      // (The trigger refreshes expiry_date to a fresh count on the increase.)
+      if (PERISHABLE.has(cur.food_category) && cur.quantity > 0) {
+        leftover_notices.push(`${cur.name}: you still had ${cur.quantity} before this restock — use the older stock first.`)
+      }
       const upd: Record<string, unknown> = { quantity: to }
       if (!cur.unit && item.package_size) upd.unit = item.package_size
       const { error } = await db.from('inventory').update(upd).eq('id', matchedId)
@@ -828,10 +848,11 @@ async function toolCommitGroceryImport(input: Record<string, unknown>, db: DB) {
       restocked.push({ name: cur.name, from: cur.quantity, to })
       cur.quantity = to   // in case two lines restock the same row
     } else {
-      // New item — trigger trg_link_master_inv auto-links master_ingredient_id.
+      // New item — triggers auto-link master + set last_updated_at/default expiry.
       const { error } = await db.from('inventory').insert({
         name, quantity: qty, unit: item.package_size || null,
-        category, source: 'grocery_import', active: true,
+        category, food_category: item.food_category || 'other',
+        source: 'grocery_import', active: true,
       })
       if (error) { skipped.push({ name, reason: error.message }); continue }
       added.push({ name, quantity: qty, category })
@@ -844,8 +865,9 @@ async function toolCommitGroceryImport(input: Record<string, unknown>, db: DB) {
 
   return {
     success: true,
-    added, restocked, skipped, removed,
+    added, restocked, skipped, removed, leftover_notices,
     summary: `${added.length} added, ${restocked.length} restocked${removed.length ? `, ${removed.length} removed` : ''}${skipped.length ? `, ${skipped.length} skipped` : ''}.`,
+    note: leftover_notices.length ? 'Relay each leftover_notice to the user as a brief heads-up about using older perishable stock first.' : undefined,
   }
 }
 

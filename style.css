@@ -2879,6 +2879,76 @@ body {
 .pn-expiry-soon { color: #d97706; font-weight: 600; }
 .pn-expiry-past { color: #dc2626; font-weight: 600; }
 
+/* ── Inventory compact row + quick-adjust ─────────────────── */
+.pn-inv-item { display: flex; flex-direction: column; }
+.pn-inv-row { align-items: center; gap: 8px; cursor: default; }
+.pn-inv-tap { flex: 1; min-width: 0; cursor: pointer; }
+.pn-inv-name { font-size: 14.8px; font-weight: 600; }
+.pn-inv-sub {
+  font-size: 12.2px; color: var(--text-muted); margin-top: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* "never checked" + near-term expiry — attention colour, distinct from muted */
+.pn-sub-warn { color: var(--accent-warm); font-weight: 600; }
+
+/* Stepper (no baseline yet) */
+.pn-stepper { display: flex; align-items: center; gap: 0; flex-shrink: 0; }
+.pn-step-btn {
+  width: 30px; height: 30px; flex-shrink: 0;
+  border: 1.5px solid var(--border); background: var(--surface);
+  color: var(--primary); font-size: 18px; font-weight: 700; line-height: 1;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+  display: flex; align-items: center; justify-content: center;
+}
+.pn-step-btn--minus { border-radius: 9px 0 0 9px; }
+.pn-step-btn--plus  { border-radius: 0 9px 9px 0; }
+.pn-step-btn:active { background: var(--primary-bg); }
+.pn-step-num {
+  min-width: 38px; height: 30px; padding: 0 6px;
+  border: 1.5px solid var(--border); border-left: none; border-right: none;
+  background: #fff; color: var(--text); font-family: var(--font);
+  font-size: 14px; font-weight: 700; cursor: pointer;
+}
+.pn-qty-input {
+  width: 56px; height: 30px; padding: 0 6px; text-align: center;
+  border: 1.5px solid var(--primary); border-radius: 8px;
+  background: #fff; color: var(--text); font-family: var(--font); font-size: 14px; font-weight: 700;
+}
+.pn-qty-input--wide { width: 88px; }
+
+/* Status pill (baseline set) — routine neutral treatment, not an alarm */
+.pn-qtyctl { flex-shrink: 0; }
+.pn-status-pill {
+  padding: 6px 13px; border-radius: 999px;
+  border: 1.5px solid var(--border); background: var(--bg);
+  color: var(--text-muted); font-family: var(--font); font-size: 12.7px; font-weight: 700;
+  cursor: pointer; -webkit-tap-highlight-color: transparent; white-space: nowrap;
+}
+.pn-status-pill--open { border-color: var(--primary); color: var(--primary); }
+.pn-status-pill:active { background: var(--primary-bg); }
+
+/* Expanded 2×3 status grid below the row */
+.pn-status-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
+  padding: 8px 16px 12px;
+}
+.pn-status-opt {
+  padding: 9px 4px; border-radius: 9px;
+  border: 1.5px solid var(--border); background: var(--surface);
+  color: var(--text); font-family: var(--font); font-size: 12.7px; font-weight: 600;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.pn-status-opt--active { border-color: var(--primary); background: var(--primary-bg); color: var(--primary); font-weight: 800; }
+.pn-status-opt:active { opacity: 0.85; }
+.pn-status-exact {
+  grid-column: 1 / -1; margin-top: 2px; padding: 8px;
+  border: none; background: none; color: var(--primary);
+  font-family: var(--font); font-size: 12.7px; font-weight: 700; cursor: pointer; text-align: center;
+}
+.pn-status-exact--set {
+  background: var(--primary); color: #fff; border-radius: 9px; grid-column: auto;
+}
+
 /* Prepped batches indicator ──────────────────────────────── */
 .pn-prepped-batches {
   font-size: 13.8px;

@@ -18,7 +18,58 @@ let showHiddenFreezer   = false
 const catOpenState = { fridge: true, freezer: true, pantry: true }
 
 const CAT_LABELS = { fridge: '🧊 Fridge', freezer: '❄️ Freezer', pantry: '🥫 Pantry' }
+const CAT_WORD   = { fridge: 'Fridge', freezer: 'Freezer', pantry: 'Pantry' }
 const CAT_LIST   = ['fridge', 'freezer', 'pantry']
+
+const FOOD_CATS = [
+  ['meat','Meat'], ['seafood','Seafood'], ['produce','Produce'],
+  ['dairy','Dairy'], ['eggs','Eggs'], ['pantry','Pantry'], ['other','Other'],
+]
+
+// Loose status ↔ quantity: status is an input convenience that resolves to a
+// real quantity against the item's typical_quantity baseline.
+const STATUS_ORDER = ['out', 'very_low', 'low', 'enough', 'plenty', 'overstock']
+const STATUS_PCT   = { out: 0, very_low: 0.10, low: 0.25, enough: 0.60, plenty: 0.85, overstock: 1.25 }
+const STATUS_LABEL = { out: 'Out', very_low: 'Very low', low: 'Low', enough: 'Enough', plenty: 'Plenty', overstock: 'Overstock' }
+
+function deriveStatus(qty, typical) {
+  if (typical == null || Number(typical) <= 0) return null
+  if (qty == null || Number(qty) === 0) return 'out'
+  const ratio = Number(qty) / Number(typical)
+  let best = 'out', bestD = Infinity
+  for (const k of STATUS_ORDER) {
+    const d = Math.abs(STATUS_PCT[k] - ratio)
+    if (d < bestD) { bestD = d; best = k }
+  }
+  return best
+}
+function qtyFromStatus(statusKey, typical) {
+  return Math.round(Number(typical) * STATUS_PCT[statusKey] * 100) / 100
+}
+function fmtQty(q) {
+  if (q == null) return '0'
+  const n = Number(q)
+  return Number.isInteger(n) ? String(n) : String(Math.round(n * 100) / 100)
+}
+
+// "3d ago" / "today"; null last_updated_at → null (caller flags "never checked").
+function relTime(ts) {
+  if (!ts) return null
+  const days = Math.floor((Date.now() - new Date(ts).getTime()) / 86400000)
+  return days <= 0 ? 'today' : `${days}d ago`
+}
+// Expiry line segment: warning styling + special wording within 2 days / past.
+function expiryInfo(dateStr) {
+  if (!dateStr) return null
+  const today = new Date(); today.setHours(0, 0, 0, 0)
+  const exp = new Date(dateStr + 'T00:00:00')
+  const days = Math.round((exp - today) / 86400000)
+  if (days < 0)  return { text: 'expired',      warn: true }
+  if (days === 0) return { text: 'exp today',    warn: true }
+  if (days === 1) return { text: 'exp tomorrow', warn: true }
+  if (days === 2) return { text: 'exp ' + fmtShortDate(dateStr), warn: true }
+  return { text: 'exp ' + fmtShortDate(dateStr), warn: false }
+}
 
 // ── Lifecycle ─────────────────────────────────────────────
 export function init(el) {
@@ -221,39 +272,155 @@ function buildInventorySection(catKey, items) {
   return wrap
 }
 
+// Compact item: line 1 name; line 2 "[storage] · updated [rel] · exp [date]";
+// right side a numeric stepper (no baseline yet) or a status pill (baseline set).
+// Both quantity-control paths write the SAME quantity field. The whole item lives
+// in one wrapper so the status-grid can expand directly below the row.
 function buildInventoryRow(item, ruled) {
-  const isOut = item.quantity == null || Number(item.quantity) === 0
-  const row = document.createElement('div')
-  row.className = 'pn-row pn-row--compact' + (ruled ? ' pn-row--ruled' : '') + (isOut ? ' pn-row--out' : '')
-
-  const centre = document.createElement('div')
-  centre.className = 'pn-row__centre pn-row__line'
-  const main = document.createElement('span')
-  main.className = 'pn-row__main'
-  main.textContent = item.name
-  const meta = document.createElement('div')
-  meta.className = 'pn-row__meta-inline'
-  const parts = []
-  if (!isOut && item.quantity != null) parts.push(item.quantity + (item.unit ? ' ' + item.unit : ''))
-  if (item.expiry_date) parts.push('exp ' + fmtShortDate(item.expiry_date))
-  meta.textContent = parts.join(' · ')
-  centre.append(main, meta)
-  row.appendChild(centre)
-
-  const right = document.createElement('div')
-  right.className = 'pn-row__right'
-  if (isOut) {
-    const b = document.createElement('span'); b.className = 'pn-badge pn-badge-out'; b.textContent = 'Out'; right.appendChild(b)
-  }
-  if (item.source && item.source !== 'manual') {
-    const b = document.createElement('span'); b.className = 'pn-badge pn-badge-source'; b.textContent = item.source; right.appendChild(b)
-  }
-  row.appendChild(right)
-
-  row.addEventListener('click', () => openInventoryForm(item.id, item.category || 'pantry'))
-  return row
+  const wrap = document.createElement('div')
+  renderInvItem(wrap, item, ruled)
+  return wrap
 }
 
+function renderInvItem(wrap, item, ruled) {
+  wrap.innerHTML = ''
+  wrap.className = 'pn-inv-item' + (ruled ? ' pn-row--ruled' : '')
+
+  const row = document.createElement('div')
+  row.className = 'pn-row pn-inv-row'
+
+  // Tappable name + meta -> full edit form.
+  const tap = document.createElement('div')
+  tap.className = 'pn-inv-tap'
+  const name = document.createElement('div')
+  name.className = 'pn-row__main pn-inv-name'
+  name.textContent = item.name
+
+  const sub = document.createElement('div')
+  sub.className = 'pn-inv-sub'
+  const stor = document.createElement('span')
+  stor.textContent = CAT_WORD[item.category] || item.category || '—'
+  sub.appendChild(stor)
+  sub.appendChild(document.createTextNode(' · '))
+  const upd = document.createElement('span')
+  if (!item.last_updated_at) { upd.className = 'pn-sub-warn'; upd.textContent = 'never checked' }
+  else { upd.textContent = 'updated ' + relTime(item.last_updated_at) }
+  sub.appendChild(upd)
+  const ei = expiryInfo(item.expiry_date)
+  if (ei) {
+    sub.appendChild(document.createTextNode(' · '))
+    const e = document.createElement('span')
+    e.textContent = ei.text
+    if (ei.warn) e.className = 'pn-sub-warn'
+    sub.appendChild(e)
+  }
+  tap.append(name, sub)
+  tap.addEventListener('click', () => openInventoryForm(item.id, item.category || 'pantry'))
+  row.appendChild(tap)
+
+  // Quick-adjust control.
+  row.appendChild(
+    item.typical_quantity != null
+      ? buildStatusControl(wrap, item, ruled)
+      : buildStepper(wrap, item, ruled)
+  )
+
+  wrap.appendChild(row)
+}
+
+// Persist a new quantity (+ optional status) by ANY quick path; the DB trigger
+// handles last_updated_at + expiry. Re-render in place with the fresh row.
+async function setInvQuantity(wrap, item, ruled, newQty, statusKey) {
+  const payload = { quantity: newQty }
+  if (statusKey !== undefined) payload.status = statusKey
+  const { data, error } = await supabase.from('inventory').update(payload).eq('id', item.id).select('*').single()
+  if (error || !data) { toast('Update failed', { error: true }); return }
+  Object.assign(item, data)
+  const idx = inventoryData.findIndex(x => x.id === item.id)
+  if (idx >= 0) inventoryData[idx] = { ...inventoryData[idx], ...data }
+  renderInvItem(wrap, item, ruled)
+}
+
+function buildStepper(wrap, item, ruled) {
+  const c = document.createElement('div')
+  c.className = 'pn-stepper'
+  const mk = (txt, cls) => { const b = document.createElement('button'); b.className = 'pn-step-btn ' + cls; b.textContent = txt; return b }
+  const minus = mk('−', 'pn-step-btn--minus')
+  const plus  = mk('+', 'pn-step-btn--plus')
+  const num = document.createElement('button')
+  num.className = 'pn-step-num'
+  num.textContent = fmtQty(item.quantity)
+
+  minus.addEventListener('click', e => { e.stopPropagation(); setInvQuantity(wrap, item, ruled, Math.max(0, (Number(item.quantity) || 0) - 1)) })
+  plus.addEventListener('click',  e => { e.stopPropagation(); setInvQuantity(wrap, item, ruled, (Number(item.quantity) || 0) + 1) })
+  num.addEventListener('click', e => {
+    e.stopPropagation()
+    const inp = document.createElement('input')
+    inp.type = 'number'; inp.className = 'pn-qty-input'; inp.min = 0; inp.step = 'any'
+    inp.value = item.quantity ?? ''
+    num.replaceWith(inp); inp.focus(); inp.select()
+    let done = false
+    const commit = () => { if (done) return; done = true; const v = inp.value === '' ? 0 : Math.max(0, parseFloat(inp.value) || 0); setInvQuantity(wrap, item, ruled, v) }
+    const cancel = () => { if (done) return; done = true; renderInvItem(wrap, item, ruled) }
+    inp.addEventListener('click', e2 => e2.stopPropagation())
+    inp.addEventListener('blur', commit)
+    inp.addEventListener('keydown', e2 => {
+      if (e2.key === 'Enter') { e2.preventDefault(); inp.blur() }
+      else if (e2.key === 'Escape') { e2.preventDefault(); cancel() }
+    })
+  })
+  c.append(minus, num, plus)
+  return c
+}
+
+function buildStatusControl(wrap, item, ruled) {
+  const c = document.createElement('div')
+  c.className = 'pn-qtyctl'
+  const cur = deriveStatus(item.quantity, item.typical_quantity)
+  const pill = document.createElement('button')
+  pill.className = 'pn-status-pill'
+  pill.textContent = STATUS_LABEL[cur] || '—'
+  pill.addEventListener('click', e => { e.stopPropagation(); toggleStatusGrid(wrap, item, ruled, pill) })
+  c.appendChild(pill)
+  return c
+}
+
+function toggleStatusGrid(wrap, item, ruled, pill) {
+  const open = wrap.querySelector('.pn-status-grid')
+  if (open) { open.remove(); pill.classList.remove('pn-status-pill--open'); return }
+  pill.classList.add('pn-status-pill--open')
+
+  const cur = deriveStatus(item.quantity, item.typical_quantity)
+  const grid = document.createElement('div')
+  grid.className = 'pn-status-grid'
+  STATUS_ORDER.forEach(k => {
+    const b = document.createElement('button')
+    b.className = 'pn-status-opt' + (k === cur ? ' pn-status-opt--active' : '')
+    b.textContent = STATUS_LABEL[k]
+    b.addEventListener('click', e => { e.stopPropagation(); setInvQuantity(wrap, item, ruled, qtyFromStatus(k, item.typical_quantity), k) })
+    grid.appendChild(b)
+  })
+  const exact = document.createElement('button')
+  exact.className = 'pn-status-exact'
+  exact.textContent = 'Enter exact amount instead'
+  exact.addEventListener('click', e => {
+    e.stopPropagation()
+    grid.innerHTML = ''
+    const inp = document.createElement('input')
+    inp.type = 'number'; inp.className = 'pn-qty-input pn-qty-input--wide'; inp.min = 0; inp.step = 'any'
+    inp.value = item.quantity ?? ''
+    const ok = document.createElement('button'); ok.className = 'pn-status-exact pn-status-exact--set'; ok.textContent = 'Set'
+    let done = false
+    const commit = () => { if (done) return; done = true; const v = inp.value === '' ? 0 : Math.max(0, parseFloat(inp.value) || 0); setInvQuantity(wrap, item, ruled, v) }
+    ok.addEventListener('click', e2 => { e2.stopPropagation(); commit() })
+    inp.addEventListener('click', e2 => e2.stopPropagation())
+    inp.addEventListener('keydown', e2 => { if (e2.key === 'Enter') { e2.preventDefault(); commit() } })
+    grid.append(inp, ok)
+    inp.focus()
+  })
+  grid.appendChild(exact)
+  wrap.appendChild(grid)
+}
 // Read-only "Prepped" grouping inside Inventory (visibility of the same data).
 function buildPreppedInventoryGroup(items) {
   const wrap = document.createElement('div')
@@ -296,7 +463,10 @@ function openInventoryForm(id, defaultCat = 'pantry') {
   const qtyInp   = mkInput('number', item?.quantity     ?? '', '')
   qtyInp.min = 0; qtyInp.step = 'any'
   const unitInp  = mkInput('text',   item?.unit         || '', 'e.g. litres')
+  const typicalInp = mkInput('number', item?.typical_quantity ?? '', 'e.g. 2')
+  typicalInp.min = 0; typicalInp.step = 'any'
   const catSel   = mkSelect([['fridge','Fridge'],['freezer','Freezer'],['pantry','Pantry']], item?.category || defaultCat)
+  const foodSel  = mkSelect(FOOD_CATS, item?.food_category || 'other')
   const expInp   = mkDateInput(item?.expiry_date || '')
   const notesInp = mkInput('text',   item?.notes        || '', 'Optional notes')
 
@@ -304,10 +474,15 @@ function openInventoryForm(id, defaultCat = 'pantry') {
   qtyRow.className = 'pn-form-row'
   qtyRow.append(mkField('Quantity', qtyInp, 'pn-form-col-sm'), mkField('Unit', unitInp, 'pn-form-col'))
 
+  const catRow = document.createElement('div')
+  catRow.className = 'pn-form-row'
+  catRow.append(mkField('Stored in', catSel, 'pn-form-col'), mkField('Food type', foodSel, 'pn-form-col'))
+
   form.append(
     mkField('Name *', nameInp),
     qtyRow,
-    mkField('Category', catSel),
+    catRow,
+    mkField('Typical amount (baseline for status — optional)', typicalInp),
     mkField('Expiry date (optional)', expInp),
     mkField('Notes (optional)', notesInp),
   )
@@ -323,11 +498,13 @@ function openInventoryForm(id, defaultCat = 'pantry') {
     if (!name) { toast('Name is required', { error: true }); return }
     const payload = {
       name,
-      quantity:    qtyInp.value !== '' ? parseFloat(qtyInp.value) : null,
-      unit:        unitInp.value.trim() || null,
-      category:    catSel.value,
-      expiry_date: expInp.value || null,
-      notes:       notesInp.value.trim() || null,
+      quantity:         qtyInp.value !== '' ? parseFloat(qtyInp.value) : null,
+      unit:             unitInp.value.trim() || null,
+      typical_quantity: typicalInp.value !== '' ? parseFloat(typicalInp.value) : null,
+      category:         catSel.value,
+      food_category:    foodSel.value,
+      expiry_date:      expInp.value || null,
+      notes:            notesInp.value.trim() || null,
     }
     saveBtn.disabled = true; saveBtn.textContent = 'Saving…'
     const op = id
