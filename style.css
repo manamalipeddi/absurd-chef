@@ -931,7 +931,7 @@ body {
   transition: color 0.15s, transform 0.1s;
   flex-shrink: 0;
 }
-.recipe-row__heart--on { color: #e11d48; }
+.recipe-row__heart--on { color: var(--primary); }   /* green = "this is marked/active" */
 .recipe-row__heart svg { width: 20px; height: 20px; }
 .recipe-row__heart:active { transform: scale(0.88); }
 
@@ -1032,7 +1032,9 @@ body {
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
-.rd-pill--active { border-color: var(--primary); background: var(--primary-bg); color: var(--primary); font-weight: 700; }
+/* Active version = green text + green outline (no green fill — green marks
+   "the one you're viewing", it never fills the pill). */
+.rd-pill--active { border-color: var(--primary); background: var(--surface); color: var(--primary); font-weight: 700; }
 .rd-pill__star { font-size: 11px; }
 .rd-pill__setdefault {
   background: none; border: none; cursor: pointer; padding: 0 0 0 2px;
@@ -2608,7 +2610,9 @@ body {
   border-radius: 0;
   font-size: 14px;
   font-weight: 700;
-  color: var(--text-on-page-muted);   /* the tick, in the muted on-burgundy tone */
+  /* The "on" tick is a small positive signal → green (the lighter green token
+     so it stays visible on burgundy). Border stays the hairline outline. */
+  color: var(--primary-light);
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
@@ -3073,7 +3077,7 @@ body {
   color: var(--text-muted);
   -webkit-tap-highlight-color: transparent;
 }
-.pn-fav--on { color: #e0a92a; }
+.pn-fav--on { color: var(--primary); }   /* green = "this is marked/active" */
 .pn-fav:active { opacity: 0.7; }
 
 /* Stepper (no baseline yet) */
@@ -3323,12 +3327,14 @@ body {
 .pn-grocery-shortfall {
   font-size: 12.4px;
   font-weight: 600;
-  color: var(--accent-warm);
+  color: var(--text-muted);
   margin-top: 2px;
   line-height: 1.4;
 }
 /* Softer hint for the "you have some — double-check" case (not a hard shortfall) */
 .pn-grocery-shortfall--soft { color: var(--text-muted); font-weight: 500; }
+/* The one number that matters — how much more to buy — gets the green accent. */
+.pn-grocery-buy { color: var(--primary); font-weight: 700; }
 
 
 /* ── Chat — load more button ─────────────────────────────── */

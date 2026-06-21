@@ -1385,7 +1385,9 @@ function buildGroceryNeededRow(item, ruled) {
     if (s.kind === 'short') {
       const have = `${s.estimate ? '~' : ''}${fmtCanonical(s.dim, s.availVal)}`
       const est  = s.estimate ? ` (estimated from ‘${s.statusLabel}’)` : ''
-      sl.textContent = `Need ${fmtCanonical(s.dim, s.neededVal)}, have ${have}${est} — buy at least ${fmtCanonical(s.dim, s.neededVal - s.availVal)} more`
+      const buy  = fmtCanonical(s.dim, s.neededVal - s.availVal)
+      // Rest of the sentence stays muted; only the actionable buy amount is green.
+      sl.innerHTML = `Need ${fmtCanonical(s.dim, s.neededVal)}, have ${have}${est} — buy at least <span class="pn-grocery-buy">${buy} more</span>`
     } else if (s.kind === 'have_some') {
       sl.className += ' pn-grocery-shortfall--soft'
       sl.textContent = `Need ${fmtCanonical(s.dim, s.neededVal)} · you have some (${s.haveRaw}) — double-check it's enough`
