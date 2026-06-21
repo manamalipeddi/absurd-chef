@@ -43,7 +43,14 @@ function addDays(s, n) {
 function daysBetween(a, b) {
   return Math.round((new Date(b + 'T12:00:00Z') - new Date(a + 'T12:00:00Z')) / 86400000)
 }
-function todayStr() { return new Date().toISOString().slice(0, 10) }
+// Local calendar date (noon-anchored so converting to UTC can't roll it to the
+// previous/next day). Must use the SAME local basis as thisWeekMonday() below,
+// or the history boundary and the upcoming window can disagree by a day and a
+// day (e.g. yesterday) falls into the gap between them.
+function todayStr() {
+  const d = new Date(); d.setHours(12, 0, 0, 0)
+  return d.toISOString().slice(0, 10)
+}
 function thisWeekMonday() {
   const d = new Date(); d.setHours(12, 0, 0, 0)
   const dow = d.getDay()
