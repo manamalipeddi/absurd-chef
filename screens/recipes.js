@@ -12,6 +12,7 @@ const SECTIONS = [
 let allRecipes      = []
 let inactiveRecipes = []
 let stashMap        = {}
+let todayPlanIds    = new Set()   // recipe ids planned (or logged) for today
 let screenEl        = null
 let showInactive    = false
 const openState     = {}
@@ -32,7 +33,9 @@ export async function activate({ headerLeft, headerRight }) {
 
 // ── Data ──────────────────────────────────────────────────
 async function loadData() {
-  const [recipeRes, inactiveRes, stashRes] = await Promise.all([
+  const d = new Date()
+  const todayStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  const [recipeRes, inactiveRes, stashRes, todayRes] = await Promise.all([
     supabase.from('recipes')
       .select('id, name, meal_type, is_preferred, ease_descriptor, emoji, active, last_made, prep_time_min, cook_time_min')
       .eq('active', true).or('is_placeholder.is.null,is_placeholder.eq.false').order('name'),
@@ -41,10 +44,18 @@ async function loadData() {
       .eq('active', false).or('is_placeholder.is.null,is_placeholder.eq.false').order('name'),
     supabase.from('freezer_stash')
       .select('recipe_id, portions').eq('used', false),
+    supabase.from('meal_plans')
+      .select('recipe_id, actual_recipe_id').eq('plan_date', todayStr),
   ])
 
   allRecipes      = recipeRes.data   || []
   inactiveRecipes = inactiveRes.data || []
+
+  todayPlanIds = new Set()
+  for (const row of (todayRes.data || [])) {
+    if (row.recipe_id)        todayPlanIds.add(row.recipe_id)
+    if (row.actual_recipe_id) todayPlanIds.add(row.actual_recipe_id)
+  }
 
   stashMap = {}
   for (const row of (stashRes.data || [])) {
@@ -188,7 +199,8 @@ function buildRow(recipe, fallbackEmoji) {
 
   const subParts = []
   if (recipe.ease_descriptor) subParts.push(recipe.ease_descriptor)
-  subParts.push(fmtLastMade(recipe.last_made))         // replaces the cooking-method tag
+  // If it's on today's plan, say so instead of the last-made text.
+  subParts.push(todayPlanIds.has(recipe.id) ? "in today's plan" : fmtLastMade(recipe.last_made))
   const active = fmtActiveTime(recipe.prep_time_min, recipe.cook_time_min)
   if (active) subParts.push(active)
   if (portions > 0)           subParts.push(`🧊 ${portions}`)
