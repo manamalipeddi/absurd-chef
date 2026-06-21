@@ -7,9 +7,9 @@
   --bg:                 #e7f0e1;   /* soft green fill inside cards / inputs / active rows */
   --surface:            #f3f8ef;   /* super light green — card surfaces */
   --border:             #d3e3cd;   /* gentle green border */
-  --primary:            #22615C;   /* deep teal-green — the contrast / action colour */
-  --primary-light:      #2f8079;
-  --primary-bg:         #d4e8e5;   /* pale tint for icon backgrounds, badges */
+  --primary:            #015041;   /* deep green — the contrast / action colour */
+  --primary-light:      #047a5f;   /* lighter green — gradient partner for --primary */
+  --primary-bg:         #d6e9e2;   /* pale green tint for icon backgrounds, badges */
   --accent:             #8c3a55;   /* burgundy accent */
   --accent-warm:        #b5485f;
   --text:               #2c1a22;   /* dark, readable on light-green surfaces */
@@ -17,7 +17,7 @@
   --text-on-page:       #f6e8da;   /* cream text directly on the burgundy page */
   --text-on-page-muted: #d6b3bf;
   --nav-inactive:       #a89aa0;
-  --nav-active:         #22615C;
+  --nav-active:         var(--primary);
   --radius:             14px;
   --radius-sm:          10px;
   --header-h:           60px;
@@ -2193,6 +2193,21 @@ body {
 .su-badge-hard { background: #fee2e2; color: #991b1b; }
 
 /* Form ───────────────────────────────────────────────────── */
+/* Add/edit form screens render as a light surface panel — NOT bare on the
+   burgundy page. The shared contrast fix: every form-screen container sits on
+   --surface so all the dark labels / helper text / dividers inside land on a
+   readable light background (they previously sat directly on burgundy). Covers
+   Inventory (.pn-form), Family / master Ingredients / weekly template (.su-form),
+   and recipe add/edit (.ar-form). Modals already use --surface, so they're fine. */
+.su-form, .pn-form, .ar-form {
+  background: var(--surface);
+  border: 1px solid rgba(232, 221, 210, 0.7);
+  border-radius: 16px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.05);
+  margin: 12px 16px calc(16px + var(--safe-bottom));
+  overflow: hidden;
+}
+
 .su-form { padding: 8px 16px 32px; }
 .su-field { margin-bottom: 16px; }
 .su-label {
