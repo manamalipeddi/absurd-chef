@@ -756,6 +756,15 @@ body {
 .picker-row:active { background: var(--bg); }
 .picker-row__emoji { font-size: 21.2px; width: 28px; text-align: center; flex-shrink: 0; }
 .picker-row__name  { font-size: 14.8px; font-weight: 500; color: var(--text); }
+/* Meal-type prefix in the picker list (display only — not stored). */
+.picker-row__cat {
+  font-size: 10.6px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  margin-right: 7px;
+}
 .picker-row--other { background: var(--bg); }
 .picker-row--other .picker-row__name { font-weight: 700; color: var(--primary); }
 .picker-empty {

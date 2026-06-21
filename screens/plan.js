@@ -16,6 +16,38 @@ const RECIPE_CATEGORY = {
   snack:     'snack',
 }
 
+// Display labels for recipe meal_type categories (picker prefix). 'dinner' folds
+// into the same label as 'lunch_dinner' so they group together.
+const MEAL_TYPE_LABEL = {
+  breakfast:    'Breakfast',
+  lunch_dinner: 'Dinner/Lunch',
+  dinner:       'Dinner/Lunch',
+  snack:        'Snack',
+  dessert:      'Dessert',
+  kids:         'Kids',
+  special:      'Special',
+}
+// Fixed order the non-primary categories fall back to (primary slot category
+// always sorts first; see buildPickerPool).
+const MEAL_TYPE_ORDER = ['breakfast', 'lunch_dinner', 'dinner', 'snack', 'dessert', 'kids', 'special']
+const mealTypeLabel = (mt) => MEAL_TYPE_LABEL[mt] || 'Other'
+
+// All non-placeholder recipes, ordered so the slot's own category comes first
+// (e.g. a dinner slot shows Dinner/Lunch first), then the rest by MEAL_TYPE_ORDER,
+// alpha within each group.
+function buildPickerPool(slotType) {
+  const primaryLabel = mealTypeLabel(RECIPE_CATEGORY[slotType])
+  const orderIdx = (mt) => { const i = MEAL_TYPE_ORDER.indexOf(mt); return i === -1 ? MEAL_TYPE_ORDER.length : i }
+  return allRecipes.filter(r => !r.is_placeholder).slice().sort((a, b) => {
+    const ap = mealTypeLabel(a.meal_type) === primaryLabel ? 0 : 1
+    const bp = mealTypeLabel(b.meal_type) === primaryLabel ? 0 : 1
+    if (ap !== bp) return ap - bp
+    const ao = orderIdx(a.meal_type), bo = orderIdx(b.meal_type)
+    if (ao !== bo) return ao - bo
+    return (a.name || '').localeCompare(b.name || '')
+  })
+}
+
 // Quiet monochrome action glyphs (muted, no box) — replace the boxy emoji so the
 // recipe name stays the dominant element on each row.
 const SVG = (paths) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`
@@ -599,8 +631,8 @@ function buildEmpty() {
 // is always pinned and leads to a free-text entry.
 function showPicker(date, slotType) {
   const isActual = date <= todayStr()   // today or past = logging reality
-  const category = RECIPE_CATEGORY[slotType]
-  const pool     = allRecipes.filter(r => r.meal_type === category && !r.is_placeholder)
+  // Show ALL recipes, the slot's own category first (see buildPickerPool).
+  const pool     = buildPickerPool(slotType)
   const label    = MEAL_SLOTS.find(s => s.type === slotType)?.label || slotType
 
   const overlay = document.createElement('div'); overlay.className = 'picker-overlay'
@@ -630,7 +662,10 @@ function showPicker(date, slotType) {
     const hits = lq ? pool.filter(r => r.name.toLowerCase().includes(lq)) : pool
     list.innerHTML = ''
     for (const r of hits) {
-      list.appendChild(pickRow(r.emoji || slotEmoji(slotType), r.name, async () => {
+      // Prefix the displayed label with the meal-type category. Display-only —
+      // the stored value is the recipe id, so the prefix never enters the slot.
+      const display = `<span class="picker-row__cat">${mealTypeLabel(r.meal_type)}</span>${r.name}`
+      list.appendChild(pickRow(r.emoji || slotEmoji(slotType), display, async () => {
         closeModal(overlay); await applyPick(date, slotType, r.id, isActual, null)
       }))
     }
