@@ -2612,20 +2612,24 @@ body {
   align-items: center;
   justify-content: center;
   position: relative;
-  background: var(--surface);
-  border: 1.5px solid var(--border);
-  border-radius: 8px;
+  /* Flat, quiet treatment: same burgundy as the screen, thin light outline,
+     square (flat-edged) corners — colour is never the on/off signal. */
+  background: var(--page);
+  border: 1px solid var(--text-on-page-muted);
+  border-radius: 0;
   font-size: 14px;
   font-weight: 700;
-  color: var(--primary);
+  color: var(--text-on-page-muted);   /* the tick, in the muted on-burgundy tone */
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
-.ds-cell--on { background: var(--primary-bg); border-color: var(--primary); }
+/* "On" is communicated solely by the tick mark's presence — no fill, no
+   border-colour change. "Off" is the same bordered outline, empty. */
+.ds-cell--on { }
 .ds-cell--dirty { box-shadow: 0 0 0 2px var(--accent); }
 .ds-cell:active { opacity: 0.7; }
-.ds-cell__guests { font-size: 15.9px; color: var(--primary); }
-.ds-cell__dash { color: var(--border); }
+.ds-cell__guests { font-size: 15.9px; color: var(--text-on-page); }
+.ds-cell__dash { color: var(--text-on-page-muted); }
 .ds-cell__clear {
   position: absolute;
   top: -6px; right: -6px;
