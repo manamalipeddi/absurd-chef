@@ -6,6 +6,7 @@ const SECTIONS = [
   { id: 'setup-day-settings',    emoji: '🗓️', label: 'Day Settings',    sub: 'Commute, kids home, away & guests' },
   { id: 'setup-preschool-menu',  emoji: '🏫', label: 'Preschool Menu',  sub: "This week's lunch menu" },
   { id: 'setup-ingredients',     emoji: '🥕', label: 'Ingredients',     sub: 'Master ingredient list & matching' },
+  { id: 'setup-reference',       emoji: '🏷️', label: 'Recipe Vocabulary', sub: 'Tags, cuisines, methods, proteins, styles' },
 ]
 
 let screenEl = null

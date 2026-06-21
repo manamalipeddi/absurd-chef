@@ -13,6 +13,9 @@ let editSnapshot   = null         // {instructions, ingHash} for change detectio
 // Managed vocabularies + masters, loaded on entry.
 let allTags        = []
 let allCuisines    = []
+let allMethods     = []
+let allProteins    = []
+let allStyles      = []
 let masters        = []           // [{id, canonical_name, aliases}]
 
 const MEAL_TYPES   = ['breakfast','lunch_dinner','snack','special']
@@ -21,16 +24,30 @@ const EMOJI_FALLBACKS = {
 }
 
 const norm = s => String(s || '').toLowerCase().trim()
+// Looser key for vocab matching — ignores case + spaces/underscores/hyphens so
+// "Pressure Cook" / "pressure_cook" don't fragment during paste extraction.
+const vocabKey = s => String(s || '').toLowerCase().replace(/[\s_-]+/g, '')
+function matchVocab(value, list) {
+  if (!value) return value
+  const k = vocabKey(value)
+  return list.find(x => vocabKey(x) === k) || value
+}
 
 async function loadVocab() {
-  const [tagRes, cuiRes, mRes] = await Promise.all([
+  const [tagRes, cuiRes, mRes, methRes, protRes, styRes] = await Promise.all([
     supabase.from('recipe_tags').select('name').eq('active', true).order('name'),
     supabase.from('recipe_cuisines').select('name').eq('active', true).order('name'),
     supabase.from('master_ingredients').select('id, canonical_name, aliases').eq('active', true).order('canonical_name'),
+    supabase.from('recipe_cooking_methods').select('name').eq('active', true).order('name'),
+    supabase.from('recipe_proteins').select('name').eq('active', true).order('name'),
+    supabase.from('recipe_styles').select('name').eq('active', true).order('name'),
   ])
   allTags     = (tagRes.data || []).map(t => t.name)
   allCuisines = (cuiRes.data || []).map(c => c.name)
   masters     = mRes.data || []
+  allMethods  = (methRes.data || []).map(m => m.name)
+  allProteins = (protRes.data || []).map(p => p.name)
+  allStyles   = (styRes.data || []).map(s => s.name)
 }
 
 // Soft-match an ingredient name to a master (exact canonical/alias, then substring).
@@ -233,10 +250,12 @@ async function runExtract(rawText) {
       name:                 data.name || '',
       emoji:                data.emoji || '',
       meal_type:            data.meal_type || 'lunch_dinner',
-      cuisine:              data.cuisine || '',
-      protein:              data.protein || '',
-      style:                data.style || '',
-      cooking_method:       data.cooking_method || '',
+      // Match the extracted guess against managed vocab first (case/space-
+      // insensitive) so automated extraction doesn't fragment the vocabulary.
+      cuisine:              matchVocab(data.cuisine, allCuisines) || '',
+      protein:              matchVocab(data.protein, allProteins) || '',
+      style:                matchVocab(data.style, allStyles) || '',
+      cooking_method:       matchVocab(data.cooking_method, allMethods) || '',
       serves_base:          data.serves_base ?? '',
       prep_time_min:        data.prep_time_min ?? '',
       cook_time_min:        data.cook_time_min ?? '',
@@ -285,12 +304,12 @@ function buildReviewForm() {
   ]))
 
   form.appendChild(fieldRow([
-    buildCuisineField(),
-    field('Protein', 'text', 'protein', formData.protein, 'e.g. chickpea'),
+    buildVocabField('Cuisine', 'cuisine', allCuisines, 'recipe_cuisines'),
+    buildVocabField('Protein', 'protein', allProteins, 'recipe_proteins'),
   ]))
   form.appendChild(fieldRow([
-    field('Style', 'text', 'style', formData.style, 'e.g. slow simmer'),
-    field('Cooking method', 'text', 'cooking_method', formData.cooking_method, 'e.g. stovetop'),
+    buildVocabField('Style', 'style', allStyles, 'recipe_styles'),
+    buildVocabField('Cooking method', 'cooking_method', allMethods, 'recipe_cooking_methods'),
   ]))
   form.appendChild(fieldRow([
     field('Serves', 'number', 'serves_base', formData.serves_base, '4', { min: 1, max: 50 }),
@@ -451,33 +470,35 @@ function buildTagPicker() {
   return wrap
 }
 
-// Managed single-select cuisine (controlled vocabulary) + inline "+ Add new".
-function buildCuisineField() {
+// Managed single-select field (controlled vocabulary) + inline "+ Add new".
+// fieldKey is the recipes column (cuisine/protein/style/cooking_method); `list`
+// is the in-memory vocab array (mutated on add); `table` is the vocab table.
+function buildVocabField(label, fieldKey, list, table) {
   const wrap = document.createElement('div'); wrap.className = 'ar-field'
-  const lbl = document.createElement('div'); lbl.className = 'ar-field__label'; lbl.textContent = 'Cuisine'
-  const sel = document.createElement('select'); sel.className = 'ar-field__select'; sel.id = 'ar-cuisine'
+  const lbl = document.createElement('div'); lbl.className = 'ar-field__label'; lbl.textContent = label
+  const sel = document.createElement('select'); sel.className = 'ar-field__select'; sel.id = `ar-${fieldKey}`
   const addInp = document.createElement('input')
-  addInp.type = 'text'; addInp.className = 'ar-field__input'; addInp.placeholder = 'New cuisine name'
+  addInp.type = 'text'; addInp.className = 'ar-field__input'; addInp.placeholder = `New ${label.toLowerCase()}`
   addInp.style.display = 'none'; addInp.style.marginTop = '6px'
 
   function rebuild() {
     sel.innerHTML = ''
-    const cur = formData.cuisine || ''
-    const opts = [...allCuisines]
-    if (cur && !opts.includes(cur)) opts.unshift(cur)   // preserve a legacy free-text value
+    const cur = formData[fieldKey] || ''
+    const opts = [...list]
+    if (cur && !opts.includes(cur)) opts.unshift(cur)   // preserve a legacy value
     sel.add(new Option('— none —', ''))
     for (const c of opts) sel.add(new Option(c, c))
-    sel.add(new Option('+ Add new cuisine…', '__add__'))
+    sel.add(new Option(`+ Add new ${label.toLowerCase()}…`, '__add__'))
     sel.value = cur
   }
   rebuild()
 
   sel.addEventListener('change', () => {
     if (sel.value === '__add__') {
-      sel.value = formData.cuisine || ''
+      sel.value = formData[fieldKey] || ''
       addInp.style.display = ''; addInp.value = ''; addInp.focus()
     } else {
-      formData.cuisine = sel.value
+      formData[fieldKey] = sel.value
     }
   })
   let done = false
@@ -486,10 +507,10 @@ function buildCuisineField() {
     const name = addInp.value.trim()
     addInp.style.display = 'none'
     if (name) {
-      const { data } = await supabase.from('recipe_cuisines').insert({ name }).select().single()
-      const finalName = (data && data.name) || name
-      if (!allCuisines.includes(finalName)) { allCuisines.push(finalName); allCuisines.sort() }
-      formData.cuisine = finalName
+      const { data } = await supabase.from(table).insert({ name }).select().single()
+      const finalName = (data && data.name) || name   // tolerate unique-conflict on an existing name
+      if (!list.includes(finalName)) { list.push(finalName); list.sort() }
+      formData[fieldKey] = finalName
       rebuild()
     }
     done = false

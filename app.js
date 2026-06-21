@@ -23,6 +23,7 @@ const SCREENS = {
   'setup-day-settings':    { title: 'Day Settings',     module: './screens/setup-day-settings.js' },
   'setup-preschool-menu':  { title: 'Preschool Menu',   module: './screens/setup-preschool-menu.js' },
   'setup-ingredients':     { title: 'Ingredients',      module: './screens/setup-ingredients.js' },
+  'setup-reference':       { title: 'Recipe Vocabulary', module: './screens/setup-reference.js' },
   'recipe-detail':         { title: '',                 module: './screens/recipe-detail.js' },
   'add-recipe':            { title: 'Add Recipe',       module: './screens/add-recipe.js' },
 }
