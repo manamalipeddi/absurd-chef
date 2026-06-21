@@ -2570,8 +2570,19 @@ body {
 }
 .ds-savebar__btn:active { opacity: 0.9; }
 .ds-savebar__btn:disabled { opacity: 0.6; cursor: default; }
-.ds-corner { }
+/* Column headers stay pinned while the date rows scroll beneath them.
+   Opaque page-coloured fill so rows pass under cleanly. */
+.ds-corner {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--page);
+}
 .ds-colhead {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--page);
   display: flex;
   flex-direction: column;
   align-items: center;
