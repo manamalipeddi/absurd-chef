@@ -2345,23 +2345,23 @@ body {
   overflow: hidden;
 }
 
-.su-form { padding: 8px 16px 32px; }
-.su-field { margin-bottom: 16px; }
+.su-form { padding: 6px 14px 24px; }
+.su-field { margin-bottom: 11px; }
 .su-label {
   display: block;
-  font-size: 12.7px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-muted);
   letter-spacing: 0;
-  margin-bottom: 6px;
+  margin-bottom: 3px;
 }
 .su-input {
   width: 100%;
-  padding: 10px 12px;
+  padding: 8px 11px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   font-family: var(--font);
-  font-size: 14.8px;
+  font-size: 13.8px;
   color: var(--text);
   background: var(--surface);
   box-sizing: border-box;
@@ -2370,11 +2370,11 @@ body {
 .su-input:focus { outline: none; border-color: var(--primary); }
 .su-select {
   width: 100%;
-  padding: 10px 12px;
+  padding: 8px 11px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   font-family: var(--font);
-  font-size: 14.8px;
+  font-size: 13.8px;
   color: var(--text);
   background: var(--surface);
   box-sizing: border-box;
@@ -2412,9 +2412,9 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 0;
+  padding: 7px 0;
   cursor: pointer;
-  font-size: 14.8px;
+  font-size: 13.8px;
   color: var(--text);
 }
 .su-checkbox-row input[type="checkbox"] {
@@ -2427,7 +2427,7 @@ body {
 /* Repeatable rows ────────────────────────────────────────── */
 .su-rpt { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
 .su-rpt-row { display: flex; align-items: center; gap: 6px; }
-.su-rpt-row .su-input { flex: 1; min-width: 0; padding: 8px 10px; font-size: 14.8px; }
+.su-rpt-row .su-input { flex: 1; min-width: 0; padding: 7px 10px; font-size: 13.8px; }
 .su-rpt-row .su-sel-sm { flex: 0 0 auto; width: auto; }
 .su-rpt-rm {
   flex-shrink: 0;
@@ -2454,16 +2454,16 @@ body {
 }
 
 /* Form actions ───────────────────────────────────────────── */
-.su-actions { display: flex; gap: 10px; margin-top: 24px; }
+.su-actions { display: flex; gap: 10px; margin-top: 18px; }
 .su-btn-primary {
   flex: 1;
-  padding: 13px;
+  padding: 11px;
   background: var(--primary);
   color: #fff;
   border: none;
   border-radius: var(--radius);
   font-family: var(--font);
-  font-size: 15.9px;
+  font-size: 14.8px;
   font-weight: 600;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
