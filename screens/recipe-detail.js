@@ -44,6 +44,13 @@ export async function activate({ headerLeft, headerRight }) {
     await loadAll(recipeId)
   }
 
+  // Always (re)apply the header title — loadAll only sets it on a fresh load,
+  // but re-entering this screen must restore it too.
+  if (recipe) {
+    const titleEl = document.getElementById('screen-title')
+    if (titleEl) titleEl.textContent = recipe.name
+  }
+
   renderAll()
 
   // Set edit button after recipe loaded (header slots survive renderAll)
@@ -55,7 +62,13 @@ export async function activate({ headerLeft, headerRight }) {
       </svg>
     </button>`
   document.getElementById('btn-edit-recipe')?.addEventListener('click', () => {
-    if (recipe) { navState.editRecipeId = recipe.id; navigateTo('add-recipe') }
+    if (recipe) {
+      // Invalidate the cache so returning from the edit form reloads the recipe
+      // (restores the header title and shows the just-saved changes).
+      lastRecipeId = null
+      navState.editRecipeId = recipe.id
+      navigateTo('add-recipe')
+    }
   })
 }
 
