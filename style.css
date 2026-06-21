@@ -3145,13 +3145,13 @@ body {
 .pn-step-num {
   min-width: 38px; height: 30px; padding: 0 6px;
   border: 1.5px solid var(--border); border-left: none; border-right: none;
-  background: #fff; color: var(--text); font-family: var(--font);
+  background: var(--surface); color: var(--text); font-family: var(--font);
   font-size: 14px; font-weight: 700; cursor: pointer;
 }
 .pn-qty-input {
   width: 56px; height: 30px; padding: 0 6px; text-align: center;
   border: 1.5px solid var(--primary); border-radius: 8px;
-  background: #fff; color: var(--text); font-family: var(--font); font-size: 14px; font-weight: 700;
+  background: var(--surface); color: var(--text); font-family: var(--font); font-size: 14px; font-weight: 700;
 }
 .pn-qty-input--wide { width: 88px; }
 
