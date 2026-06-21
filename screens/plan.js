@@ -31,6 +31,9 @@ function addDays(s, n) {
   d.setUTCDate(d.getUTCDate() + n)
   return d.toISOString().slice(0, 10)
 }
+function daysBetween(a, b) {
+  return Math.round((new Date(b + 'T12:00:00Z') - new Date(a + 'T12:00:00Z')) / 86400000)
+}
 function todayStr() { return new Date().toISOString().slice(0, 10) }
 function thisWeekMonday() {
   const d = new Date(); d.setHours(12, 0, 0, 0)
@@ -96,7 +99,18 @@ async function getPlanWindow() {
     .gte('plan_date', monday)
     .lt('plan_date', addDays(monday, 7))
   const startDate = (count > 0) ? monday : upcomingMonday()
-  return { startDate, endDate: addDays(startDate, 13) }
+  // End of window is dynamic: at least 14 days, but extended to cover however
+  // far the plan actually reaches (rolling generation grows it past +13).
+  let endDate = addDays(startDate, 13)
+  const { data: latest } = await supabase
+    .from('meal_plans')
+    .select('plan_date')
+    .gte('plan_date', startDate)
+    .order('plan_date', { ascending: false })
+    .limit(1)
+  const maxDate = latest?.[0]?.plan_date
+  if (maxDate && maxDate > endDate) endDate = maxDate
+  return { startDate, endDate }
 }
 
 async function loadAndRender() {
@@ -162,7 +176,9 @@ async function loadAndRender() {
   const noteMap = {}
   for (const d of dsRows) if (d.note) noteMap[d.day] = d.note
 
-  const days = buildDayData(planRes.data || [], dsRows, startDate)
+  // Span the full window (>= 14 days, extended to the plan's real extent).
+  const windowDays = Math.max(14, daysBetween(startDate, endDate) + 1)
+  const days = buildDayData(planRes.data || [], dsRows, startDate, windowDays)
 
   render(days, startDate, computeGenWarning(schedLogRes.data?.[0]), histRes.data || [], noteMap)
 
@@ -186,7 +202,7 @@ function computeGenWarning(row) {
   return null
 }
 
-function buildDayData(planRows, daySettingsRows, startDate) {
+function buildDayData(planRows, daySettingsRows, startDate, dayCount = 14) {
   // day_settings is the single source of truth for per-day context (live).
   const dsMap = {}
   for (const d of daySettingsRows) dsMap[d.day] = d
@@ -198,7 +214,7 @@ function buildDayData(planRows, daySettingsRows, startDate) {
     planByDate[row.plan_date].slots[row.meal_type] = row
   }
 
-  return Array.from({ length: 14 }, (_, i) => {
+  return Array.from({ length: dayCount }, (_, i) => {
     const date  = addDays(startDate, i)
     const entry = planByDate[date] || { slots: {} }
     const ds    = dsMap[date]
@@ -458,7 +474,7 @@ function buildContextStrip(day) {
 
   const noteBtn = document.createElement('button')
   noteBtn.className = 'day-card__notebtn' + (day.meta.note ? ' day-card__notebtn--on' : '')
-  noteBtn.textContent = day.meta.note ? '📝' : '＋📝'
+  noteBtn.textContent = '📝'   // note icon only — no "+" affordance
   noteBtn.title = day.meta.note ? 'Edit note' : 'Add a note'
   noteBtn.addEventListener('click', () => openNoteEditor(day.date, day.meta.note || ''))
 
