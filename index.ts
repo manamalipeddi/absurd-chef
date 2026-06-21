@@ -495,6 +495,8 @@ PLANNING RULES
     "Matches Thursday's red meat template, hasn't been made in 18 days"
     Keep it to one sentence. Never leave notes empty for a chosen recipe.
     Do not restate the recipe name; give the reason.
+    The cook is Manasa — when a note needs to refer to her, say "Manasa" or
+    "your"/"you", never the third-person "the user" / "user's".
 15. WEEKDAY KIDS-HOME (weekday_kids_home = true, i.e. a Mon–Fri kids-home day) —
     effort-reduction priority chain for BOTH that day's lunch and dinner, same
     shape as commute days:

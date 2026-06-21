@@ -16,6 +16,15 @@ const RECIPE_CATEGORY = {
   snack:     'snack',
 }
 
+// Quiet monochrome action glyphs (muted, no box) — replace the boxy emoji so the
+// recipe name stays the dominant element on each row.
+const SVG = (paths) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`
+const ICON = {
+  swap:    SVG('<path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3.5V9h-5.5"/>'),
+  note:    SVG('<path d="m16.86 4.49 1.69-1.69a1.875 1.875 0 1 1 2.65 2.65L10.58 16.07a4.5 4.5 0 0 1-1.9 1.13L6 18l.8-2.69a4.5 4.5 0 0 1 1.13-1.9z"/>'),
+  discuss: SVG('<path d="M21 12a8.96 8.96 0 0 1-9 9c-1.6 0-3.1-.42-4.4-1.15L3 21l1.15-4.6A8.96 8.96 0 0 1 3 12a9 9 0 1 1 18 0z"/><path d="M8 10h8M8 13.5h5"/>'),
+}
+
 // ── State ─────────────────────────────────────────────────
 let screenEl        = null
 let allRecipes      = []   // for the recipe picker
@@ -474,13 +483,13 @@ function buildContextStrip(day) {
 
   const noteBtn = document.createElement('button')
   noteBtn.className = 'day-card__notebtn' + (day.meta.note ? ' day-card__notebtn--on' : '')
-  noteBtn.textContent = '📝'   // note icon only — no "+" affordance
+  noteBtn.innerHTML = ICON.note
   noteBtn.title = day.meta.note ? 'Edit note' : 'Add a note'
   noteBtn.addEventListener('click', () => openNoteEditor(day.date, day.meta.note || ''))
 
   const discuss = document.createElement('button')
   discuss.className = 'day-card__discuss'
-  discuss.textContent = '💬'
+  discuss.innerHTML = ICON.discuss
   discuss.title = 'Discuss this day'
   discuss.addEventListener('click', () => {
     navState.chatPrefill = `About ${fmtDate(day.date)}: `
@@ -547,12 +556,11 @@ function buildSlotRow(date, slot, entry, dayMeta, isPast = false) {
       })
     }
 
-    // The single 🔄 action — present on every filled slot. Date decides intent:
+    // Quiet refresh glyph — present on every filled slot. Date decides intent:
     // future = change the plan; today/past = log what actually happened.
-    // 🔄 (blue on Apple) deliberately, not 🔁 (orange) — matches the app palette.
     const swap = document.createElement('button')
     swap.className = 'day-slot__swap'
-    swap.textContent = '🔄'
+    swap.innerHTML = ICON.swap
     swap.title = 'Change / log this meal'
     swap.addEventListener('click', (e) => { e.stopPropagation(); showPicker(date, slot.type) })
     val.appendChild(swap)

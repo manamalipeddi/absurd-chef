@@ -433,12 +433,9 @@ body {
   gap: 4px;
 }
 .day-badge {
-  font-size: 11.7px;
-  padding: 1px 5px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
+  font-size: 13px;
+  padding: 0 2px;
   color: var(--text-muted);
-  background: var(--surface);
   white-space: nowrap;
   line-height: 1.6;
 }
@@ -563,19 +560,22 @@ body {
   border-radius: 0 0 16px 16px;
 }
 
-/* Slot override swap icon */
+/* Slot override swap icon — quiet muted glyph, no box */
 .day-slot__swap {
-  font-size: 12.7px;
   line-height: 1;
   background: none;
   border: none;
   cursor: pointer;
   padding: 2px 4px;
   flex-shrink: 0;
-  opacity: 0.55;
+  color: var(--text-muted);
   -webkit-tap-highlight-color: transparent;
 }
-.day-slot__swap:active { opacity: 1; }
+.day-slot__swap svg { width: 15px; height: 15px; display: block; }
+.day-slot__swap:active { opacity: 0.55; }
+/* Header action glyphs (note / chat) at the same quiet weight */
+.day-card__notebtn svg,
+.day-card__discuss svg { width: 15px; height: 15px; display: block; }
 
 /* Note editor sheet */
 .note-sheet { padding-bottom: calc(12px + var(--safe-bottom)); }
