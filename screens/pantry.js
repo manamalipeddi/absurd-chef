@@ -900,7 +900,6 @@ async function loadGrocery() {
 
   // Source 1: items explicitly out of stock
   const outOfStock = allInventory.filter(i => i.quantity == null || Number(i.quantity) === 0)
-  const outOfStockById = new Map(outOfStock.map(i => [i.id, i]))
 
   // Filter plan: skip freezer_stash and store_bought
   const planRows = (planData || []).filter(p =>
@@ -923,10 +922,10 @@ async function loadGrocery() {
 
   const [ingRes, varIngRes] = await Promise.all([
     uniqueRecipeIds.length
-      ? supabase.from('recipe_ingredients').select('name, recipe_id, master_ingredient_id').in('recipe_id', uniqueRecipeIds)
+      ? supabase.from('recipe_ingredients').select('name, recipe_id, master_ingredient_id, quantity, unit').in('recipe_id', uniqueRecipeIds)
       : Promise.resolve({ data: [] }),
     uniqueVariantIds.length
-      ? supabase.from('recipe_variant_ingredients').select('name, variant_id, master_ingredient_id').in('variant_id', uniqueVariantIds)
+      ? supabase.from('recipe_variant_ingredients').select('name, variant_id, master_ingredient_id, quantity, unit').in('variant_id', uniqueVariantIds)
       : Promise.resolve({ data: [] }),
   ])
 
@@ -937,21 +936,37 @@ async function loadGrocery() {
     if (item.master_ingredient_id && activeMasters.has(item.master_ingredient_id) && !invByMaster.has(item.master_ingredient_id))
       invByMaster.set(item.master_ingredient_id, item)
 
-  // Build map: normalised ingredient name → { displayName, usages[], masterId }
+  // Build map: normalised name → { displayName, usages[], masterId, contribs[] }.
+  // contribs accumulates one {quantity, unit} per (recipe,date) usage, so the
+  // summed requirement covers the whole 14-day window.
   const ingMap = {}
-  function addIngredient(rawName, ctx, masterId) {
+  function addIngredient(rawName, ctx, masterId, quantity, unit) {
     const key = rawName.toLowerCase().trim()
-    if (!ingMap[key]) ingMap[key] = { displayName: rawName, usages: [], masterId: masterId || null }
+    if (!ingMap[key]) ingMap[key] = { displayName: rawName, usages: [], masterId: masterId || null, contribs: [] }
     if (masterId && !ingMap[key].masterId) ingMap[key].masterId = masterId
-    if (!ingMap[key].usages.some(u => u.recipe_id === ctx.recipe_id && u.date === ctx.date))
+    if (!ingMap[key].usages.some(u => u.recipe_id === ctx.recipe_id && u.date === ctx.date)) {
       ingMap[key].usages.push(ctx)
+      ingMap[key].contribs.push({ quantity, unit })
+    }
   }
   for (const ing of ingRes.data || [])
-    noVariantCtx.filter(c => c.recipe_id === ing.recipe_id).forEach(c => addIngredient(ing.name, c, ing.master_ingredient_id))
+    noVariantCtx.filter(c => c.recipe_id === ing.recipe_id).forEach(c => addIngredient(ing.name, c, ing.master_ingredient_id, ing.quantity, ing.unit))
   for (const ing of varIngRes.data || [])
-    variantCtx.filter(c => c.variant_id === ing.variant_id).forEach(c => addIngredient(ing.name, c, ing.master_ingredient_id))
+    variantCtx.filter(c => c.variant_id === ing.variant_id).forEach(c => addIngredient(ing.name, c, ing.master_ingredient_id, ing.quantity, ing.unit))
 
-  // Match each ingredient against inventory; build combined lists
+  // Conversion data for every master referenced (ingredient + inventory sides).
+  const masterIds = [...new Set([
+    ...Object.values(ingMap).map(d => d.masterId).filter(Boolean),
+    ...allInventory.map(i => i.master_ingredient_id).filter(Boolean),
+  ])]
+  const masterConv = new Map()
+  if (masterIds.length) {
+    const { data: mc } = await supabase.from('master_ingredients')
+      .select('id, unit_type, grams_per_cup').in('id', masterIds)
+    for (const m of mc || []) masterConv.set(m.id, m)
+  }
+
+  // Match each ingredient against inventory; compare summed-needed vs available.
   const annotatedOOS = outOfStock.map(i => ({ ...i, neededFor: [] }))
   const oosIdxById   = new Map(annotatedOOS.map((i, idx) => [i.id, idx]))
   const needed       = []
@@ -959,14 +974,36 @@ async function loadGrocery() {
   for (const [key, data] of Object.entries(ingMap)) {
     // Prefer the reliable master_ingredient_id link (active only); fall back to fuzzy name match.
     const match = (data.masterId && activeMasters.has(data.masterId) && invByMaster.get(data.masterId)) || findInventoryMatch(key, allInventory)
-    if (match && match.quantity != null && Number(match.quantity) > 0) continue  // covered
-    if (match && outOfStockById.has(match.id)) {
-      // Appears in both — annotate the OOS row instead of duplicating
+
+    // Out of stock entirely → annotate the OOS row (Source 1 owns it).
+    if (match && (match.quantity == null || Number(match.quantity) === 0)) {
       const idx = oosIdxById.get(match.id)
       if (idx != null) annotatedOOS[idx].neededFor.push(...data.usages)
-    } else {
-      needed.push({ name: data.displayName, usages: data.usages, matchedInventoryId: match?.id || null })
+      continue
     }
+
+    // Precise quantity math when both sides reconcile to the same dimension.
+    const need  = sumNeeded(data.contribs, data.masterId ? masterConv.get(data.masterId) : null)
+    const avail = match ? toCanonical(match.quantity, match.unit, match.master_ingredient_id ? masterConv.get(match.master_ingredient_id) : null) : null
+
+    if (match && need && avail && need.dim === avail.dim) {
+      if (avail.value >= need.value) continue                  // enough on hand — skip
+      const estimate = match.status != null                    // status-derived = fuzzy input
+      const setQty   = avail.value > 0 ? Math.round(Number(match.quantity) * need.value / avail.value * 100) / 100 : null
+      needed.push({
+        name: data.displayName, usages: data.usages, matchedInventoryId: match.id,
+        shortfall: { neededVal: need.value, availVal: avail.value, dim: need.dim, estimate, statusLabel: estimate ? STATUS_LABEL[match.status] : null, setQty },
+      })
+      continue
+    }
+
+    // Fallback: units not reconcilable. A matched item with stock counts as
+    // covered (presence/absence); an unmatched ingredient is bought.
+    if (match) continue
+    needed.push({
+      name: data.displayName, usages: data.usages, matchedInventoryId: null,
+      shortfall: need ? { neededVal: need.value, availVal: 0, dim: need.dim, estimate: false, statusLabel: null, setQty: null } : null,
+    })
   }
 
   // Restockable freezer/store-bought meals assigned upcoming but currently empty.
@@ -981,6 +1018,63 @@ async function loadGrocery() {
   needed.push(...Object.values(restockByName))
 
   groceryData = { outOfStock: annotatedOOS, needed }
+}
+
+// ── Quantity reconciliation (needed vs available) ─────────
+// Convert a (quantity, unit) into a canonical { dim, value } so amounts can be
+// compared/summed numerically. Mirrors convert.js's ratios. Returns null when it
+// can't be confidently reconciled (caller falls back to presence/absence).
+const _OZ_G = 28.3495, _LB_G = 453.592, _CUP_ML = 240, _TBSP_ML = 15, _TSP_ML = 5
+const COUNT_UNITS = ['', 'pcs', 'pc', 'piece', 'pieces', 'x', 'ct', 'count', 'unit', 'units', 'ea', 'each', 'clove', 'cloves', 'can', 'cans', 'tin', 'tins', 'pack', 'packs', 'bunch', 'bunches']
+
+function toCanonical(q, unitRaw, master) {
+  if (q == null) return null
+  const n = Number(q); if (!isFinite(n)) return null
+  const u = String(unitRaw || '').toLowerCase().trim().replace(/\.$/, '')
+  const ut = master?.unit_type
+
+  if (COUNT_UNITS.includes(u)) return { dim: 'count', value: n }
+  if (['g', 'gm', 'gms', 'gram', 'grams'].includes(u))                 return { dim: 'mass', value: n }
+  if (['kg', 'kgs', 'kilo', 'kilos', 'kilogram', 'kilograms'].includes(u)) return { dim: 'mass', value: n * 1000 }
+  if (u === 'mg')                                                       return { dim: 'mass', value: n * 0.001 }
+  if (['oz', 'ounce', 'ounces'].includes(u))                           return { dim: 'mass', value: n * _OZ_G }
+  if (['lb', 'lbs', 'pound', 'pounds'].includes(u))                    return { dim: 'mass', value: n * _LB_G }
+  if (['ml', 'milliliter', 'milliliters', 'millilitre', 'millilitres', 'cc'].includes(u)) return { dim: 'volume', value: n }
+  if (['l', 'liter', 'liters', 'litre', 'litres'].includes(u))         return { dim: 'volume', value: n * 1000 }
+  if (['dl', 'deciliter', 'decilitre'].includes(u))                    return { dim: 'volume', value: n * 100 }
+  if (u === 'cl')                                                      return { dim: 'volume', value: n * 10 }
+
+  // cup/tbsp/tsp depend on the ingredient: liquid → volume; solid (with a
+  // grams_per_cup density) → mass; otherwise not confidently reconcilable.
+  const cup = ['cup', 'cups', 'c'].includes(u)
+  const tbsp = ['tbsp', 'tbs', 'tablespoon', 'tablespoons'].includes(u)
+  const tsp = ['tsp', 'teaspoon', 'teaspoons'].includes(u)
+  if (cup || tbsp || tsp) {
+    if (ut === 'liquid_volume') return { dim: 'volume', value: n * (cup ? _CUP_ML : tbsp ? _TBSP_ML : _TSP_ML) }
+    if (ut === 'solid_volume' && master?.grams_per_cup)
+      return { dim: 'mass', value: n * master.grams_per_cup / (cup ? 1 : tbsp ? 16 : 48) }
+    return null
+  }
+  return null
+}
+
+// Sum a list of {quantity, unit} contributions into one canonical total. Returns
+// null if any contribution can't convert or they span different dimensions.
+function sumNeeded(contribs, master) {
+  let dim = null, total = 0
+  for (const c of contribs) {
+    const can = toCanonical(c.quantity, c.unit, master)
+    if (!can) return null
+    if (dim && can.dim !== dim) return null
+    dim = can.dim; total += can.value
+  }
+  return dim ? { dim, value: total } : null
+}
+
+function fmtCanonical(dim, v) {
+  if (dim === 'mass')   return v >= 1000 ? `${+(v / 1000).toFixed(2)}kg` : `${Math.round(v)}g`
+  if (dim === 'volume') return v >= 1000 ? `${+(v / 1000).toFixed(2)}L`  : `${Math.round(v)}ml`
+  return `${Math.round(v * 100) / 100}`   // count — bare number
 }
 
 function findInventoryMatch(ingNorm, inventoryItems) {
@@ -1068,13 +1162,30 @@ function buildGroceryNeededRow(item, ruled) {
   const name = document.createElement('div')
   name.className = 'pn-row__main'
   name.textContent = item.name
+  body.appendChild(name)
+
+  // Shortfall line — shown together with the recipe context, not instead of it.
+  // "~" marks an estimate derived from a status tap (a fuzzy input, not a count).
+  const s = item.shortfall
+  if (s) {
+    const sl = document.createElement('div')
+    sl.className = 'pn-grocery-shortfall'
+    if (item.matchedInventoryId && s.availVal > 0) {
+      const have = `${s.estimate ? '~' : ''}${fmtCanonical(s.dim, s.availVal)}`
+      const est  = s.estimate ? ` (estimated from ‘${s.statusLabel}’)` : ''
+      sl.textContent = `Need ${fmtCanonical(s.dim, s.neededVal)}, have ${have}${est} — buy at least ${fmtCanonical(s.dim, s.neededVal - s.availVal)} more`
+    } else {
+      sl.textContent = `Need ${fmtCanonical(s.dim, s.neededVal)}`
+    }
+    body.appendChild(sl)
+  }
 
   const meta = document.createElement('div')
   meta.className = 'pn-row__meta'
   const deduped = [...new Map(item.usages.map(u => [u.recipe_id + u.date, u])).values()]
   meta.textContent = deduped.map(u => `${u.emoji ? u.emoji + ' ' : ''}${u.recipeName} (${u.dateLabel})`).join(', ')
+  body.appendChild(meta)
 
-  body.append(name, meta)
   row.append(check, body)
   return row
 }
@@ -1100,8 +1211,15 @@ async function gotItOOS(itemId) {
 }
 
 async function gotItNeeded(item) {
-  if (item.matchedInventoryId) {
-    await supabase.from('inventory').update({ quantity: 1 }).eq('id', item.matchedInventoryId)
+  const s = item.shortfall
+  if (item.matchedInventoryId && s && s.setQty != null) {
+    // Known shortfall on an existing item → top up to the needed amount. This is
+    // a real purchase, so clear the status estimate; the trigger refreshes
+    // last_updated_at + (for perishables) expiry_date on the quantity increase.
+    await supabase.from('inventory').update({ quantity: s.setQty, status: null }).eq('id', item.matchedInventoryId)
+  } else if (item.matchedInventoryId) {
+    // Shortfall not confidently known (presence/absence) → simple default.
+    await supabase.from('inventory').update({ quantity: 1, status: null }).eq('id', item.matchedInventoryId)
   } else {
     await supabase.from('inventory').insert({ name: item.name, quantity: 1, category: 'pantry', active: true })
   }

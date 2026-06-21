@@ -3102,6 +3102,14 @@ body {
   margin-top: 3px;
   line-height: 1.4;
 }
+/* Shortfall line on a needed item: "Need 400g, have ~150g — buy 250g more" */
+.pn-grocery-shortfall {
+  font-size: 12.4px;
+  font-weight: 600;
+  color: var(--accent-warm);
+  margin-top: 2px;
+  line-height: 1.4;
+}
 
 
 /* ── Chat — load more button ─────────────────────────────── */
