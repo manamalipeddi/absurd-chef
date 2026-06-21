@@ -77,6 +77,14 @@ body {
   font-weight: 400;
   letter-spacing: 0.4px;
   color: #ffffff;
+  /* Centre between the fixed side slots; ellipsise rather than overflow the
+     header for the longer renamed titles (font/colour/size unchanged). */
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .header-slot {
