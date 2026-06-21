@@ -256,7 +256,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'add_recipe',
-    description: 'Add a new recipe to the catalogue and generate ADHD prep layers. Use only when user explicitly requests it.',
+    description: 'Add a NEW recipe to the catalogue and generate ADHD prep layers. Use only when the user explicitly requests it AND the recipe does not already exist. ALWAYS call search_recipes first to check for an existing recipe with the same (or near-identical) name — if one exists, reuse it rather than adding a duplicate. (As a backstop, this tool also refuses to create a second recipe with a name that already exists and returns the existing one.)',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -962,6 +962,19 @@ async function toolAddRecipe(input: Record<string, unknown>, db: DB) {
   } = input as {
     name: string; original_instructions: string; ingredients: Ingredient[]
     meal_type?: string; protein?: string; style?: string; cooking_method?: string; serves_base?: number
+  }
+
+  // Dedup guard: never create a second recipe with a name we already have.
+  // Reuse the existing active one instead (case-insensitive, trimmed match).
+  const trimmedName = (name || '').trim()
+  const { data: existingRecipes } = await db.from('recipes')
+    .select('id, name')
+    .ilike('name', trimmedName)
+    .eq('active', true)
+    .or('is_placeholder.is.null,is_placeholder.eq.false')
+    .limit(1)
+  if (existingRecipes && existingRecipes.length) {
+    return { success: true, recipe_id: existingRecipes[0].id, name: existingRecipes[0].name, already_existed: true }
   }
 
   const { data: newRec, error } = await db.from('recipes').insert({
