@@ -1,4 +1,5 @@
 import { supabase, FUNCTIONS_URL, navigateTo, navState, toast } from '../app.js'
+import { openMasterSearch } from './master-search.js'
 
 // ── State ─────────────────────────────────────────────────
 let screenEl       = null
@@ -6,14 +7,47 @@ let mode           = 'add'        // 'add' | 'edit'
 let editRecipeId   = null
 let step           = 'paste'      // 'paste'|'loading'|'review'|'saving'
 let formData       = {}
-let ingredientRows = []           // [{id?, qtyUnit, name}]
-let editSnapshot   = null         // {instructions, ingCount} for change detection
+let ingredientRows = []           // [{id?, qtyUnit, masterId, name, notes}]
+let editSnapshot   = null         // {instructions, ingHash} for change detection
+
+// Managed vocabularies + masters, loaded on entry.
+let allTags        = []
+let allCuisines    = []
+let masters        = []           // [{id, canonical_name, aliases}]
 
 const MEAL_TYPES   = ['breakfast','lunch_dinner','snack','special']
-const VALID_TAGS   = ['dump','batch_cook','freezable','kidproof','travel_friendly']
 const EMOJI_FALLBACKS = {
   breakfast: '🍳', lunch_dinner: '🍽️', snack: '🍎', special: '🎉',
 }
+
+const norm = s => String(s || '').toLowerCase().trim()
+
+async function loadVocab() {
+  const [tagRes, cuiRes, mRes] = await Promise.all([
+    supabase.from('recipe_tags').select('name').eq('active', true).order('name'),
+    supabase.from('recipe_cuisines').select('name').eq('active', true).order('name'),
+    supabase.from('master_ingredients').select('id, canonical_name, aliases').eq('active', true).order('canonical_name'),
+  ])
+  allTags     = (tagRes.data || []).map(t => t.name)
+  allCuisines = (cuiRes.data || []).map(c => c.name)
+  masters     = mRes.data || []
+}
+
+// Soft-match an ingredient name to a master (exact canonical/alias, then substring).
+function matchMaster(name) {
+  const q = norm(name); if (!q) return null
+  for (const m of masters) {
+    if (norm(m.canonical_name) === q) return m
+    if ((m.aliases || []).some(a => norm(a) === q)) return m
+  }
+  for (const m of masters) {
+    const c = norm(m.canonical_name)
+    if (c && (c.includes(q) || q.includes(c))) return m
+    if ((m.aliases || []).some(a => { const an = norm(a); return an && (an.includes(q) || q.includes(an)) })) return m
+  }
+  return null
+}
+function masterName(id) { return masters.find(m => m.id === id)?.canonical_name || null }
 
 // ── Lifecycle ─────────────────────────────────────────────
 export function init(el) { screenEl = el }
@@ -52,10 +86,12 @@ export async function activate({ headerLeft, headerRight }) {
     if (titleEl) titleEl.textContent = 'Edit Recipe'
     step = 'loading'
     render()
+    await loadVocab()
     await loadForEdit()
     step = 'review'
   } else {
     if (titleEl) titleEl.textContent = 'Add Recipe'
+    await loadVocab()
   }
 
   render()
@@ -68,7 +104,7 @@ async function loadForEdit() {
       .select('id,name,emoji,meal_type,cuisine,protein,style,cooking_method,serves_base,prep_time_min,cook_time_min,is_freezable,can_double,tags,original_instructions')
       .eq('id', editRecipeId).single(),
     supabase.from('recipe_ingredients')
-      .select('id,quantity,unit,name,notes,order_index')
+      .select('id,quantity,unit,name,notes,order_index,master_ingredient_id')
       .eq('recipe_id', editRecipeId).order('order_index'),
   ])
 
@@ -94,15 +130,21 @@ async function loadForEdit() {
 
   const ings = iRes.data || []
   ingredientRows = ings.map(i => ({
-    id:      i.id,
-    qtyUnit: [fmtQty(i.quantity, i.unit)].filter(Boolean).join(''),
-    name:    [i.name, i.notes ? `(${i.notes})` : ''].filter(Boolean).join(' '),
+    id:       i.id,
+    qtyUnit:  fmtQty(i.quantity, i.unit),
+    masterId: i.master_ingredient_id || null,
+    name:     (i.master_ingredient_id && masterName(i.master_ingredient_id)) || i.name || '',
+    notes:    i.notes || '',
   }))
 
   editSnapshot = {
     instructions: r.original_instructions || '',
-    ingHash:      JSON.stringify(ingredientRows.map(r => r.qtyUnit + r.name)),
+    ingHash:      ingHashOf(),
   }
+}
+
+function ingHashOf() {
+  return JSON.stringify(ingredientRows.map(r => [r.qtyUnit, r.name, r.notes, r.masterId]))
 }
 
 // ── Render ────────────────────────────────────────────────
@@ -156,7 +198,7 @@ function buildPasteStep() {
       style: '', cooking_method: '', serves_base: 4, prep_time_min: '', cook_time_min: '',
       is_freezable: false, can_double: false, tags: [], original_instructions: '',
     }
-    ingredientRows = [{ qtyUnit: '', name: '' }]
+    ingredientRows = [{ qtyUnit: '', masterId: null, name: '', notes: '' }]
     step = 'review'
     render()
   })
@@ -204,11 +246,17 @@ async function runExtract(rawText) {
       original_instructions: data.original_instructions || '',
       rawPaste:             rawText,
     }
-    ingredientRows = (data.ingredients || []).map((i, idx) => ({
-      qtyUnit: fmtQty(i.quantity, i.unit),
-      name:    [i.name, i.notes ? `(${i.notes})` : ''].filter(Boolean).join(' '),
-      _parsed: i,
-    }))
+    // Soft-match each parsed name to a master at parse time; the review row
+    // shows the matched ingredient pre-filled (canonical name), else the raw name.
+    ingredientRows = (data.ingredients || []).map((i) => {
+      const m = matchMaster(i.name)
+      return {
+        qtyUnit:  fmtQty(i.quantity, i.unit),
+        masterId: m ? m.id : null,
+        name:     m ? m.canonical_name : (i.name || ''),
+        notes:    i.notes || '',
+      }
+    })
   } catch (e) {
     console.error(e)
     toast('Extraction failed — check your connection and try again', { error: true })
@@ -237,7 +285,7 @@ function buildReviewForm() {
   ]))
 
   form.appendChild(fieldRow([
-    field('Cuisine', 'text', 'cuisine', formData.cuisine, 'e.g. Indian'),
+    buildCuisineField(),
     field('Protein', 'text', 'protein', formData.protein, 'e.g. chickpea'),
   ]))
   form.appendChild(fieldRow([
@@ -355,30 +403,101 @@ function checkField(labelText, name, checked) {
   return row
 }
 
+// Managed multi-select tags (controlled vocabulary from recipe_tags) + inline
+// "+ new" that creates a recipe_tags row and selects it.
 function buildTagPicker() {
-  const wrap = document.createElement('div')
-  wrap.className = 'ar-field'
-  const lbl = document.createElement('div')
-  lbl.className   = 'ar-field__label'
-  lbl.textContent = 'Tags'
-  const pills = document.createElement('div')
-  pills.className = 'ar-tags'
-  for (const tag of VALID_TAGS) {
-    const btn = document.createElement('button')
-    const on  = (formData.tags || []).includes(tag)
-    btn.className   = `ar-tag${on ? ' ar-tag--on' : ''}`
-    btn.type        = 'button'
-    btn.dataset.tag = tag
-    btn.textContent = tag.replace(/_/g, ' ')
-    btn.addEventListener('click', () => {
-      const idx = (formData.tags || []).indexOf(tag)
-      if (idx >= 0) formData.tags.splice(idx, 1)
-      else { formData.tags = formData.tags || []; formData.tags.push(tag) }
-      btn.classList.toggle('ar-tag--on', formData.tags.includes(tag))
+  const wrap = document.createElement('div'); wrap.className = 'ar-field'
+  const lbl = document.createElement('div'); lbl.className = 'ar-field__label'; lbl.textContent = 'Tags'
+  const pills = document.createElement('div'); pills.className = 'ar-tags'
+  if (!formData.tags) formData.tags = []
+
+  function render() {
+    pills.innerHTML = ''
+    for (const tag of allTags) {
+      const on = formData.tags.includes(tag)
+      const btn = document.createElement('button')
+      btn.type = 'button'; btn.className = 'ar-tag' + (on ? ' ar-tag--on' : ''); btn.textContent = tag.replace(/_/g, ' ')
+      btn.addEventListener('click', () => {
+        const i = formData.tags.indexOf(tag)
+        if (i >= 0) formData.tags.splice(i, 1); else formData.tags.push(tag)
+        btn.classList.toggle('ar-tag--on', formData.tags.includes(tag))
+      })
+      pills.appendChild(btn)
+    }
+    const addBtn = document.createElement('button')
+    addBtn.type = 'button'; addBtn.className = 'ar-tag ar-tag--add'; addBtn.textContent = '+ new'
+    addBtn.addEventListener('click', () => {
+      const inp = document.createElement('input')
+      inp.type = 'text'; inp.className = 'ar-tag-input'; inp.placeholder = 'new tag'
+      addBtn.replaceWith(inp); inp.focus()
+      let done = false
+      const confirm = async () => {
+        if (done) return; done = true
+        const name = inp.value.trim()
+        if (!name) { render(); return }
+        const { data } = await supabase.from('recipe_tags').insert({ name }).select().single()
+        const finalName = (data && data.name) || name   // tolerate unique-conflict on an existing name
+        if (!allTags.includes(finalName)) { allTags.push(finalName); allTags.sort() }
+        if (!formData.tags.includes(finalName)) formData.tags.push(finalName)
+        render()
+      }
+      inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); confirm() } })
+      inp.addEventListener('blur', confirm)
     })
-    pills.appendChild(btn)
+    pills.appendChild(addBtn)
   }
+  render()
   wrap.append(lbl, pills)
+  return wrap
+}
+
+// Managed single-select cuisine (controlled vocabulary) + inline "+ Add new".
+function buildCuisineField() {
+  const wrap = document.createElement('div'); wrap.className = 'ar-field'
+  const lbl = document.createElement('div'); lbl.className = 'ar-field__label'; lbl.textContent = 'Cuisine'
+  const sel = document.createElement('select'); sel.className = 'ar-field__select'; sel.id = 'ar-cuisine'
+  const addInp = document.createElement('input')
+  addInp.type = 'text'; addInp.className = 'ar-field__input'; addInp.placeholder = 'New cuisine name'
+  addInp.style.display = 'none'; addInp.style.marginTop = '6px'
+
+  function rebuild() {
+    sel.innerHTML = ''
+    const cur = formData.cuisine || ''
+    const opts = [...allCuisines]
+    if (cur && !opts.includes(cur)) opts.unshift(cur)   // preserve a legacy free-text value
+    sel.add(new Option('— none —', ''))
+    for (const c of opts) sel.add(new Option(c, c))
+    sel.add(new Option('+ Add new cuisine…', '__add__'))
+    sel.value = cur
+  }
+  rebuild()
+
+  sel.addEventListener('change', () => {
+    if (sel.value === '__add__') {
+      sel.value = formData.cuisine || ''
+      addInp.style.display = ''; addInp.value = ''; addInp.focus()
+    } else {
+      formData.cuisine = sel.value
+    }
+  })
+  let done = false
+  const confirmAdd = async () => {
+    if (done) return; done = true
+    const name = addInp.value.trim()
+    addInp.style.display = 'none'
+    if (name) {
+      const { data } = await supabase.from('recipe_cuisines').insert({ name }).select().single()
+      const finalName = (data && data.name) || name
+      if (!allCuisines.includes(finalName)) { allCuisines.push(finalName); allCuisines.sort() }
+      formData.cuisine = finalName
+      rebuild()
+    }
+    done = false
+  }
+  addInp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); confirmAdd() } })
+  addInp.addEventListener('blur', confirmAdd)
+
+  wrap.append(lbl, sel, addInp)
   return wrap
 }
 
@@ -398,24 +517,32 @@ function buildIngredientEditor() {
     ingredientRows.forEach((row, idx) => {
       const rowEl = document.createElement('div')
       rowEl.className = 'ar-ing-row'
+
       const qty = document.createElement('input')
-      qty.type        = 'text'
-      qty.className   = 'ar-ing-row__qty'
-      qty.placeholder = '400g'
-      qty.value       = row.qtyUnit
+      qty.type = 'text'; qty.className = 'ar-ing-row__qty'; qty.placeholder = '400g'; qty.value = row.qtyUnit
       qty.addEventListener('change', () => { ingredientRows[idx].qtyUnit = qty.value })
-      const nm = document.createElement('input')
-      nm.type        = 'text'
-      nm.className   = 'ar-ing-row__name'
-      nm.placeholder = 'chickpeas (or 2 cans, drained)'
-      nm.value       = row.name
-      nm.addEventListener('change', () => { ingredientRows[idx].name = nm.value })
+
+      // Name → master-ingredient search/create (same as Inventory's link editor).
+      const nameBtn = document.createElement('button')
+      nameBtn.type = 'button'
+      nameBtn.className = 'ar-ing-row__namebtn' + (row.name ? '' : ' ar-ing-row__namebtn--empty') + (row.masterId ? ' ar-ing-row__namebtn--linked' : '')
+      nameBtn.textContent = row.name || 'Choose ingredient…'
+      nameBtn.addEventListener('click', () => openMasterSearch(row.name || '', 'pantry', (m) => {
+        ingredientRows[idx].masterId = m.id
+        ingredientRows[idx].name     = m.canonical_name
+        renderRows()
+      }))
+
       const del = document.createElement('button')
-      del.type        = 'button'
-      del.className   = 'ar-ing-row__del'
-      del.textContent = '✕'
+      del.type = 'button'; del.className = 'ar-ing-row__del'; del.textContent = '✕'
       del.addEventListener('click', () => { ingredientRows.splice(idx, 1); renderRows() })
-      rowEl.append(qty, nm, del)
+
+      const notes = document.createElement('input')
+      notes.type = 'text'; notes.className = 'ar-ing-row__notes'
+      notes.placeholder = 'notes, e.g. drained (optional)'; notes.value = row.notes || ''
+      notes.addEventListener('change', () => { ingredientRows[idx].notes = notes.value })
+
+      rowEl.append(qty, nameBtn, del, notes)
       list.appendChild(rowEl)
     })
   }
@@ -427,7 +554,7 @@ function buildIngredientEditor() {
   addBtn.className = 'ar-ing-add'
   addBtn.textContent = '+ Add ingredient'
   addBtn.addEventListener('click', () => {
-    ingredientRows.push({ qtyUnit: '', name: '' })
+    ingredientRows.push({ qtyUnit: '', masterId: null, name: '', notes: '' })
     renderRows()
     const inputs = list.querySelectorAll('.ar-ing-row__qty')
     inputs[inputs.length - 1]?.focus()
@@ -466,8 +593,7 @@ async function handleSave(form) {
   let regenLayers = false
   if (mode === 'edit' && editSnapshot) {
     const instrChanged = data.original_instructions !== editSnapshot.instructions
-    const ingHash = JSON.stringify(ingredientRows.map(r => r.qtyUnit + r.name))
-    const ingsChanged = ingHash !== editSnapshot.ingHash
+    const ingsChanged = ingHashOf() !== editSnapshot.ingHash
     if (instrChanged || ingsChanged) {
       regenLayers = confirm('Instructions or ingredients changed. Re-generate cooking steps?')
     }
@@ -488,9 +614,19 @@ async function handleSave(form) {
       recipeId = editRecipeId
     }
 
-    // Parse and upsert ingredients
+    // Build ingredient rows: name + master link come from the dropdown, notes are
+    // their own field, quantity/unit parsed from the qty box.
     const parsedIngs = ingredientRows
-      .map((r, idx) => ({ ...parseIngRow(r.qtyUnit, r.name), order_index: idx }))
+      .map((r, idx) => {
+        const { quantity, unit } = parseQtyUnit(r.qtyUnit)
+        return {
+          quantity, unit,
+          name: (r.name || '').trim(),
+          notes: (r.notes || '').trim() || null,
+          master_ingredient_id: r.masterId || null,
+          order_index: idx,
+        }
+      })
       .filter(i => i.name)
 
     if (mode === 'edit') {
@@ -592,17 +728,11 @@ async function autoScaleVariants(recipeId, recipeName, currentServes, ings) {
 }
 
 // ── Helpers ───────────────────────────────────────────────
-function parseIngRow(qtyUnit, nameRaw) {
-  const qtMatch = qtyUnit.trim().match(/^(\d+(?:[.,\/]\d+)?)(?:\s*([a-zA-Zé]+))?$/)
-  const quantity = qtMatch ? parseFloat(qtMatch[1].replace(',', '.')) : null
-  const unit     = qtMatch?.[2]?.trim() || null
-
-  // Split "chickpeas (or 2 cans, drained)" → name + notes
-  const nmMatch  = nameRaw.match(/^([^(]+?)\s*(?:\(([^)]+)\))?$/)
-  const name     = (nmMatch?.[1] || nameRaw).trim()
-  const notes    = nmMatch?.[2]?.trim() || null
-
-  return { quantity, unit, name, notes }
+function parseQtyUnit(qtyUnit) {
+  const m = (qtyUnit || '').trim().match(/^(\d+(?:[.,\/]\d+)?)(?:\s*([a-zA-Zé]+))?$/)
+  const quantity = m ? parseFloat(m[1].replace(',', '.')) : null
+  const unit     = m?.[2]?.trim() || null
+  return { quantity, unit }
 }
 
 function fmtQty(quantity, unit) {

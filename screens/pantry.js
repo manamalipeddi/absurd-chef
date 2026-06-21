@@ -1,4 +1,5 @@
-import { supabase, navigateTo, navState, toast, pushView, mkFab, openModal, closeModal } from '../app.js'
+import { supabase, navigateTo, navState, toast, pushView, mkFab } from '../app.js'
+import { openMasterSearch } from './master-search.js'
 
 // ── Module state ──────────────────────────────────────────
 let screenEl  = null
@@ -492,57 +493,6 @@ function suggestMaster(name) {
     if ((m.aliases || []).some(a => { const an = normName(a); return an && (an.includes(q) || q.includes(an)) })) return m
   }
   return null
-}
-
-// Searchable master-ingredient picker (same modal pattern as the recipe picker).
-// onPick(master) gets the chosen/created row; defaultCat seeds a created row's
-// default_category. Not auto-focused (consistent with the recipe picker).
-function openMasterSearch(query, defaultCat, onPick) {
-  const overlay = document.createElement('div'); overlay.className = 'picker-overlay'
-  const sheet = document.createElement('div'); sheet.className = 'picker-sheet'
-  const head = document.createElement('div'); head.className = 'picker-header'
-  head.innerHTML = `<span class="picker-title">Link ingredient</span><button class="picker-close" aria-label="Close">✕</button>`
-  head.querySelector('.picker-close').addEventListener('click', () => closeModal(overlay))
-  overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(overlay) })
-
-  const search = document.createElement('input')
-  search.type = 'text'; search.className = 'picker-search'; search.placeholder = 'Search ingredients…'
-  search.value = query || ''
-  const list = document.createElement('div'); list.className = 'picker-list'
-
-  const mkRow = (label, onClick, cls) => {
-    const b = document.createElement('button')
-    b.className = 'picker-row' + (cls ? ' ' + cls : '')
-    b.innerHTML = `<span class="picker-row__name"></span>`
-    b.querySelector('.picker-row__name').textContent = label
-    b.addEventListener('click', onClick)
-    return b
-  }
-  function renderResults(q) {
-    const lq = normName(q)
-    list.innerHTML = ''
-    const hits = lq
-      ? masterList.filter(m => normName(m.canonical_name).includes(lq) || (m.aliases || []).some(a => normName(a).includes(lq)))
-      : masterList.slice(0, 60)
-    for (const m of hits) list.appendChild(mkRow(m.canonical_name, () => { closeModal(overlay); onPick(m) }))
-    // Genuine create-new (a real master_ingredients row, not a placeholder).
-    if (lq && !masterList.some(m => normName(m.canonical_name) === lq)) {
-      list.appendChild(mkRow(`+ Create new ingredient: “${q.trim()}”`, async () => {
-        const { data, error } = await supabase.from('master_ingredients')
-          .insert({ canonical_name: q.trim(), default_category: defaultCat, active: true }).select().single()
-        if (error || !data) { toast('Create failed', { error: true }); return }
-        toast('Ingredient created')
-        closeModal(overlay); onPick(data)
-      }, 'picker-row--other'))
-    }
-  }
-  search.addEventListener('input', () => renderResults(search.value))
-  renderResults(search.value)
-
-  sheet.append(head, search, list)
-  overlay.appendChild(sheet)
-  document.body.appendChild(overlay)
-  openModal(overlay, () => overlay.remove())
 }
 
 // The "Linked ingredient" field: current link / best-guess suggestion / not

@@ -1,4 +1,4 @@
-const CACHE = 'absurdchef-v45'
+const CACHE = 'absurdchef-v46'
 const SHELL = [
   './', './index.html', './style.css', './app.js', './manifest.json',
   './screens/plan.js', './screens/chat.js', './screens/recipes.js',
@@ -7,6 +7,7 @@ const SHELL = [
   './screens/setup-family.js', './screens/setup-weekly-template.js',
   './screens/setup-day-settings.js', './screens/setup-preschool-menu.js',
   './screens/setup-ingredients.js', './screens/convert.js',
+  './screens/master-search.js',
 ]
 
 self.addEventListener('install', e => {

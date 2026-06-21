@@ -2062,6 +2062,47 @@ body {
   color: var(--primary);
   background: var(--primary-bg);
 }
+.ar-tag--add { border-style: dashed; color: var(--primary); font-weight: 700; }
+.ar-tag-input {
+  padding: 6px 12px;
+  border: 1.5px solid var(--primary);
+  border-radius: 20px;
+  background: var(--bg);
+  font-family: var(--font);
+  font-size: 13.8px;
+  color: var(--text);
+  width: 130px;
+}
+
+/* Ingredient name → master-search button + per-row notes (second grid line) */
+.ar-ing-row__namebtn {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font);
+  font-size: 14.8px;
+  color: var(--text);
+  background: var(--bg);
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  -webkit-tap-highlight-color: transparent;
+}
+.ar-ing-row__namebtn--empty  { color: var(--text-muted); }
+.ar-ing-row__namebtn--linked { border-color: var(--primary); }
+.ar-ing-row__notes {
+  grid-column: 1 / -1;
+  padding: 6px 10px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font);
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg);
+  width: 100%;
+}
+.ar-ing-row { margin-bottom: 8px; }
 
 /* Ingredient editor */
 .ar-ing-list {
