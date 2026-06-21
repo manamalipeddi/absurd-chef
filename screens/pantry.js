@@ -348,10 +348,11 @@ function renderInvItem(wrap, item, ruled) {
 
   tap.append(name, sub)
   tap.addEventListener('click', () => openInventoryForm(item.id, item.category || 'pantry'))
-  row.appendChild(tap)
 
-  // Favourite star — independently tappable, display-order only, no navigation.
+  // Favourite star sits at the left edge so the stars line up in a column
+  // rather than drifting with each row's content width.
   row.appendChild(buildFavStar(wrap, item, ruled))
+  row.appendChild(tap)
 
   // Quick-adjust control.
   row.appendChild(
@@ -433,7 +434,9 @@ function buildStatusControl(wrap, item, ruled) {
   c.className = 'pn-qtyctl'
   const cur = deriveStatus(item.quantity, item.typical_quantity)
   const pill = document.createElement('button')
-  pill.className = 'pn-status-pill'
+  // Low-stock statuses (out / very low / low) get a filled green pill so they
+  // stand out in the list.
+  pill.className = 'pn-status-pill' + (LOW_STATUS.has(cur) ? ' pn-status-pill--low' : '')
   pill.textContent = STATUS_LABEL[cur] || '—'
   pill.addEventListener('click', e => { e.stopPropagation(); toggleStatusGrid(wrap, item, ruled, pill) })
   c.appendChild(pill)

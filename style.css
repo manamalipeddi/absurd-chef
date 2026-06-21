@@ -3115,6 +3115,10 @@ body {
 }
 .pn-status-pill--open { border-color: var(--primary); color: var(--primary); }
 .pn-status-pill:active { background: var(--primary-bg); }
+/* Low-stock pills (out / very low / low): filled green with light text. */
+.pn-status-pill--low { background: var(--primary); border-color: var(--primary); color: var(--text-on-page); }
+.pn-status-pill--low.pn-status-pill--open { color: var(--text-on-page); border-color: var(--text-on-page); }
+.pn-status-pill--low:active { background: var(--primary-light); }
 
 /* Expanded 2×3 status grid below the row */
 .pn-status-grid {
