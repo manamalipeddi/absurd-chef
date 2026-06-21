@@ -151,9 +151,12 @@ async function loadInventory() {
       .eq('active', true).order('canonical_name'),
   ])
   masterList = masters || []
-  // Two stacked alphabetical sorts: actively-checked items (last_updated_at set)
-  // first, then never-checked items (null) as a distinct group at the bottom.
+  // Sort tiers: favourites (alpha) → actively-checked (last_updated_at set, alpha)
+  // → never-checked (null, alpha).
   inventoryData = (data || []).sort((a, b) => {
+    const fa = !!a.is_favourite, fb = !!b.is_favourite
+    if (fa !== fb) return fa ? -1 : 1
+    if (fa) return (a.name || '').localeCompare(b.name || '')
     const an = a.last_updated_at == null, bn = b.last_updated_at == null
     if (an !== bn) return an ? 1 : -1
     return (a.name || '').localeCompare(b.name || '')
@@ -317,27 +320,38 @@ function renderInvItem(wrap, item, ruled) {
   name.className = 'pn-row__main pn-inv-name'
   name.textContent = item.name
 
+  // Secondary line: "updated [X] · exp [date] · typical [Y]". Storage category is
+  // omitted (the section grouping already shows it); segments with no data are
+  // dropped cleanly. A '·' is inserted before each segment after the first.
   const sub = document.createElement('div')
   sub.className = 'pn-inv-sub'
-  const stor = document.createElement('span')
-  stor.textContent = CAT_WORD[item.category] || item.category || '—'
-  sub.appendChild(stor)
-  sub.appendChild(document.createTextNode(' · '))
+  const addSeg = (el) => { if (sub.childNodes.length) sub.appendChild(document.createTextNode(' · ')); sub.appendChild(el) }
+
   const upd = document.createElement('span')
   if (!item.last_updated_at) { upd.className = 'pn-sub-warn'; upd.textContent = 'never checked' }
   else { upd.textContent = 'updated ' + relTime(item.last_updated_at) }
-  sub.appendChild(upd)
+  addSeg(upd)
+
   const ei = expiryInfo(item.expiry_date)
   if (ei) {
-    sub.appendChild(document.createTextNode(' · '))
     const e = document.createElement('span')
     e.textContent = ei.text
     if (ei.warn) e.className = 'pn-sub-warn'
-    sub.appendChild(e)
+    addSeg(e)
   }
+
+  if (item.typical_quantity != null) {
+    const t = document.createElement('span')
+    t.textContent = `typical ${fmtQty(item.typical_quantity)}${item.unit ? ' ' + item.unit : ''}`
+    addSeg(t)
+  }
+
   tap.append(name, sub)
   tap.addEventListener('click', () => openInventoryForm(item.id, item.category || 'pantry'))
   row.appendChild(tap)
+
+  // Favourite star — independently tappable, display-order only, no navigation.
+  row.appendChild(buildFavStar(wrap, item, ruled))
 
   // Quick-adjust control.
   row.appendChild(
@@ -347,6 +361,26 @@ function renderInvItem(wrap, item, ruled) {
   )
 
   wrap.appendChild(row)
+}
+
+// Favourite toggle — display order only (no AI/planning influence). Instant,
+// no navigation; flips in place (re-sorts on the next list render).
+function buildFavStar(wrap, item, ruled) {
+  const b = document.createElement('button')
+  b.className = 'pn-fav' + (item.is_favourite ? ' pn-fav--on' : '')
+  b.setAttribute('aria-label', item.is_favourite ? 'Unfavourite' : 'Favourite')
+  b.textContent = item.is_favourite ? '★' : '☆'
+  b.addEventListener('click', e => { e.stopPropagation(); setFav(wrap, item, ruled) })
+  return b
+}
+async function setFav(wrap, item, ruled) {
+  const nv = !item.is_favourite
+  const { error } = await supabase.from('inventory').update({ is_favourite: nv }).eq('id', item.id)
+  if (error) { toast('Update failed', { error: true }); return }
+  item.is_favourite = nv
+  const idx = inventoryData.findIndex(x => x.id === item.id)
+  if (idx >= 0) inventoryData[idx].is_favourite = nv
+  renderInvItem(wrap, item, ruled)
 }
 
 // Persist a new quantity (+ optional status) by ANY quick path; the DB trigger
@@ -1113,7 +1147,7 @@ async function loadGrocery() {
       const setQty   = avail.value > 0 ? Math.round(Number(match.quantity) * need.value / avail.value * 100) / 100 : null
       needed.push({
         name: data.displayName, usages: data.usages, matchedInventoryId: match.id,
-        lastUpdated: match.last_updated_at || null, status: match.status || null,
+        lastUpdated: match.last_updated_at || null, status: match.status || null, fav: !!match.is_favourite,
         shortfall: { kind: 'short', neededVal: need.value, availVal: avail.value, dim: need.dim, estimate, statusLabel: estimate ? STATUS_LABEL[match.status] : null, setQty },
       })
       continue
@@ -1128,7 +1162,7 @@ async function loadGrocery() {
       if (need) {
         needed.push({
           name: data.displayName, usages: data.usages, matchedInventoryId: match.id,
-          lastUpdated: match.last_updated_at || null, status: match.status || null,
+          lastUpdated: match.last_updated_at || null, status: match.status || null, fav: !!match.is_favourite,
           shortfall: { kind: 'have_some', neededVal: need.value, dim: need.dim, haveRaw: fmtRaw(match.quantity, match.unit), setQty: need.value, setUnit: canonUnitFor(need.dim) },
         })
       }
@@ -1226,14 +1260,20 @@ function fmtRaw(q, u) {
 // Canonical unit a needed amount is expressed in (for normalising on "got it").
 function canonUnitFor(dim) { return dim === 'mass' ? 'g' : dim === 'volume' ? 'ml' : '' }
 
-// Grocery sort, shared by both sections: low-stock first (status out/very_low/low,
-// a shortfall, or out of stock), by last_updated_at DESC with never-checked items
-// at the bottom of that group; everything else alphabetically by name.
+// Grocery sort, shared by both sections: favourites first (alpha), then low-stock
+// (status out/very_low/low, a shortfall, or out of stock) by last_updated_at DESC
+// with never-checked items at the bottom of that group, then everything else
+// alphabetically. A favourite that's also low-stock stays in the favourites tier.
 const LOW_STATUS = new Set(['out', 'very_low', 'low'])
 function isLowStock(item) {
   return !!item.shortfall || LOW_STATUS.has(item.status) || item.quantity === 0 || item.quantity === null
 }
+const favOf = x => !!(x.is_favourite || x.fav)   // OOS rows carry is_favourite; needed entries carry fav
 function grocerySort(a, b) {
+  const fa = favOf(a), fb = favOf(b)
+  if (fa !== fb) return fa ? -1 : 1
+  if (fa) return (a.name || '').localeCompare(b.name || '')   // favourites tier — alpha
+
   const la = isLowStock(a), lb = isLowStock(b)
   if (la !== lb) return la ? -1 : 1
   if (la) {
