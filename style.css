@@ -4,13 +4,13 @@
 :root {
   --page:               #5e2536;   /* deep burgundy — the app background */
   --page-deep:          #4c1d2c;
-  /* Warm greige neutrals — a calm warm-grey/taupe surface that recedes against
-     the burgundy without committing to cream or blush.
-     (Alt palettes to try: cream #f4ecde / #ece0cd / #e3d6c4 · blush
-     #efe4e3 / #e7d9d8 / #ddccca.) */
-  --bg:                 #e4ddd3;   /* soft greige fill inside cards / inputs / active rows */
-  --surface:            #efe9e2;   /* warm greige — card surfaces */
-  --border:             #ddd4c8;   /* greige border */
+  /* Tonal blush neutrals — surfaces tinted toward the burgundy itself for a
+     near-monochrome, very soft, low-contrast look.
+     (Alt palettes to try: cream #f4ecde / #ece0cd / #e3d6c4 · greige
+     #efe9e2 / #e4ddd3 / #ddd4c8.) */
+  --bg:                 #e7d9d8;   /* soft blush fill inside cards / inputs / active rows */
+  --surface:            #efe4e3;   /* tonal blush — card surfaces */
+  --border:             #ddccca;   /* blush border */
   --primary:            #013F33;  /* deep green — the contrast / action colour */
   --primary-light:      #047a5f;   /* lighter green — gradient partner for --primary */
   --primary-bg:         #d6e9e2;   /* pale green tint for icon backgrounds, badges */
@@ -83,7 +83,7 @@ body {
   font-size: 38px;
   font-weight: 400;
   letter-spacing: 0.6px;
-  color: #ffffff;
+  color: var(--text-on-page);   /* cream, matching the other on-burgundy text */
   /* Centre between the fixed side slots; ellipsise rather than overflow the
      header for the longer renamed titles (font/colour/size unchanged). */
   flex: 1;
