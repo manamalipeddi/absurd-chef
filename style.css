@@ -3014,20 +3014,38 @@ body {
 
 /* Inventory header actions (Add + Tell on one row) */
 .pn-inv-actions { display: flex; gap: 8px; padding: 12px 16px 6px; }
+/* Minimal search field: blends into the burgundy, just a light underline and a
+   search icon on the right to signal it's a typeable input. */
+.pn-inv-searchwrap {
+  position: relative;
+  margin: 0 16px 10px;
+}
 .pn-inv-search {
-  width: calc(100% - 32px);
-  margin: 0 16px 8px;
-  padding: 9px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  width: 100%;
+  padding: 9px 28px 8px 2px;   /* right room for the icon */
+  border: none;
+  border-bottom: 1px solid rgba(246, 232, 218, 0.4);
+  border-radius: 0;
   font-family: var(--font);
   font-size: 14.8px;
-  color: var(--text);
-  background: var(--surface);
+  color: var(--text-on-page);
+  background: transparent;
   box-sizing: border-box;
   -webkit-appearance: none;
 }
-.pn-inv-search:focus { outline: none; border-color: var(--primary); }
+.pn-inv-search::placeholder { color: var(--text-on-page-muted); }
+.pn-inv-search::-webkit-search-cancel-button { -webkit-appearance: none; }
+.pn-inv-search:focus { outline: none; border-bottom-color: var(--text-on-page); }
+.pn-inv-search-icon {
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  pointer-events: none;
+  color: var(--text-on-page-muted);
+}
+.pn-inv-search-icon svg { width: 16px; height: 16px; display: block; }
 .pn-inv-action {
   flex: 1;
   padding: 10px 8px;

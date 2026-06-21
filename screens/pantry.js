@@ -170,14 +170,20 @@ function renderInventory() {
   // Adding a new item is the standard FAB (appended below).
   // Search box — filters across all categories at once; only the list re-renders
   // on input (the input persists, so focus/caret are kept).
+  const searchWrap = document.createElement('div')
+  searchWrap.className = 'pn-inv-searchwrap'
   const search = document.createElement('input')
   search.type = 'search'
   search.className = 'pn-inv-search'
   search.placeholder = 'Search inventory…'
   search.value = inventorySearch
-  const listEl = document.createElement('div')
   search.addEventListener('input', () => { inventorySearch = search.value; renderBody() })
-  contentEl.append(search, listEl)
+  const searchIcon = document.createElement('span')
+  searchIcon.className = 'pn-inv-search-icon'
+  searchIcon.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>'
+  searchWrap.append(search, searchIcon)
+  const listEl = document.createElement('div')
+  contentEl.append(searchWrap, listEl)
   contentEl.appendChild(mkFab(() => openInventoryForm(null, 'pantry'), 'Add inventory item'))
 
   function renderBody() {
