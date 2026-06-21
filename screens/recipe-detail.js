@@ -114,7 +114,6 @@ function renderAll() {
   const root = document.createElement('div')
   root.className = 'rd'
   root.appendChild(buildInfo())
-  root.appendChild(buildTabs())
   const content = buildContent()
   content.id = 'rd-content'
   root.appendChild(content)
@@ -128,137 +127,57 @@ async function switchTab(tabId) {
   hacksLoading    = false
   ingListRef      = null
   await loadIngredients()
-  const servesEl  = screenEl.querySelector('.rd-serves')
-  const tabsEl    = screenEl.querySelector('.rd-tabs')
+  const pillsEl   = screenEl.querySelector('.rd-pills')
   const contentEl = document.getElementById('rd-content')
-  if (servesEl)  servesEl.replaceWith(buildServes())
-  if (tabsEl)    tabsEl.replaceWith(buildTabs())
+  if (pillsEl)   pillsEl.replaceWith(buildPills())
   if (contentEl) { const nc = buildContent(); nc.id = 'rd-content'; contentEl.replaceWith(nc) }
 }
 
-// ── Info / serves ─────────────────────────────────────────
+// ── Header: emoji + version pills (merged serves + tab switcher) ──────────
 function buildInfo() {
   const wrap  = document.createElement('div')
   wrap.className = 'rd-info'
   const emoji = document.createElement('div')
   emoji.className = 'rd-info__emoji'
   emoji.textContent = recipe.emoji || defaultEmoji(recipe.meal_type)
-  wrap.append(emoji, buildServes())
+  wrap.append(emoji, buildPills())
   return wrap
 }
 
-function buildServes() {
-  const activeVariant = variants.find(v => v.id === activeTabId)
-  const current = (activeTabId !== 'original' && activeVariant?.serves != null)
-    ? activeVariant.serves : (recipe.serves_base ?? 4)
-
+// One pill per version. Original = "Serves [X]"; variants = their label.
+// Tapping switches version; the default version carries a ⭐ badge, and the
+// active non-default pill shows a ☆ that makes it the default.
+function buildPills() {
   const wrap = document.createElement('div')
-  wrap.className = 'rd-serves'
-
-  // Serves label + tappable chip
-  const servesRow = document.createElement('div')
-  servesRow.className = 'rd-serves-row'
-  const lbl = document.createElement('span')
-  lbl.className = 'rd-serves-label'
-  lbl.textContent = 'Serves'
-  const chip = document.createElement('button')
-  chip.className = 'rd-serves-chip'
-  chip.textContent = current
-  chip.addEventListener('click', () => {
-    const inp = document.createElement('input')
-    inp.type = 'number'; inp.className = 'rd-serves-input'
-    inp.value = current; inp.min = 1; inp.max = 50
-    chip.replaceWith(inp)
-    inp.focus(); inp.select()
-    const commit = async () => {
-      const val = Math.max(1, Math.min(50, parseInt(inp.value) || current))
-      await saveServes(val)
-      wrap.replaceWith(buildServes())
-    }
-    inp.addEventListener('blur', commit)
-    inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); inp.blur() } })
-  })
-  servesRow.append(lbl, chip)
-
-  // Separator + Scale for me
-  const sep = document.createElement('span')
-  sep.className = 'rd-serves-sep'
-  sep.textContent = '·'
-
-  const scaleBtn = document.createElement('button')
-  scaleBtn.className = 'rd-serves-scale-btn'
-  scaleBtn.textContent = 'Scale for me'
-
-  const scaleForm = document.createElement('div')
-  scaleForm.className = 'rd-serves-scale-form'
-  scaleForm.hidden = true
-  const scaleInp = document.createElement('input')
-  scaleInp.type = 'number'; scaleInp.className = 'rd-serves-scale-input'
-  scaleInp.min = 1; scaleInp.max = 100; scaleInp.placeholder = '8'
-  const scaleLbl = document.createElement('span')
-  scaleLbl.className = 'rd-serves-label'; scaleLbl.textContent = 'servings'
-  const scaleGo = document.createElement('button')
-  scaleGo.className = 'rd-serves-scale-go'; scaleGo.textContent = '→'
-  scaleForm.append(scaleInp, scaleLbl, scaleGo)
-
-  scaleBtn.addEventListener('click', () => {
-    scaleBtn.hidden = true; sep.hidden = true
-    scaleForm.hidden = false; scaleInp.focus()
-  })
-  const doScale = async () => {
-    const val = scaleInp.value.trim()
-    if (!val) { scaleInp.focus(); return }
-    scaleGo.disabled = true; scaleGo.textContent = '…'
-    await runScaleRecipe(`${val} servings`)
-    scaleGo.disabled = false; scaleGo.textContent = '→'
-  }
-  scaleGo.addEventListener('click', doScale)
-  scaleInp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doScale() } })
-
-  wrap.append(servesRow, sep, scaleBtn, scaleForm)
-  return wrap
-}
-
-async function saveServes(value) {
-  if (activeTabId === 'original') {
-    await supabase.from('recipes').update({ serves_base: value }).eq('id', recipe.id)
-    recipe.serves_base = value
-  } else {
-    await supabase.from('recipe_variants').update({ serves: value }).eq('id', activeTabId)
-    const v = variants.find(v => v.id === activeTabId)
-    if (v) v.serves = value
-  }
-}
-
-// ── Tabs ──────────────────────────────────────────────────
-function buildTabs() {
-  const wrap = document.createElement('div')
-  wrap.className = 'rd-tabs'
+  wrap.className = 'rd-pills'
   const defId = recipe.default_variant_id
 
-  function makeTab(id, label) {
-    const tab = document.createElement('button')
-    tab.className = `rd-tab${id === activeTabId ? ' rd-tab--active' : ''}`
-    const star = (id === 'original' && defId == null) || id === defId
-    tab.innerHTML = `${label}${star ? '<span class="rd-tab__star">⭐</span>' : ''}`
-    tab.addEventListener('click', () => { if (id !== activeTabId) switchTab(id) })
-    return tab
+  function makePill(id, label) {
+    const isActive  = id === activeTabId
+    const isDefault = (id === 'original' && defId == null) || id === defId
+    const pill = document.createElement('button')
+    pill.className = 'rd-pill' + (isActive ? ' rd-pill--active' : '') + (isDefault ? ' rd-pill--default' : '')
+    const lbl = document.createElement('span')
+    lbl.className = 'rd-pill__label'
+    lbl.textContent = label
+    pill.appendChild(lbl)
+    if (isDefault) {
+      const star = document.createElement('span')
+      star.className = 'rd-pill__star'; star.textContent = '⭐'; star.title = 'Default version'
+      pill.appendChild(star)
+    } else if (isActive) {
+      const star = document.createElement('button')
+      star.type = 'button'; star.className = 'rd-pill__setdefault'; star.textContent = '☆'
+      star.title = 'Make this the default'
+      star.addEventListener('click', e => { e.stopPropagation(); makeDefault() })
+      pill.appendChild(star)
+    }
+    pill.addEventListener('click', () => { if (id !== activeTabId) switchTab(id) })
+    return pill
   }
 
-  wrap.appendChild(makeTab('original', 'Original'))
-  for (const v of variants) wrap.appendChild(makeTab(v.id, v.label))
-
-  // Make-default action, beside the switcher: filled star when the ACTIVE tab is
-  // already the default, outline (tap to set) otherwise.
-  const activeIsDefault = (activeTabId === 'original' && defId == null) || activeTabId === defId
-  const setDef = document.createElement('button')
-  setDef.className = 'rd-tab-setdefault' + (activeIsDefault ? ' rd-tab-setdefault--on' : '')
-  setDef.textContent = activeIsDefault ? '★' : '☆'
-  setDef.title = activeIsDefault ? 'This version is the default' : 'Make this the default'
-  setDef.disabled = activeIsDefault
-  if (!activeIsDefault) setDef.addEventListener('click', makeDefault)
-  wrap.appendChild(setDef)
-
+  wrap.appendChild(makePill('original', `Serves ${recipe.serves_base ?? 4}`))
+  for (const v of variants) wrap.appendChild(makePill(v.id, v.label))
   return wrap
 }
 
@@ -324,13 +243,14 @@ function buildEase(av) {
     read.className = 'rd-ease-read'
     const text = document.createElement('span')
     text.className = 'rd-ease-text' + (cur ? '' : ' rd-ease-text--empty')
-    text.textContent = cur || 'How easy is this? (tap to add)'
+    // Friendly pep-talk placeholder when empty (styled identically to a real note).
+    text.textContent = cur || "No notes yet — but you've got this 💪"
     const pencil = document.createElement('button')
     pencil.className = 'rd-ease-pencil'
     pencil.setAttribute('aria-label', 'Edit ease note')
     pencil.textContent = '✎'
     read.append(text, pencil)
-    text.addEventListener('click', renderEdit)
+    // Only the pencil enters edit mode (no tap-to-edit on the text itself).
     pencil.addEventListener('click', renderEdit)
     section.appendChild(read)
   }
@@ -730,9 +650,9 @@ async function makeDefault() {
   if (error) { toast('Save failed', { error: true }); return }
   recipe.default_variant_id = newDefault
   toast(newDefault ? 'Set as default' : 'Reverted to Original')
-  const tabsEl    = screenEl.querySelector('.rd-tabs')
+  const pillsEl   = screenEl.querySelector('.rd-pills')
   const contentEl = document.getElementById('rd-content')
-  if (tabsEl)    tabsEl.replaceWith(buildTabs())
+  if (pillsEl)   pillsEl.replaceWith(buildPills())
   if (contentEl) { const nc = buildContent(); nc.id = 'rd-content'; contentEl.replaceWith(nc) }
 }
 
@@ -740,10 +660,6 @@ async function makeDefault() {
 function buildAIActions() {
   const wrap = document.createElement('div')
   wrap.className = 'rd-ai-actions'
-  const lbl = document.createElement('div')
-  lbl.className = 'rd-section__title'
-  lbl.textContent = '✨ Make it work for you'
-  wrap.appendChild(lbl)
   wrap.appendChild(buildEasierAction())
   wrap.appendChild(buildScaleAction())
   return wrap
