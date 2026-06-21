@@ -18,12 +18,11 @@
   --accent-warm:        #b5485f;
   --text:               #3a3a3a;  /* dark, readable on light-green surfaces */
   --text-muted:         #6f6168;
-  --text-on-page:       #f6e8da;   /* cream text directly on the burgundy page */
+  --text-on-page:       #efe4e3;   /* blush — light text/titles on the burgundy (same family as --surface) */
   --text-on-page-muted: #d6b3bf;
-  /* Bottom nav sits on burgundy (matching the header): cream text, dimmer
-     cream when inactive. */
-  --nav-inactive:       rgba(244, 239, 230, 0.55);
-  --nav-active:         #F4EFE6;
+  /* Bottom nav sits on burgundy: blush text, dimmer blush when inactive. */
+  --nav-inactive:       rgba(239, 228, 227, 0.55);
+  --nav-active:         #efe4e3;
   --radius:             14px;
   --radius-sm:          10px;
   --header-h:           60px;
@@ -83,7 +82,7 @@ body {
   font-size: 38px;
   font-weight: 400;
   letter-spacing: 0.6px;
-  color: var(--text-on-page);   /* cream, matching the other on-burgundy text */
+  color: var(--text-on-page);   /* blush, matching the surfaces + other on-burgundy text */
   /* Centre between the fixed side slots; ellipsise rather than overflow the
      header for the longer renamed titles (font/colour/size unchanged). */
   flex: 1;
@@ -1596,7 +1595,7 @@ body {
   /* Minimal field that blends into the burgundy bar — light underline only,
      matching the pantry search input. */
   border: none;
-  border-bottom: 1px solid rgba(246, 232, 218, 0.4);
+  border-bottom: 1px solid rgba(239, 228, 227, 0.4);
   border-radius: 0;
   font-family: var(--font);
   font-size: 15.9px;
@@ -2613,7 +2612,7 @@ body {
   background: var(--page);
   /* Hairline, barely-there outline — soft structural definition that recedes
      behind the tick marks rather than reading as a visible grid. */
-  border: 0.5px solid rgba(246, 232, 218, 0.13);
+  border: 0.5px solid rgba(239, 228, 227, 0.13);
   border-radius: 0;
   font-size: 14px;
   font-weight: 700;
@@ -3031,7 +3030,7 @@ body {
   width: 100%;
   padding: 9px 28px 8px 2px;   /* right room for the icon */
   border: none;
-  border-bottom: 1px solid rgba(246, 232, 218, 0.4);
+  border-bottom: 1px solid rgba(239, 228, 227, 0.4);
   border-radius: 0;
   font-family: var(--font);
   font-size: 14.8px;
