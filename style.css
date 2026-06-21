@@ -76,7 +76,7 @@ body {
 #screen-title {
   /* Single deliberate flourish: the title is the only text in Mouse Memoirs. */
   font-family: 'Mouse Memoirs', var(--font);
-  font-size: 31px;
+  font-size: 38px;
   font-weight: 400;
   letter-spacing: 0.6px;
   color: #ffffff;
