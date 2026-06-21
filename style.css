@@ -1238,12 +1238,12 @@ body {
 .rd-ease-read { display: flex; align-items: center; gap: 8px; }
 /* Consistent with body text — not italic, not a special tagline treatment. */
 .rd-ease-text {
-  font-size: 14.8px;
+  font-size: 12.7px;
   font-weight: 500;
   color: var(--text);
   line-height: 1.4;
 }
-.rd-ease-text--empty { color: var(--text-muted); }   /* same treatment, just the pep-talk placeholder */
+.rd-ease-text--empty { color: var(--text-muted); font-size: 12px; font-weight: 400; }   /* quiet placeholder — most recipes have no note */
 .rd-ease-pencil {
   flex-shrink: 0;
   background: none; border: none; cursor: pointer;
@@ -2349,11 +2349,10 @@ body {
 .su-field { margin-bottom: 16px; }
 .su-label {
   display: block;
-  font-size: 11.7px;
-  font-weight: 700;
+  font-size: 12.7px;
+  font-weight: 600;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
   margin-bottom: 6px;
 }
 .su-input {
@@ -2362,7 +2361,7 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   font-family: var(--font);
-  font-size: 15.9px;
+  font-size: 14.8px;
   color: var(--text);
   background: var(--surface);
   box-sizing: border-box;
@@ -2375,7 +2374,7 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   font-family: var(--font);
-  font-size: 15.9px;
+  font-size: 14.8px;
   color: var(--text);
   background: var(--surface);
   box-sizing: border-box;
