@@ -460,6 +460,15 @@ function buildContextStrip(day) {
   const date = document.createElement('span')
   date.className = 'day-card__date'
   date.textContent = fmtDate(day.date)
+  // Kids Home is informational, so it sits beside the date — separate from the
+  // clickable action icons and the other context-strip badges.
+  if (!day.meta.isVacation && day.meta.isKidsHome) {
+    const kh = document.createElement('span')
+    kh.className = 'day-card__date-kids'
+    kh.textContent = '🏠'
+    kh.title = 'Kids home'
+    date.appendChild(kh)
+  }
   strip.appendChild(date)
 
   const right = document.createElement('div')
@@ -471,8 +480,6 @@ function buildContextStrip(day) {
   if (day.meta.isVacation) {
     badges.appendChild(badge('🏖', 'Vacation'))
   } else {
-    if (day.meta.isKidsHome)
-      badges.appendChild(badge('🏠', 'Kids home'))
     if (day.meta.isCommute)
       badges.appendChild(badge('🚗', 'Commute'))
     if (day.meta.guestCount > 0)

@@ -422,6 +422,7 @@ body {
   flex-shrink: 0;
 }
 .day-card--today .day-card__date { color: var(--primary); }
+.day-card__date-kids { margin-left: 5px; font-size: 0.9em; }
 .day-card__context-right {
   display: flex;
   align-items: center;
@@ -571,11 +572,16 @@ body {
   color: var(--text-muted);
   -webkit-tap-highlight-color: transparent;
 }
-.day-slot__swap svg { width: 15px; height: 15px; display: block; }
+.day-slot__swap svg { width: 13px; height: 13px; display: block; }
 .day-slot__swap:active { opacity: 0.55; }
 /* Header action glyphs (note / chat) at the same quiet weight */
 .day-card__notebtn svg,
 .day-card__discuss svg { width: 15px; height: 15px; display: block; }
+/* Quiet/secondary glyphs share the AI-notes colour (var(--text-muted)); thin
+   the stroke so they read as light as that explanatory text. */
+.day-slot__swap svg,
+.day-card__notebtn svg,
+.day-card__discuss svg { stroke-width: 1.6; }
 
 /* Note editor sheet */
 .note-sheet { padding-bottom: calc(12px + var(--safe-bottom)); }
