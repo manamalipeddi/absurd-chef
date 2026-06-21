@@ -16,6 +16,7 @@ let groceryData   = { outOfStock: [], needed: [] }
 
 let showHiddenInventory = false
 let showHiddenFreezer   = false
+let inventorySearch     = ''
 
 const catOpenState = { fridge: true, freezer: true, pantry: true }
 
@@ -100,6 +101,7 @@ export async function activate({ headerLeft, headerRight }) {
   headerRight.innerHTML = ''
   showHiddenInventory = false
   showHiddenFreezer   = false
+  inventorySearch     = ''
   activeTab = 'inventory'
   invFormView = freezerFormView = null   // drop any stale form handles on re-entry
   await loadAndShow('inventory')
@@ -173,76 +175,91 @@ function renderInventory() {
   actionRow.append(tellBtn)
   contentEl.appendChild(actionRow)
 
-  const active = inventoryData.filter(i => i.active !== false)
-  const hidden = inventoryData.filter(i => i.active === false)
+  // Search box — filters across all categories at once; only the list re-renders
+  // on input (the input persists, so focus/caret are kept).
+  const search = document.createElement('input')
+  search.type = 'search'
+  search.className = 'pn-inv-search'
+  search.placeholder = 'Search inventory…'
+  search.value = inventorySearch
+  const listEl = document.createElement('div')
+  search.addEventListener('input', () => { inventorySearch = search.value; renderBody() })
+  contentEl.append(search, listEl)
+  contentEl.appendChild(mkFab(() => openInventoryForm(null, 'pantry'), 'Add inventory item'))
 
-  const bycat = {}
-  active.forEach(item => {
-    const c = item.category || 'pantry'
-    ;(bycat[c] = bycat[c] || []).push(item)
-  })
+  function renderBody() {
+    listEl.innerHTML = ''
+    const q = inventorySearch.trim().toLowerCase()
+    const active = inventoryData.filter(i => i.active !== false)
+    const hidden = inventoryData.filter(i => i.active === false)
 
-  const knownKeys = new Set(CAT_LIST)
-  // Any unknown categories
-  Object.keys(bycat).filter(k => !knownKeys.has(k)).forEach(k => {
-    CAT_LIST.push(k); CAT_LABELS[k] = '📦 ' + k
-  })
-
-  let hasAny = false
-  CAT_LIST.forEach(catKey => {
-    const items = bycat[catKey]
-    if (!items?.length) return
-    hasAny = true
-    contentEl.appendChild(buildInventorySection(catKey, items))
-  })
-
-  // Prepped components — read-only visibility within Inventory (own grouping).
-  if (preppedData.length) {
-    hasAny = true
-    contentEl.appendChild(buildPreppedInventoryGroup(preppedData))
-  }
-
-  if (!hasAny) contentEl.appendChild(mkEmpty('No inventory items. Tap + to add.'))
-
-  // Hidden items toggle
-  if (hidden.length) {
-    const toggle = document.createElement('button')
-    toggle.className = 'pn-hidden-toggle'
-    toggle.textContent = showHiddenInventory
-      ? `Hide ${hidden.length} hidden item${hidden.length !== 1 ? 's' : ''}`
-      : `Show ${hidden.length} hidden item${hidden.length !== 1 ? 's' : ''}`
-    toggle.addEventListener('click', () => { showHiddenInventory = !showHiddenInventory; renderInventory() })
-    contentEl.appendChild(toggle)
-
-    if (showHiddenInventory) {
+    // Filtered: flat list across all storage categories, normal sort preserved.
+    if (q) {
+      const hits = active.filter(i => (i.name || '').toLowerCase().includes(q))
+      if (!hits.length) { listEl.appendChild(mkEmpty('No items match your search.')); return }
       const card = document.createElement('div')
-      card.className = 'card pn-hidden-card'
-      hidden.forEach((item, i) => {
-        const row = document.createElement('div')
-        row.className = 'pn-row' + (i < hidden.length - 1 ? ' pn-row--ruled' : '')
-        const centre = document.createElement('div')
-        centre.className = 'pn-row__centre'
-        const main = document.createElement('div')
-        main.className = 'pn-row__main pn-row__main--muted'
-        main.textContent = item.name
-        centre.appendChild(main)
-        row.appendChild(centre)
-        const unhide = document.createElement('button')
-        unhide.className = 'pn-unhide-btn'
-        unhide.textContent = 'Unhide'
-        unhide.addEventListener('click', async e => {
-          e.stopPropagation()
-          await supabase.from('inventory').update({ active: true }).eq('id', item.id)
-          await loadInventory(); renderInventory()
+      card.className = 'card su-card'
+      hits.forEach((item, i) => card.appendChild(buildInventoryRow(item, i < hits.length - 1)))
+      listEl.appendChild(card)
+      return
+    }
+
+    // Normal grouped view.
+    const bycat = {}
+    active.forEach(item => { const c = item.category || 'pantry'; (bycat[c] = bycat[c] || []).push(item) })
+    const knownKeys = new Set(CAT_LIST)
+    Object.keys(bycat).filter(k => !knownKeys.has(k)).forEach(k => { CAT_LIST.push(k); CAT_LABELS[k] = '📦 ' + k })
+
+    let hasAny = false
+    CAT_LIST.forEach(catKey => {
+      const items = bycat[catKey]
+      if (!items?.length) return
+      hasAny = true
+      listEl.appendChild(buildInventorySection(catKey, items))
+    })
+
+    if (preppedData.length) { hasAny = true; listEl.appendChild(buildPreppedInventoryGroup(preppedData)) }
+    if (!hasAny) listEl.appendChild(mkEmpty('No inventory items. Tap + to add.'))
+
+    if (hidden.length) {
+      const toggle = document.createElement('button')
+      toggle.className = 'pn-hidden-toggle'
+      toggle.textContent = showHiddenInventory
+        ? `Hide ${hidden.length} hidden item${hidden.length !== 1 ? 's' : ''}`
+        : `Show ${hidden.length} hidden item${hidden.length !== 1 ? 's' : ''}`
+      toggle.addEventListener('click', () => { showHiddenInventory = !showHiddenInventory; renderBody() })
+      listEl.appendChild(toggle)
+
+      if (showHiddenInventory) {
+        const card = document.createElement('div')
+        card.className = 'card pn-hidden-card'
+        hidden.forEach((item, i) => {
+          const row = document.createElement('div')
+          row.className = 'pn-row' + (i < hidden.length - 1 ? ' pn-row--ruled' : '')
+          const centre = document.createElement('div')
+          centre.className = 'pn-row__centre'
+          const main = document.createElement('div')
+          main.className = 'pn-row__main pn-row__main--muted'
+          main.textContent = item.name
+          centre.appendChild(main)
+          row.appendChild(centre)
+          const unhide = document.createElement('button')
+          unhide.className = 'pn-unhide-btn'
+          unhide.textContent = 'Unhide'
+          unhide.addEventListener('click', async e => {
+            e.stopPropagation()
+            await supabase.from('inventory').update({ active: true }).eq('id', item.id)
+            await loadInventory(); renderBody()
+          })
+          row.appendChild(unhide)
+          card.appendChild(row)
         })
-        row.appendChild(unhide)
-        card.appendChild(row)
-      })
-      contentEl.appendChild(card)
+        listEl.appendChild(card)
+      }
     }
   }
 
-  contentEl.appendChild(mkFab(() => openInventoryForm(null, 'pantry'), 'Add inventory item'))
+  renderBody()
 }
 
 function buildInventorySection(catKey, items) {
@@ -1106,6 +1123,7 @@ async function loadGrocery() {
       const setQty   = avail.value > 0 ? Math.round(Number(match.quantity) * need.value / avail.value * 100) / 100 : null
       needed.push({
         name: data.displayName, usages: data.usages, matchedInventoryId: match.id,
+        lastUpdated: match.last_updated_at || null, status: match.status || null,
         shortfall: { kind: 'short', neededVal: need.value, availVal: avail.value, dim: need.dim, estimate, statusLabel: estimate ? STATUS_LABEL[match.status] : null, setQty },
       })
       continue
@@ -1120,6 +1138,7 @@ async function loadGrocery() {
       if (need) {
         needed.push({
           name: data.displayName, usages: data.usages, matchedInventoryId: match.id,
+          lastUpdated: match.last_updated_at || null, status: match.status || null,
           shortfall: { kind: 'have_some', neededVal: need.value, dim: need.dim, haveRaw: fmtRaw(match.quantity, match.unit), setQty: need.value, setUnit: canonUnitFor(need.dim) },
         })
       }
@@ -1145,6 +1164,11 @@ async function loadGrocery() {
   }
   needed.push(...Object.values(restockByName))
 
+  // Sort each section the same way: low-stock first (status out/very_low/low OR a
+  // shortfall), by last_updated_at DESC with never-checked items at the bottom of
+  // that group; everything else alphabetically by name.
+  annotatedOOS.sort(grocerySort)   // OOS rows are inventory items (out → all low-stock)
+  needed.sort(grocerySort)
   groceryData = { outOfStock: annotatedOOS, needed }
 }
 
@@ -1211,6 +1235,27 @@ function fmtRaw(q, u) {
 }
 // Canonical unit a needed amount is expressed in (for normalising on "got it").
 function canonUnitFor(dim) { return dim === 'mass' ? 'g' : dim === 'volume' ? 'ml' : '' }
+
+// Grocery sort, shared by both sections: low-stock first (status out/very_low/low,
+// a shortfall, or out of stock), by last_updated_at DESC with never-checked items
+// at the bottom of that group; everything else alphabetically by name.
+const LOW_STATUS = new Set(['out', 'very_low', 'low'])
+function isLowStock(item) {
+  return !!item.shortfall || LOW_STATUS.has(item.status) || item.quantity === 0 || item.quantity === null
+}
+function grocerySort(a, b) {
+  const la = isLowStock(a), lb = isLowStock(b)
+  if (la !== lb) return la ? -1 : 1
+  if (la) {
+    const ua = a.last_updated_at || a.lastUpdated || null   // OOS rows vs needed entries
+    const ub = b.last_updated_at || b.lastUpdated || null
+    if (ua && ub) return ub < ua ? -1 : ub > ua ? 1 : 0     // most recent first
+    if (ua) return -1                                       // a checked, b never → a first
+    if (ub) return 1
+    return (a.name || '').localeCompare(b.name || '')       // both never-checked → alpha
+  }
+  return (a.name || '').localeCompare(b.name || '')
+}
 
 function findInventoryMatch(ingNorm, inventoryItems) {
   return inventoryItems.find(item => {
