@@ -63,11 +63,6 @@ function fmtDate(s) {
   const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getUTCMonth()]
   return `${dow} ${d.getUTCDate()} ${mon}`
 }
-function fmtDayMon(s) {
-  const d = new Date(s + 'T12:00:00Z')
-  const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getUTCMonth()]
-  return `${d.getUTCDate()} ${mon}`
-}
 // ISO 8601 week number (weeks start Monday; week 1 contains the first Thursday).
 function isoWeek(s) {
   const d = new Date(s + 'T12:00:00Z')
@@ -263,8 +258,6 @@ function render(days, startDate, genWarning, history, noteMap = {}) {
     return
   }
 
-  screenEl.appendChild(buildPlanSubhead(upcoming[0]?.date || startDate, addDays(startDate, 13)))
-
   const wrap = document.createElement('div')
   wrap.className = 'plan-cards'
   upcoming.forEach((day, i) => {
@@ -293,19 +286,6 @@ function buildWeekDivider(date) {
   const el = document.createElement('div')
   el.className = 'plan-week-divider'
   el.textContent = weekLabel(date)
-  return el
-}
-
-// Date range + ISO week numbers for the displayed window.
-function buildPlanSubhead(startDate, endDate) {
-  const w1 = isoWeek(startDate)
-  const w2 = isoWeek(endDate)
-  const weeks = w1 === w2 ? `Week ${w1}` : `Weeks ${w1}–${w2}`
-  const el = document.createElement('div')
-  el.className = 'plan-subhead'
-  el.innerHTML = `
-    <span class="plan-subhead__dates">${fmtDayMon(startDate)} – ${fmtDayMon(endDate)}</span>
-    <span class="plan-subhead__weeks">${weeks}</span>`
   return el
 }
 

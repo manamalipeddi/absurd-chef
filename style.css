@@ -309,24 +309,6 @@ body {
 }
 
 /* Plan subheading — date range + ISO week numbers */
-.plan-subhead {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 10px 16px 2px;
-}
-.plan-subhead__dates {
-  font-size: 14.8px;
-  font-weight: 700;
-  color: var(--text-on-page);
-}
-.plan-subhead__weeks {
-  font-size: 12.7px;
-  font-weight: 600;
-  color: var(--text-on-page-muted);
-}
-
 /* Generation actions (Regenerate plan + Generate next week) + failure banner */
 .plan-actionbar {
   display: flex;
