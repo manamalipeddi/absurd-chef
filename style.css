@@ -2925,8 +2925,8 @@ body {
   transition: background 0.1s;
 }
 .pn-tab--active {
-  background: var(--surface);
-  color: var(--primary);
+  background: var(--primary);
+  color: var(--text-on-page);
   font-weight: 700;
 }
 .pn-content {
