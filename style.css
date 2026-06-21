@@ -1580,7 +1580,7 @@ body {
   padding: 10px 12px;
   padding-bottom: calc(10px + var(--safe-bottom));
   border-top: none;
-  background: var(--surface);
+  background: var(--page);
   box-shadow: 0 -3px 18px rgba(0, 0, 0, 0.07);
 }
 
