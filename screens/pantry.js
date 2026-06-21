@@ -164,17 +164,7 @@ async function loadInventory() {
 function renderInventory() {
   contentEl.innerHTML = ''
 
-  // "Tell me what's in stock" stays inline (a chat shortcut, not a create-new
-  // action). Adding a new item is the standard FAB (appended below).
-  const actionRow = document.createElement('div')
-  actionRow.className = 'pn-inv-actions'
-  const tellBtn = document.createElement('button')
-  tellBtn.className = 'pn-inv-action pn-inv-action--alt'
-  tellBtn.textContent = "🎤 Tell me what's in stock"
-  tellBtn.addEventListener('click', () => navigateTo('chat'))
-  actionRow.append(tellBtn)
-  contentEl.appendChild(actionRow)
-
+  // Adding a new item is the standard FAB (appended below).
   // Search box — filters across all categories at once; only the list re-renders
   // on input (the input persists, so focus/caret are kept).
   const search = document.createElement('input')
