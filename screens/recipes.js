@@ -34,7 +34,7 @@ export async function activate({ headerLeft, headerRight }) {
 async function loadData() {
   const [recipeRes, inactiveRes, stashRes] = await Promise.all([
     supabase.from('recipes')
-      .select('id, name, meal_type, cooking_method, is_preferred, ease_descriptor, emoji, active')
+      .select('id, name, meal_type, is_preferred, ease_descriptor, emoji, active, last_made, prep_time_min, cook_time_min')
       .eq('active', true).or('is_placeholder.is.null,is_placeholder.eq.false').order('name'),
     supabase.from('recipes')
       .select('id, name, meal_type, emoji')
@@ -188,7 +188,9 @@ function buildRow(recipe, fallbackEmoji) {
 
   const subParts = []
   if (recipe.ease_descriptor) subParts.push(recipe.ease_descriptor)
-  if (recipe.cooking_method)  subParts.push(fmtMethod(recipe.cooking_method))
+  subParts.push(fmtLastMade(recipe.last_made))         // replaces the cooking-method tag
+  const active = fmtActiveTime(recipe.prep_time_min, recipe.cook_time_min)
+  if (active) subParts.push(active)
   if (portions > 0)           subParts.push(`🧊 ${portions}`)
   if (subParts.length) {
     const sub = document.createElement('span')
@@ -359,15 +361,21 @@ function buildHeart(recipe) {
 }
 
 // ── Helpers ───────────────────────────────────────────────
-function fmtMethod(m) {
-  return ({
-    slow_cook:   'Slow cook',
-    oven:        'Oven',
-    stovetop:    'Stovetop',
-    instant_pot: 'Instant Pot',
-    grill:       'Grill',
-    no_cook:     'No cook',
-  })[m] || m
+// "made today" / "made 5 days ago" / "never made"
+function fmtLastMade(lastMade) {
+  if (!lastMade) return 'never made'
+  const today = new Date(); today.setHours(0, 0, 0, 0)
+  const then = new Date(lastMade + 'T00:00:00')
+  const days = Math.round((today - then) / 86400000)
+  if (days <= 0) return 'made today'
+  return `made ${days} day${days === 1 ? '' : 's'} ago`
+}
+
+// prep + cook combined active time; omit when neither is set.
+function fmtActiveTime(prep, cook) {
+  if (prep == null && cook == null) return null
+  const t = (Number(prep) || 0) + (Number(cook) || 0)
+  return t > 0 ? `${t} min` : null
 }
 
 function heartSvg(filled) {

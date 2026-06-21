@@ -247,82 +247,132 @@ function buildTabs() {
 
   wrap.appendChild(makeTab('original', 'Original'))
   for (const v of variants) wrap.appendChild(makeTab(v.id, v.label))
+
+  // Make-default action, beside the switcher: filled star when the ACTIVE tab is
+  // already the default, outline (tap to set) otherwise.
+  const activeIsDefault = (activeTabId === 'original' && defId == null) || activeTabId === defId
+  const setDef = document.createElement('button')
+  setDef.className = 'rd-tab-setdefault' + (activeIsDefault ? ' rd-tab-setdefault--on' : '')
+  setDef.textContent = activeIsDefault ? '★' : '☆'
+  setDef.title = activeIsDefault ? 'This version is the default' : 'Make this the default'
+  setDef.disabled = activeIsDefault
+  if (!activeIsDefault) setDef.addEventListener('click', makeDefault)
+  wrap.appendChild(setDef)
+
   return wrap
 }
 
 // ── Content ───────────────────────────────────────────────
+// Section order answers the questions a cook actually asks, top to bottom:
+// ease → ingredients+when-cooking → night before → morning of → tips →
+// what do I want to do (actions) → easier path (AI) → prepped → reference.
 function buildContent() {
   const wrap       = document.createElement('div')
   const isOriginal = activeTabId === 'original'
   const av         = variants.find(v => v.id === activeTabId) || null
   const layers     = isOriginal ? recipe : av
 
+  // 3. Ease descriptor (plain-text read mode; tap to edit)
   wrap.appendChild(buildEase(av))
-  wrap.appendChild(buildIngredientsSection())
 
-  // Prepped component overlay notes (above night_before)
+  // 4. Ingredients, paired directly with When Cooking
+  wrap.appendChild(buildIngredientsSection())
   const activePrepped = preppedComponents.filter(p => p.batches_remaining > 0)
   for (const pc of activePrepped) wrap.appendChild(buildPreppedOverlay(pc))
-
-  if (layers?.night_before?.length)  wrap.appendChild(buildLayerList('🌙 Night before',  layers.night_before))
-  if (layers?.morning_of?.length)    wrap.appendChild(buildLayerList('☀️ Morning of',    layers.morning_of))
   if (layers?.when_cooking?.length)  wrap.appendChild(buildLayerList('🍳 When cooking',  layers.when_cooking))
 
-  // Original instructions, verbatim — only on the Original tab (variants have
-  // no separate original-instructions field). Collapsed by default.
-  if (isOriginal && recipe.original_instructions?.trim())
-    wrap.appendChild(buildOriginalInstructions(recipe.original_instructions))
+  // 5 / 6. Night before, Morning of
+  if (layers?.night_before?.length)  wrap.appendChild(buildLayerList('🌙 Night before',  layers.night_before))
+  if (layers?.morning_of?.length)    wrap.appendChild(buildLayerList('☀️ Morning of',    layers.morning_of))
 
+  // 7. Tips
   wrap.appendChild(buildHacks(layers?.hacks_and_shortcuts || []))
-
   if (!isOriginal && av?.notes) wrap.appendChild(buildVariantNotes(av.notes))
 
+  // 8. Action row (Use tonight | Schedule | Discuss)
   wrap.appendChild(buildActions())
+
+  // 9. AI-assisted actions (Suggest easier + Scale, grouped)
   wrap.appendChild(buildAIActions())
   if (scaleResult) wrap.appendChild(buildScaleResult())
-  // Prepped Components last, collapsed by default.
+
+  // 10. Prepped components (collapsed)
   wrap.appendChild(buildPreppedSection())
+
+  // 11. Original instructions — collapsed, very end (Original tab only).
+  if (isOriginal && recipe.original_instructions?.trim())
+    wrap.appendChild(buildOriginalInstructions(recipe.original_instructions))
 
   return wrap
 }
 
 // ── Ease ──────────────────────────────────────────────────
+// Read mode: a confident, tagline-style line under the header (no field chrome).
+// Tap the text or the pencil to edit; saving / tapping away reverts to read mode.
+// Each tab carries its own ease_descriptor independently.
 function buildEase(av) {
   const isOriginal = activeTabId === 'original'
-  const current    = isOriginal ? (recipe.ease_descriptor || '') : (av?.ease_descriptor || '')
-  const section    = document.createElement('div')
-  section.className = 'rd-section rd-ease'
-  const lbl = document.createElement('div')
-  lbl.className = 'rd-section__title'
-  lbl.textContent = 'How easy is this?'
-  const row   = document.createElement('div')
-  row.className = 'rd-ease-row'
-  const input = document.createElement('input')
-  input.type  = 'text'
-  input.className = 'rd-ease-input'
-  input.value = current
-  input.placeholder = 'e.g. "weeknight easy" or "Sunday only"'
-  const btn = document.createElement('button')
-  btn.className = 'btn-outline btn-outline--sm'
-  btn.textContent = 'Save'
-  btn.disabled = true
-  let saved = current
-  input.addEventListener('input', () => { btn.disabled = input.value.trim() === saved })
-  btn.addEventListener('click', async () => {
-    const val = input.value.trim() || null
-    let err
-    if (isOriginal) {
-      ;({ error: err } = await supabase.from('recipes').update({ ease_descriptor: val }).eq('id', recipe.id))
-      if (!err) recipe.ease_descriptor = val
-    } else {
-      ;({ error: err } = await supabase.from('recipe_variants').update({ ease_descriptor: val }).eq('id', activeTabId))
-      if (!err) { const v = variants.find(v => v.id === activeTabId); if (v) v.ease_descriptor = val }
+  const getCurrent = () => isOriginal ? (recipe.ease_descriptor || '') : (av?.ease_descriptor || '')
+
+  const section = document.createElement('div')
+  section.className = 'rd-ease'
+
+  function renderRead() {
+    section.innerHTML = ''
+    const cur = getCurrent()
+    const read = document.createElement('div')
+    read.className = 'rd-ease-read'
+    const text = document.createElement('span')
+    text.className = 'rd-ease-text' + (cur ? '' : ' rd-ease-text--empty')
+    text.textContent = cur || 'How easy is this? (tap to add)'
+    const pencil = document.createElement('button')
+    pencil.className = 'rd-ease-pencil'
+    pencil.setAttribute('aria-label', 'Edit ease note')
+    pencil.textContent = '✎'
+    read.append(text, pencil)
+    text.addEventListener('click', renderEdit)
+    pencil.addEventListener('click', renderEdit)
+    section.appendChild(read)
+  }
+
+  function renderEdit() {
+    section.innerHTML = ''
+    const row = document.createElement('div')
+    row.className = 'rd-ease-row'
+    const input = document.createElement('input')
+    input.type = 'text'; input.className = 'rd-ease-input'
+    input.value = getCurrent()
+    input.placeholder = 'e.g. "weeknight easy" or "Sunday only"'
+    const save = document.createElement('button')
+    save.className = 'btn-outline btn-outline--sm'
+    save.textContent = 'Save'
+
+    let done = false
+    const commit = async () => {
+      if (done) return; done = true
+      const val = input.value.trim() || null
+      let err
+      if (isOriginal) {
+        ;({ error: err } = await supabase.from('recipes').update({ ease_descriptor: val }).eq('id', recipe.id))
+        if (!err) recipe.ease_descriptor = val
+      } else {
+        ;({ error: err } = await supabase.from('recipe_variants').update({ ease_descriptor: val }).eq('id', activeTabId))
+        if (!err) { const v = variants.find(v => v.id === activeTabId); if (v) v.ease_descriptor = val }
+      }
+      if (err) { toast('Save failed', { error: true }); done = false; return }
+      renderRead()
     }
-    if (err) toast('Save failed', { error: true })
-    else { saved = input.value.trim(); btn.disabled = true; toast('Saved') }
-  })
-  row.append(input, btn)
-  section.append(lbl, row)
+    save.addEventListener('mousedown', e => e.preventDefault())  // keep focus → blur fires once
+    save.addEventListener('click', () => input.blur())
+    input.addEventListener('blur', commit)
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); input.blur() } })
+
+    row.append(input, save)
+    section.appendChild(row)
+    input.focus()
+  }
+
+  renderRead()
   return section
 }
 
@@ -647,39 +697,30 @@ function buildActions() {
   wrap.className = 'rd-actions'
   const row = document.createElement('div')
   row.className = 'rd-actions__row'
-  const btnUse   = document.createElement('button')
+
+  const btnUse = document.createElement('button')
   btnUse.className   = 'btn-outline'
   btnUse.textContent = 'Use tonight'
   btnUse.addEventListener('click', () => toast('Coming soon — use Chat to change a day'))
+
   const btnSched = document.createElement('button')
   btnSched.className   = 'btn-outline'
   btnSched.textContent = 'Schedule…'
   btnSched.addEventListener('click', () => toast('Coming soon'))
-  row.append(btnUse, btnSched)
 
-  // Open-ended chat about this recipe — same lightweight pre-fill pattern as the
-  // Plan card's "💬 Discuss this day". Distinct from the AI generation actions
-  // (Suggest easier / Scale) lower down: this is for questions, not a saved variant.
-  const discussRow = document.createElement('div')
-  discussRow.className = 'rd-actions__row'
+  // Open-ended chat about this recipe (questions, not a saved variant) — distinct
+  // from the AI generation actions below. Same pre-fill pattern as the Plan card.
   const btnDiscuss = document.createElement('button')
   btnDiscuss.className = 'btn-outline'
-  btnDiscuss.textContent = '💬 Discuss this recipe'
+  btnDiscuss.textContent = '💬 Discuss'
+  btnDiscuss.title = 'Discuss this recipe'
   btnDiscuss.addEventListener('click', () => {
     navState.chatPrefill = `About ${recipe.name}: `
     navigateTo('chat')
   })
-  discussRow.appendChild(btnDiscuss)
 
-  const defId       = recipe.default_variant_id
-  const isDefault   = (activeTabId === 'original' && defId == null) || activeTabId === defId
-  const btnDef = document.createElement('button')
-  btnDef.className   = 'rd-default-btn'
-  btnDef.textContent = isDefault ? '⭐ This is the default' : '☆ Make this the default'
-  btnDef.disabled    = isDefault
-  btnDef.addEventListener('click', makeDefault)
-
-  wrap.append(row, discussRow, btnDef)
+  row.append(btnUse, btnSched, btnDiscuss)
+  wrap.append(row)
   return wrap
 }
 
@@ -699,7 +740,12 @@ async function makeDefault() {
 function buildAIActions() {
   const wrap = document.createElement('div')
   wrap.className = 'rd-ai-actions'
+  const lbl = document.createElement('div')
+  lbl.className = 'rd-section__title'
+  lbl.textContent = '✨ Make it work for you'
+  wrap.appendChild(lbl)
   wrap.appendChild(buildEasierAction())
+  wrap.appendChild(buildScaleAction())
   return wrap
 }
 
