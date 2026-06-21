@@ -4,13 +4,14 @@
 :root {
   --page:               #5e2536;   /* deep burgundy — the app background */
   --page-deep:          #4c1d2c;
-  /* Tonal blush neutrals — surfaces tinted toward the burgundy itself for a
-     near-monochrome, very soft, low-contrast look.
-     (Alt palettes to try: cream #f4ecde / #ece0cd / #e3d6c4 · greige
-     #efe9e2 / #e4ddd3 / #ddd4c8.) */
-  --bg:                 #e7d9d8;   /* soft blush fill inside cards / inputs / active rows */
-  --surface:            #efe4e3;   /* tonal blush — card surfaces */
-  --border:             #ddccca;   /* blush border */
+  /* Tonal blush neutrals, tuned a shade deeper so they read moody on bright
+     phone panels (Pixel etc.) rather than washing out to near-white.
+     (Bolder "dusty rose" to try: surface #ddcaca / bg #d2bdbd / border #c6b1b1,
+      with --text-on-page + --nav-active = #ddcaca, --nav-inactive rgba(221,202,202,.55).
+      Lighter originals: surface #efe4e3 / bg #e7d9d8 / border #ddccca.) */
+  --bg:                 #dccac9;   /* soft blush fill inside cards / inputs / active rows */
+  --surface:            #e6d6d5;   /* tonal blush — card surfaces */
+  --border:             #d0bcbb;   /* blush border */
   --primary:            #013F33;  /* deep green — the contrast / action colour */
   --primary-light:      #047a5f;   /* lighter green — gradient partner for --primary */
   --primary-bg:         #d6e9e2;   /* pale green tint for icon backgrounds, badges */
@@ -18,11 +19,11 @@
   --accent-warm:        #b5485f;
   --text:               #3a3a3a;  /* dark, readable on light-green surfaces */
   --text-muted:         #6f6168;
-  --text-on-page:       #efe4e3;   /* blush — light text/titles on the burgundy (same family as --surface) */
+  --text-on-page:       #e6d6d5;   /* blush — light text/titles on the burgundy (matches --surface) */
   --text-on-page-muted: #d6b3bf;
   /* Bottom nav sits on burgundy: blush text, dimmer blush when inactive. */
-  --nav-inactive:       rgba(239, 228, 227, 0.55);
-  --nav-active:         #efe4e3;
+  --nav-inactive:       rgba(230, 214, 213, 0.55);
+  --nav-active:         #e6d6d5;
   --radius:             14px;
   --radius-sm:          10px;
   --header-h:           60px;
