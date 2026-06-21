@@ -552,6 +552,8 @@ ${JSON.stringify(lockedList, null, 2)}
 
 OUTPUT FORMAT
 Return ONLY valid JSON. No markdown. No explanation. No wrapper text.
+Your entire response MUST start with { and end with } — do not write anything
+before or after the JSON object (no "I'll create…" preamble).
 The "plan" array holds one entry per dinner for every day, PLUS one entry with
 meal_type "lunch" for each day where needs_lunch = true (rule 1/8).
 
@@ -832,12 +834,7 @@ Deno.serve(async (req: Request) => {
         // worst-case generation time (and worker resource use) in check.
         model: "claude-sonnet-4-6",
         max_tokens: 11000,
-        // Prefill the assistant turn with "{" so the model starts the JSON
-        // object directly — no "I'll create…" preamble that breaks JSON.parse.
-        messages: [
-          { role: "user", content: prompt },
-          { role: "assistant", content: "{" },
-        ],
+        messages: [{ role: "user", content: prompt }],
       }),
     });
 
@@ -847,10 +844,10 @@ Deno.serve(async (req: Request) => {
     }
 
     const claudeData = await claudeRes.json();
-    // The assistant turn was prefilled with "{", so prepend it to the response.
-    const rawText = "{" + (claudeData.content?.[0]?.text ?? "");
+    const rawText = claudeData.content?.[0]?.text ?? "";
 
-    // 4. Parse response — robust to stray prose/fences around the JSON object.
+    // 4. Parse response — robust to stray prose/fences around the JSON object
+    //    (the model sometimes prepends "I'll create…" before the JSON).
     let clean = rawText.replace(/```json|```/g, "").trim();
     const firstBrace = clean.indexOf("{");
     const lastBrace = clean.lastIndexOf("}");
