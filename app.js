@@ -183,6 +183,15 @@ async function boot() {
   await applyScreen('plan')
 
   if ('serviceWorker' in navigator) {
+    // When a newly-deployed SW takes control, reload once so the page runs the
+    // fresh modules — otherwise the current page keeps the old cached JS even
+    // after the SW updated (the "I refreshed but it's still the old code" trap).
+    let reloading = false
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (reloading) return
+      reloading = true
+      location.reload()
+    })
     navigator.serviceWorker.register('./sw.js').catch(() => {})
   }
 }
