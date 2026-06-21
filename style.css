@@ -2610,9 +2610,9 @@ body {
   border-radius: 0;
   font-size: 14px;
   font-weight: 700;
-  /* The "on" tick is a small positive signal → green (the lighter green token
-     so it stays visible on burgundy). Border stays the hairline outline. */
-  color: var(--primary-light);
+  /* The "on" tick uses the same cream as the screen's labels. Border stays the
+     hairline outline. */
+  color: var(--text-on-page);
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
