@@ -74,8 +74,8 @@ body {
 }
 
 #screen-title {
-  /* Single deliberate flourish: the title is the only text in Barriecito. */
-  font-family: 'Barriecito', var(--font);
+  /* Single deliberate flourish: the title is the only text in Mouse Memoirs. */
+  font-family: 'Mouse Memoirs', var(--font);
   font-size: 24px;
   font-weight: 400;
   letter-spacing: 0.4px;
@@ -1588,24 +1588,27 @@ body {
   flex: 1;
   min-height: 42px;
   max-height: 120px;
-  padding: 11px 16px;
-  border: 1.5px solid var(--border);
-  border-radius: 22px;
+  padding: 10px 4px;
+  /* Minimal field that blends into the burgundy bar — light underline only,
+     matching the pantry search input. */
+  border: none;
+  border-bottom: 1px solid rgba(246, 232, 218, 0.4);
+  border-radius: 0;
   font-family: var(--font);
   font-size: 15.9px;
   font-weight: 500;
   line-height: 1.4;
-  color: var(--text);
-  background: var(--bg);
+  color: var(--text-on-page);
+  background: transparent;
   resize: none;
   overflow-y: auto;
   transition: border-color 0.15s;
 }
 #chat-input:focus {
   outline: none;
-  border-color: var(--primary);
+  border-bottom-color: var(--text-on-page);
 }
-#chat-input::placeholder { color: var(--text-muted); }
+#chat-input::placeholder { color: var(--text-on-page-muted); }
 #chat-input:disabled { opacity: 0.5; }
 
 #chat-send {
@@ -1646,7 +1649,7 @@ body {
 .chat-bubble__inner {
   padding: 10px 14px;
   border-radius: 18px;
-  font-size: 15.9px;
+  font-size: 14.6px;
   line-height: 1.5;
 }
 
@@ -3133,10 +3136,9 @@ body {
 }
 .pn-status-pill--open { border-color: var(--primary); color: var(--primary); }
 .pn-status-pill:active { background: var(--primary-bg); }
-/* Low-stock pills (out / very low / low): filled green with light text. */
-.pn-status-pill--low { background: var(--primary); border-color: var(--primary); color: var(--text-on-page); }
-.pn-status-pill--low.pn-status-pill--open { color: var(--text-on-page); border-color: var(--text-on-page); }
-.pn-status-pill--low:active { background: var(--primary-light); }
+/* Low-stock pills (out / very low / low): same as a regular pill, just a
+   darker green border to mark them out. */
+.pn-status-pill--low { border-color: var(--primary); }
 
 /* Expanded 2×3 status grid below the row */
 .pn-status-grid {
