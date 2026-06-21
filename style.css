@@ -16,9 +16,8 @@
   --text-muted:         #6f6168;
   --text-on-page:       #f6e8da;   /* cream text directly on the burgundy page */
   --text-on-page-muted: #d6b3bf;
-  /* Bottom nav sits on deep green: cream text, dimmer cream when inactive. */
-  --nav-inactive:       rgba(244, 239, 230, 0.55);
-  --nav-active:         #F4EFE6;
+  --nav-inactive:       #a89aa0;
+  --nav-active:         var(--primary);
   --radius:             14px;
   --radius-sm:          10px;
   --header-h:           60px;
@@ -59,9 +58,9 @@ body {
   justify-content: space-between;
   padding: 0 18px;
   padding-top: env(safe-area-inset-top, 0px);
-  /* Burgundy banner — the deep green (--primary) is reserved as an accent only,
-     never the header background. */
-  background: linear-gradient(135deg, var(--page) 0%, var(--page-deep) 100%);
+  /* Flat burgundy banner — no gradient, consistent with the app's other
+     flat-colour surfaces. The deep green (--primary) is an accent only. */
+  background: var(--page);
   border: none;
   /* Deliberate full-width banner: flush to the top/side edges with a rounded
      bottom so it reads as a shaped header, not a floating rectangle. */
@@ -138,9 +137,7 @@ body {
   padding-bottom: var(--safe-bottom);
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  /* Deep green anchor at the bottom of the screen, bookending the burgundy
-     header — cream text/icons carry against it (see --nav-active/inactive). */
-  background: var(--primary);
+  background: var(--surface);
   border-top: none;
   box-shadow: 0 -3px 20px rgba(0, 0, 0, 0.09);
 }
