@@ -716,14 +716,12 @@ async function makeDefault() {
 const SCALE_SEND_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5"/></svg>'
 function buildScaleSection() {
   const container = document.createElement('div')
-  container.className = 'rd-ai-item rd-scale'
+  container.className = 'rd-section rd-scale'
 
-  const head = document.createElement('div')
-  head.className = 'rd-ai-head'
-  const titleEl = document.createElement('span')
-  titleEl.className = 'rd-ai-head__title'
+  // Same heading treatment as Ingredients / When Cooking / Notes.
+  const titleEl = document.createElement('div')
+  titleEl.className = 'rd-section__title'
   titleEl.textContent = '📏 Scale this recipe'
-  head.appendChild(titleEl)
 
   const row = document.createElement('div')
   row.className = 'rd-scale-row'
@@ -745,7 +743,7 @@ function buildScaleSection() {
   input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); run() } })
 
   row.append(input, send)
-  container.append(head, row)
+  container.append(titleEl, row)
   return container
 }
 
