@@ -1066,6 +1066,23 @@ body {
 .rd-pills__discuss:active { opacity: 0.6; }
 
 /* Notes — global editable list */
+/* Minimal input — transparent with a light underline (matches the inventory
+   search), used across the recipe-detail inputs. */
+.rd-min-input {
+  flex: 1; min-width: 0;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  font-family: var(--font);
+  font-size: 13.8px;
+  color: var(--text);
+  padding: 7px 2px;
+  -webkit-appearance: none;
+}
+.rd-min-input:focus { outline: none; border-bottom-color: var(--primary); }
+.rd-min-input::placeholder { color: var(--text-muted); }
+
 .rd-notes__list { list-style: none; padding-left: 0; margin: 0; }
 .rd-notes__item { display: flex; align-items: flex-start; gap: 8px; padding: 3px 0; }
 .rd-notes__item .rd-notes__text { flex: 1; cursor: text; line-height: 1.4; }
@@ -1075,29 +1092,20 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 .rd-notes__del:active { opacity: 0.6; }
-.rd-notes__edit {
-  flex: 1; width: 100%; font-family: var(--font); font-size: 13.8px;
-  padding: 6px 9px; border: 1.5px solid var(--primary); border-radius: 8px;
-  background: var(--surface); color: var(--text); -webkit-appearance: none;
-}
-.rd-notes__edit:focus { outline: none; }
-.rd-notes__add { display: flex; gap: 8px; margin: 10px 0; }
-.rd-notes__input {
-  flex: 1; font-family: var(--font); font-size: 13.8px;
-  padding: 8px 11px; border: 1px solid var(--border); border-radius: var(--radius-sm);
-  background: var(--surface); color: var(--text); -webkit-appearance: none;
-}
-.rd-notes__input:focus { outline: none; border-color: var(--primary); }
-.rd-notes__addbtn {
-  flex-shrink: 0; background: var(--bg); border: 1.5px solid var(--primary);
-  color: var(--primary); border-radius: var(--radius-sm); padding: 0 14px;
-  font-family: var(--font); font-size: 13.8px; font-weight: 600; cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-}
-.rd-notes__addbtn:active { opacity: 0.8; }
-.rd-notes__tipsbtn { margin: 2px 0 4px; }
 
-/* Scale: outline send-icon button (stroke only, no fill) */
+/* Single row: add-note input + "+ Add" + "💡 More" */
+.rd-notes__add { display: flex; align-items: center; gap: 8px; margin: 10px 0; }
+.rd-notes__addbtn, .rd-notes__morebtn {
+  flex-shrink: 0; background: var(--bg); border: 1.5px solid var(--primary);
+  color: var(--primary); border-radius: var(--radius-sm); padding: 7px 12px;
+  font-family: var(--font); font-size: 13px; font-weight: 600; cursor: pointer;
+  -webkit-tap-highlight-color: transparent; white-space: nowrap;
+  display: flex; align-items: center; justify-content: center; min-height: 34px;
+}
+.rd-notes__addbtn:active, .rd-notes__morebtn:active { opacity: 0.8; }
+
+/* Scale: single row — minimal input + outline send-icon (stroke only) */
+.rd-scale-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
 .rd-scale-send {
   flex-shrink: 0;
   width: 38px; height: 38px;
@@ -1334,14 +1342,17 @@ body {
 }
 .rd-ease-input {
   flex: 1;
-  padding: 9px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  padding: 7px 2px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
   font-family: var(--font);
-  font-size: 14.8px;
+  font-size: 13.8px;
   color: var(--text);
-  background: var(--bg);
+  background: transparent;
+  -webkit-appearance: none;
 }
+.rd-ease-input:focus { outline: none; border-bottom-color: var(--primary); }
 .rd-ease-input:focus { outline: none; border-color: var(--primary); }
 .rd-ease-input::placeholder { color: var(--text-muted); }
 
@@ -1511,16 +1522,18 @@ body {
 }
 .rd-ai-panel__input {
   width: 100%;
-  padding: 9px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  padding: 7px 2px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
   font-family: var(--font);
-  font-size: 14.8px;
+  font-size: 13.8px;
   color: var(--text);
-  background: var(--bg);
+  background: transparent;
   resize: none;
+  -webkit-appearance: none;
 }
-.rd-ai-panel__input:focus { outline: none; border-color: var(--primary); }
+.rd-ai-panel__input:focus { outline: none; border-bottom-color: var(--primary); }
 .rd-ai-panel__input::placeholder { color: var(--text-muted); }
 .rd-ai-panel__row {
   display: flex;

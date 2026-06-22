@@ -15,6 +15,7 @@ let stashMap        = {}
 let todayPlanIds    = new Set()   // recipe ids planned (or logged) for today
 let screenEl        = null
 let showInactive    = false
+let recipeSearch    = ''          // name filter across all sections
 const openState     = {}
 
 // ── Lifecycle ─────────────────────────────────────────────
@@ -70,22 +71,23 @@ function render() {
   if (!screenEl) return
   screenEl.innerHTML = ''
 
-  let hasAny = false
-  for (const section of SECTIONS) {
-    const recipes = allRecipes.filter(r => r.meal_type === section.type)
-    if (!recipes.length) continue
-    hasAny = true
-    screenEl.appendChild(buildSection(section, recipes))
-  }
+  // Minimal search box (same treatment as the Inventory search). Only the list
+  // re-renders on input, so focus/caret are kept.
+  const searchWrap = document.createElement('div')
+  searchWrap.className = 'pn-inv-searchwrap'
+  const search = document.createElement('input')
+  search.type = 'search'; search.className = 'pn-inv-search'
+  search.placeholder = 'Search recipes…'; search.value = recipeSearch
+  const icon = document.createElement('span')
+  icon.className = 'pn-inv-search-icon'
+  icon.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>'
+  searchWrap.append(search, icon)
+  screenEl.appendChild(searchWrap)
 
-  if (!hasAny) {
-    const wrap = document.createElement('div')
-    wrap.className = 'placeholder-wrap'
-    wrap.innerHTML = `
-      <p class="placeholder-label">No recipes yet</p>
-      <p class="placeholder-sub">Tap + to add your first recipe</p>`
-    screenEl.appendChild(wrap)
-  }
+  const listEl = document.createElement('div')
+  search.addEventListener('input', () => { recipeSearch = search.value; renderRecipeList(listEl) })
+  screenEl.appendChild(listEl)
+  renderRecipeList(listEl)
 
   renderFooter()
 
@@ -95,6 +97,29 @@ function render() {
   if (navState.scrollRecipes != null) {
     const top = navState.scrollRecipes; navState.scrollRecipes = null
     requestAnimationFrame(() => { screenEl.scrollTop = top })
+  }
+}
+
+// Fills the list container, filtered by the search box. While searching,
+// sections auto-open so matches are visible (without mutating saved open state).
+function renderRecipeList(listEl) {
+  listEl.innerHTML = ''
+  const q = recipeSearch.trim().toLowerCase()
+  let hasAny = false
+  for (const section of SECTIONS) {
+    let recipes = allRecipes.filter(r => r.meal_type === section.type)
+    if (q) recipes = recipes.filter(r => (r.name || '').toLowerCase().includes(q))
+    if (!recipes.length) continue
+    hasAny = true
+    listEl.appendChild(buildSection(section, recipes, !!q))
+  }
+  if (!hasAny) {
+    const wrap = document.createElement('div')
+    wrap.className = 'placeholder-wrap'
+    wrap.innerHTML = q
+      ? `<p class="placeholder-label">No matching recipes</p><p class="placeholder-sub">Try a different search</p>`
+      : `<p class="placeholder-label">No recipes yet</p><p class="placeholder-sub">Tap + to add your first recipe</p>`
+    listEl.appendChild(wrap)
   }
 }
 
@@ -137,26 +162,27 @@ function renderFooter() {
   screenEl.appendChild(footer)
 }
 
-function buildSection(section, recipes) {
+function buildSection(section, recipes, forceOpen = false) {
+  const isOpen = forceOpen || openState[section.type]
   const wrap = document.createElement('div')
   wrap.className = 'recipe-section'
 
   const header = document.createElement('button')
   header.className = 'recipe-section__header'
-  header.setAttribute('aria-expanded', String(openState[section.type]))
+  header.setAttribute('aria-expanded', String(isOpen))
   header.dataset.mealType = section.type
   header.innerHTML = `
     <span class="recipe-section__label">
       ${section.label}
       <span class="recipe-section__count">(${recipes.length})</span>
     </span>
-    <svg class="recipe-section__chevron${openState[section.type] ? ' recipe-section__chevron--open' : ''}"
+    <svg class="recipe-section__chevron${isOpen ? ' recipe-section__chevron--open' : ''}"
          viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <path stroke-linecap="round" stroke-linejoin="round" d="m19 9-7 7-7-7"/>
     </svg>`
 
   const body = document.createElement('div')
-  body.className = 'recipe-section__body' + (openState[section.type] ? '' : ' recipe-section__body--hidden')
+  body.className = 'recipe-section__body' + (isOpen ? '' : ' recipe-section__body--hidden')
 
   const card = document.createElement('div')
   card.className = 'card'

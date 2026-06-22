@@ -497,11 +497,11 @@ function buildNotes() {
   notes.forEach((text, i) => ul.appendChild(buildNoteRow(text, i)))
   section.appendChild(ul)
 
-  // "+ Add" input
+  // One row: add-a-note input + "+ Add" + "💡 More" (AI, add-only).
   const addRow = document.createElement('div')
   addRow.className = 'rd-notes__add'
   const input = document.createElement('input')
-  input.type = 'text'; input.className = 'rd-notes__input'; input.placeholder = 'Add a note or tip…'
+  input.type = 'text'; input.className = 'rd-min-input rd-notes__input'; input.placeholder = 'Add a note or tip…'
   const addBtn = document.createElement('button')
   addBtn.className = 'rd-notes__addbtn'; addBtn.textContent = '+ Add'
   const submit = async () => {
@@ -510,22 +510,20 @@ function buildNotes() {
   }
   addBtn.addEventListener('click', submit)
   input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); submit() } })
-  addRow.append(input, addBtn)
-  section.appendChild(addRow)
 
-  // AI: add-only "Check for more tips"
+  const moreBtn = document.createElement('button')
+  moreBtn.className = 'rd-notes__morebtn'
   if (notesLoading) {
-    const loading = document.createElement('div')
-    loading.className = 'rd-hacks__loading'
-    loading.innerHTML = '<div class="spinner"></div>Checking for more tips…'
-    section.appendChild(loading)
+    moreBtn.disabled = true
+    moreBtn.innerHTML = '<span class="spinner spinner--sm"></span>'
   } else {
-    const btn = document.createElement('button')
-    btn.className = 'rd-btn rd-notes__tipsbtn'
-    btn.textContent = '💡 Check for more tips'
-    btn.addEventListener('click', () => addMoreTips())
-    section.appendChild(btn)
+    moreBtn.textContent = '💡 More'
+    moreBtn.title = 'Check for more tips'
+    moreBtn.addEventListener('click', () => addMoreTips())
   }
+
+  addRow.append(input, addBtn, moreBtn)
+  section.appendChild(addRow)
   return section
 }
 
@@ -552,7 +550,7 @@ function startEditNote(li, text, i) {
   li.innerHTML = ''
   li.classList.add('rd-notes__item--editing')
   const inp = document.createElement('input')
-  inp.type = 'text'; inp.className = 'rd-notes__edit'; inp.value = text
+  inp.type = 'text'; inp.className = 'rd-min-input rd-notes__edit'; inp.value = text
   let done = false
   const commit = async () => {
     if (done) return; done = true
@@ -713,52 +711,42 @@ async function makeDefault() {
 }
 
 // ── Scale this recipe ─────────────────────────────────────
-// Section label + reveal button on one row; the input is revealed below only
-// once the button is tapped (matches the Inventory status-pill expansion). The
-// same button then runs the action once an input value is present.
-function buildRevealAction({ title, btnText, iconHtml, btnClass, loadingText, inputHtml, getValue, run }) {
+// Label, then a single row: minimal input + outline send-icon (paper-plane,
+// stroke-only — same glyph as the Chat input).
+const SCALE_SEND_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5"/></svg>'
+function buildScaleSection() {
   const container = document.createElement('div')
-  container.className = 'rd-ai-item'
+  container.className = 'rd-ai-item rd-scale'
 
   const head = document.createElement('div')
   head.className = 'rd-ai-head'
   const titleEl = document.createElement('span')
   titleEl.className = 'rd-ai-head__title'
-  titleEl.textContent = title
-  const btn = document.createElement('button')
-  btn.className = btnClass || 'rd-btn'
-  if (iconHtml) btn.innerHTML = iconHtml; else btn.textContent = btnText
-  head.append(titleEl, btn)
+  titleEl.textContent = '📏 Scale this recipe'
+  head.appendChild(titleEl)
 
-  const panel = document.createElement('div')
-  panel.className = 'rd-ai-panel'
-  panel.hidden = true
-  panel.innerHTML = inputHtml
+  const row = document.createElement('div')
+  row.className = 'rd-scale-row'
+  const input = document.createElement('input')
+  input.type = 'text'; input.className = 'rd-min-input rd-scale-input'
+  input.placeholder = 'e.g. 8 people or double it'
+  const send = document.createElement('button')
+  send.className = 'rd-scale-send'
+  send.title = 'Scale'
+  send.innerHTML = SCALE_SEND_ICON
 
-  btn.addEventListener('click', async () => {
-    if (panel.hidden) { panel.hidden = false; panel.querySelector('textarea, input')?.focus(); return }
-    const val = getValue(panel)
-    if (!val) { panel.querySelector('textarea, input')?.focus(); return }
-    panel.innerHTML = `<div class="rd-ai-panel__loading"><div class="spinner"></div>${loadingText}</div>`
-    await run(val)
-  })
+  const run = async () => {
+    const v = input.value.trim()
+    if (!v) { input.focus(); return }
+    row.innerHTML = '<div class="rd-ai-panel__loading"><div class="spinner"></div>Scaling…</div>'
+    await runScaleRecipe(v)
+  }
+  send.addEventListener('click', run)
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); run() } })
 
-  container.append(head, panel)
+  row.append(input, send)
+  container.append(head, row)
   return container
-}
-
-// Outline send-icon (paper-plane) — same glyph as the Chat input, stroke-only.
-const SCALE_SEND_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5"/></svg>'
-function buildScaleSection() {
-  return buildRevealAction({
-    title: '📏 Scale this recipe',
-    iconHtml: SCALE_SEND_ICON,
-    btnClass: 'rd-scale-send',
-    loadingText: 'Scaling…',
-    inputHtml: `<input class="rd-ai-panel__input" type="text" placeholder="e.g. 8 people or double it">`,
-    getValue: p => p.querySelector('input').value.trim(),
-    run: v => runScaleRecipe(v),
-  })
 }
 
 // ── Scale result ──────────────────────────────────────────
