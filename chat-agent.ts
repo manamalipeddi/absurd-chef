@@ -1298,9 +1298,12 @@ Deno.serve(async (req: Request) => {
 
     const { reply, toolCalls, toolResults } = await runLoop(message.trim(), history, db)
 
+    // Distinct timestamps so the user message always sorts before its reply
+    // (a single batch insert would give both the same created_at default).
+    const nowMs = Date.now()
     await db.from('chat_history').insert([
-      { role: 'user', content: message.trim() },
-      { role: 'assistant', content: reply, tool_calls: toolCalls, tool_results: toolResults },
+      { role: 'user', content: message.trim(), created_at: new Date(nowMs).toISOString() },
+      { role: 'assistant', content: reply, tool_calls: toolCalls, tool_results: toolResults, created_at: new Date(nowMs + 1).toISOString() },
     ])
 
     return new Response(JSON.stringify({ reply }), {

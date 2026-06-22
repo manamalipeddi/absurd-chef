@@ -63,6 +63,15 @@ export async function activate({ headerLeft, headerRight }) {
 }
 
 // ── History loading ───────────────────────────────────────
+// Chronological asc; on an equal created_at (e.g. a user+reply pair saved in the
+// same batch) the user message sorts before the assistant reply.
+function sortChrono(rows) {
+  return [...rows].sort((a, b) =>
+    a.created_at < b.created_at ? -1 :
+    a.created_at > b.created_at ? 1 :
+    (a.role === 'user' ? -1 : 1))
+}
+
 async function loadHistory() {
   listEl.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`
 
@@ -80,7 +89,7 @@ async function loadHistory() {
     return
   }
 
-  const msgs = [...data].reverse()
+  const msgs = sortChrono(data)
   oldestCreatedAt = msgs[0].created_at
 
   // Check if there are older messages
@@ -117,7 +126,7 @@ async function loadOlderMessages() {
 
   if (!data?.length) { loadMoreBtn.remove(); loadMoreBtn = null; return }
 
-  const msgs = [...data].reverse()
+  const msgs = sortChrono(data)
   oldestCreatedAt = msgs[0].created_at
 
   const anchor = listEl.querySelector('.chat-bubble')
