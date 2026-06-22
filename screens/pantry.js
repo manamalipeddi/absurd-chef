@@ -19,6 +19,7 @@ let showHiddenFreezer   = false
 let inventorySearch     = ''
 
 const catOpenState = { fridge: true, freezer: true, pantry: true }
+const groceryOpenState = { oos: true, needed: true }
 
 const CAT_LABELS = { fridge: '🧊 Fridge', freezer: '❄️ Freezer', pantry: '🥫 Pantry' }
 const CAT_WORD   = { fridge: 'Fridge', freezer: 'Freezer', pantry: 'Pantry' }
@@ -1318,27 +1319,50 @@ function renderGrocery() {
   }
 
   if (outOfStock.length) {
-    contentEl.appendChild(buildGrocerySection('Out of stock', outOfStock.length))
-    const card = document.createElement('div')
-    card.className = 'card pn-section-card'
-    outOfStock.forEach((item, i) => card.appendChild(buildGroceryOOSRow(item, i < outOfStock.length - 1)))
-    contentEl.appendChild(card)
+    contentEl.appendChild(buildCollapsibleSection('oos', 'Out of stock', outOfStock.length, groceryOpenState, (card) => {
+      outOfStock.forEach((item, i) => card.appendChild(buildGroceryOOSRow(item, i < outOfStock.length - 1)))
+    }))
   }
 
   if (needed.length) {
-    contentEl.appendChild(buildGrocerySection('Needed for upcoming meals', needed.length))
-    const card = document.createElement('div')
-    card.className = 'card pn-section-card'
-    needed.forEach((item, i) => card.appendChild(buildGroceryNeededRow(item, i < needed.length - 1)))
-    contentEl.appendChild(card)
+    contentEl.appendChild(buildCollapsibleSection('needed', 'Needed for upcoming meals', needed.length, groceryOpenState, (card) => {
+      needed.forEach((item, i) => card.appendChild(buildGroceryNeededRow(item, i < needed.length - 1)))
+    }))
   }
 }
 
-function buildGrocerySection(title, count) {
-  const h = document.createElement('div')
-  h.className = 'pn-grocery-heading'
-  h.innerHTML = `<span>${title}</span><span class="pn-grocery-count">${count}</span>`
-  return h
+// Reusable collapsible section (label + count + chevron header over a card),
+// matching the Inventory tab. `fillCard` populates the card's rows.
+function buildCollapsibleSection(key, label, count, openMap, fillCard) {
+  const wrap = document.createElement('div')
+  wrap.className = 'pn-section'
+  const header = document.createElement('div')
+  header.className = 'pn-section-header'
+  const isOpen = openMap[key] ?? true
+  const toggleBtn = document.createElement('button')
+  toggleBtn.className = 'pn-section-toggle'
+  toggleBtn.setAttribute('aria-expanded', String(isOpen))
+  toggleBtn.innerHTML = `
+    <span class="pn-section-label">${label}</span>
+    <span class="pn-section-count">(${count})</span>
+    <svg class="pn-section-chev${isOpen ? ' pn-section-chev--open' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="m19 9-7 7-7-7"/>
+    </svg>`
+  header.append(toggleBtn)
+  const body = document.createElement('div')
+  body.className = 'pn-section-body' + (isOpen ? '' : ' pn-section-body--hidden')
+  const card = document.createElement('div')
+  card.className = 'card pn-section-card'
+  fillCard(card)
+  body.appendChild(card)
+  toggleBtn.addEventListener('click', () => {
+    openMap[key] = !(openMap[key] ?? true)
+    toggleBtn.setAttribute('aria-expanded', String(openMap[key]))
+    body.classList.toggle('pn-section-body--hidden', !openMap[key])
+    toggleBtn.querySelector('.pn-section-chev').classList.toggle('pn-section-chev--open', openMap[key])
+  })
+  wrap.append(header, body)
+  return wrap
 }
 
 function buildGroceryOOSRow(item, ruled) {
