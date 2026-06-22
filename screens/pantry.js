@@ -1,4 +1,4 @@
-import { supabase, navigateTo, navState, toast, pushView, mkFab } from '../app.js'
+import { supabase, FUNCTIONS_URL, navigateTo, navState, toast, pushView, mkFab } from '../app.js'
 import { openMasterSearch } from './master-search.js'
 
 // ── Module state ──────────────────────────────────────────
@@ -12,14 +12,15 @@ let freezerData   = []
 let preppedData   = []
 let recipeList    = []   // for freezer link-to-recipe select
 let masterList    = []   // active master_ingredients (for the Linked-ingredient editor)
-let groceryData   = { outOfStock: [], needed: [] }
+let groceryData   = { lowStock: [], snapshot: null }
+let snapshotLoading = false
 
 let showHiddenInventory = false
 let showHiddenFreezer   = false
 let inventorySearch     = ''
 
 const catOpenState = { fridge: true, freezer: true, pantry: true }
-const groceryOpenState = { oos: true, needed: true }
+const groceryOpenState = { low: true }
 
 const CAT_LABELS = { fridge: '🧊 Fridge', freezer: '❄️ Freezer', pantry: '🥫 Pantry' }
 const CAT_WORD   = { fridge: 'Fridge', freezer: 'Freezer', pantry: 'Pantry' }
@@ -1039,190 +1040,27 @@ function renderPrepped() {
 
 async function loadGrocery() {
   const today = new Date().toISOString().split('T')[0]
-  const end   = new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0]
 
-  const [{ data: invData }, { data: planData }, { data: activeMasterData }, { data: stashPlanData }] = await Promise.all([
+  const [{ data: invData }, { data: snapRows }] = await Promise.all([
     supabase.from('inventory').select('*').eq('active', true),
-    supabase.from('meal_plans')
-      // Disambiguate the recipes embed: meal_plans has TWO FKs to recipes
-      // (recipe_id + actual_recipe_id), so a bare recipes(...) embed errors
-      // (PGRST201) and silently returned no plan rows → empty "Needed" section.
-      .select('plan_date, recipe_id, cook_source, meal_type, recipes!meal_plans_recipe_id_fkey(id, name, emoji, default_variant_id)')
-      .gte('plan_date', today).lte('plan_date', end)
-      .not('recipe_id', 'is', null)
-      .neq('meal_type', 'snack')   // snack is never planned — ignore any legacy rows
-      .order('plan_date'),
-    supabase.from('master_ingredients').select('id').eq('active', true),
-    // Freezer-stash assignments in the window → surface any that need restocking
-    // (portions 0 + typically_restocked, i.e. a week-2 restock assignment).
-    supabase.from('meal_plans')
-      .select('plan_date, stash_item_id, freezer_stash(recipe_name, portions, typically_restocked)')
-      .gte('plan_date', today).lte('plan_date', end)
-      .eq('cook_source', 'freezer_stash').not('stash_item_id', 'is', null)
-      .order('plan_date'),
+    // Most-recent snapshot only — the "Absurd Plan Requirements" list.
+    supabase.from('grocery_list_snapshot')
+      .select('id, generated_at, triggered_by, plan_date_range_start, plan_date_range_end, items')
+      .order('generated_at', { ascending: false }).limit(1),
   ])
 
   const allInventory = invData || []
-  // Only ACTIVE master ingredients count as a confident link (old links on
-  // recipes stay intact, but a deactivated master falls back to fuzzy matching).
-  const activeMasters = new Set((activeMasterData || []).map(m => m.id))
+  // Section 1 "Absurdly Low Stock": live from inventory — status out/very_low/low
+  // OR an explicit zero quantity (never-checked items, null quantity, excluded).
+  const lowStock = allInventory.filter(i =>
+    LOW_STATUS.has(i.status) || (i.quantity != null && Number(i.quantity) === 0))
+  lowStock.sort((a, b) => {
+    const fa = !!a.is_favourite, fb = !!b.is_favourite
+    if (fa !== fb) return fa ? -1 : 1
+    return (a.name || '').localeCompare(b.name || '')
+  })
 
-  // Source 1: items explicitly out of stock. "Never checked" items (no
-  // last_updated_at) are NOT assumed out — we simply haven't measured them — so
-  // they're excluded here. They can still appear under "Needed for upcoming
-  // meals" when a planned recipe calls for them (handled below).
-  const outOfStock = allInventory.filter(i => i.last_updated_at != null && (i.quantity == null || Number(i.quantity) === 0))
-
-  // Filter plan: skip freezer_stash and store_bought
-  const planRows = (planData || []).filter(p =>
-    p.cook_source !== 'freezer_stash' && p.cook_source !== 'store_bought' && p.recipe_id
-  )
-
-  // Separate recipes needing variant ingredients vs base ingredients
-  const noVariantCtx = []   // { recipe_id, recipeName, emoji, date, dateLabel }
-  const variantCtx   = []   // { variant_id, recipe_id, recipeName, emoji, date, dateLabel }
-  for (const row of planRows) {
-    const r = row.recipes
-    if (!r) continue
-    const ctx = { recipe_id: r.id, recipeName: r.name, emoji: r.emoji, date: row.plan_date, dateLabel: fmtPlanDate(row.plan_date) }
-    if (r.default_variant_id) variantCtx.push({ ...ctx, variant_id: r.default_variant_id })
-    else                       noVariantCtx.push(ctx)
-  }
-
-  const uniqueRecipeIds  = [...new Set(noVariantCtx.map(r => r.recipe_id))]
-  const uniqueVariantIds = [...new Set(variantCtx.map(r => r.variant_id))]
-
-  const [ingRes, varIngRes] = await Promise.all([
-    uniqueRecipeIds.length
-      ? supabase.from('recipe_ingredients').select('name, recipe_id, master_ingredient_id, quantity, unit').in('recipe_id', uniqueRecipeIds)
-      : Promise.resolve({ data: [] }),
-    uniqueVariantIds.length
-      ? supabase.from('recipe_variant_ingredients').select('name, variant_id, master_ingredient_id, quantity, unit').in('variant_id', uniqueVariantIds)
-      : Promise.resolve({ data: [] }),
-  ])
-
-  // Inventory indexed by master_ingredient_id for exact, reliable matching
-  // (active masters only).
-  const invByMaster = new Map()
-  for (const item of allInventory)
-    if (item.master_ingredient_id && activeMasters.has(item.master_ingredient_id) && !invByMaster.has(item.master_ingredient_id))
-      invByMaster.set(item.master_ingredient_id, item)
-
-  // Build map: normalised name → { displayName, usages[], masterId, contribs[] }.
-  // contribs accumulates one {quantity, unit} per (recipe,date) usage, so the
-  // summed requirement covers the whole 14-day window.
-  const ingMap = {}
-  function addIngredient(rawName, ctx, masterId, quantity, unit) {
-    const key = rawName.toLowerCase().trim()
-    if (!ingMap[key]) ingMap[key] = { displayName: rawName, usages: [], masterId: masterId || null, contribs: [] }
-    if (masterId && !ingMap[key].masterId) ingMap[key].masterId = masterId
-    if (!ingMap[key].usages.some(u => u.recipe_id === ctx.recipe_id && u.date === ctx.date)) {
-      ingMap[key].usages.push(ctx)
-      ingMap[key].contribs.push({ quantity, unit })
-    }
-  }
-  for (const ing of ingRes.data || [])
-    noVariantCtx.filter(c => c.recipe_id === ing.recipe_id).forEach(c => addIngredient(ing.name, c, ing.master_ingredient_id, ing.quantity, ing.unit))
-  for (const ing of varIngRes.data || [])
-    variantCtx.filter(c => c.variant_id === ing.variant_id).forEach(c => addIngredient(ing.name, c, ing.master_ingredient_id, ing.quantity, ing.unit))
-
-  // Conversion data for every master referenced (ingredient + inventory sides).
-  const masterIds = [...new Set([
-    ...Object.values(ingMap).map(d => d.masterId).filter(Boolean),
-    ...allInventory.map(i => i.master_ingredient_id).filter(Boolean),
-  ])]
-  const masterConv = new Map()
-  if (masterIds.length) {
-    const { data: mc } = await supabase.from('master_ingredients')
-      .select('id, unit_type, grams_per_cup').in('id', masterIds)
-    for (const m of mc || []) masterConv.set(m.id, m)
-  }
-
-  // Match each ingredient against inventory; compare summed-needed vs available.
-  const annotatedOOS = outOfStock.map(i => ({ ...i, neededFor: [] }))
-  const oosIdxById   = new Map(annotatedOOS.map((i, idx) => [i.id, idx]))
-  const needed       = []
-
-  for (const [key, data] of Object.entries(ingMap)) {
-    // Prefer the reliable master_ingredient_id link (active only); fall back to fuzzy name match.
-    const match = (data.masterId && activeMasters.has(data.masterId) && invByMaster.get(data.masterId)) || findInventoryMatch(key, allInventory)
-
-    // Matched inventory item is out (0/empty).
-    if (match && (match.quantity == null || Number(match.quantity) === 0)) {
-      const idx = oosIdxById.get(match.id)
-      if (idx != null) {
-        // Checked & out → the "Out of stock" section owns it (annotate usage).
-        annotatedOOS[idx].neededFor.push(...data.usages)
-      } else {
-        // Never-checked (excluded from "Out of stock") → still surface it under
-        // "Needed for upcoming meals" since a planned recipe calls for it.
-        const need = sumNeeded(data.contribs, data.masterId ? masterConv.get(data.masterId) : null)
-        needed.push({
-          name: data.displayName, usages: data.usages, matchedInventoryId: match.id,
-          lastUpdated: match.last_updated_at || null, status: match.status || null, fav: !!match.is_favourite,
-          shortfall: need ? { kind: 'need', neededVal: need.value, dim: need.dim } : { kind: 'out' },
-        })
-      }
-      continue
-    }
-
-    // Precise quantity math when both sides reconcile to the same dimension.
-    const need  = sumNeeded(data.contribs, data.masterId ? masterConv.get(data.masterId) : null)
-    const avail = match ? toCanonical(match.quantity, match.unit, match.master_ingredient_id ? masterConv.get(match.master_ingredient_id) : null) : null
-
-    if (match && need && avail && need.dim === avail.dim) {
-      if (avail.value >= need.value) continue                  // enough on hand — skip
-      const estimate = match.status != null                    // status-derived = fuzzy input
-      const setQty   = avail.value > 0 ? Math.round(Number(match.quantity) * need.value / avail.value * 100) / 100 : null
-      needed.push({
-        name: data.displayName, usages: data.usages, matchedInventoryId: match.id,
-        lastUpdated: match.last_updated_at || null, status: match.status || null, fav: !!match.is_favourite,
-        shortfall: { kind: 'short', neededVal: need.value, availVal: avail.value, dim: need.dim, estimate, statusLabel: estimate ? STATUS_LABEL[match.status] : null, setQty },
-      })
-      continue
-    }
-
-    // Fallback — units couldn't be reconciled (e.g. qty in the ingredient name,
-    // or a non-numeric inventory unit). Still be quantity-aware:
-    if (match) {
-      // Has stock but we can't verify it's enough. If we know a specific amount
-      // is needed, surface a soft "you have some — double-check" nudge; tapping
-      // "got it" normalises the item to the needed amount in a comparable unit.
-      if (need) {
-        needed.push({
-          name: data.displayName, usages: data.usages, matchedInventoryId: match.id,
-          lastUpdated: match.last_updated_at || null, status: match.status || null, fav: !!match.is_favourite,
-          shortfall: { kind: 'have_some', neededVal: need.value, dim: need.dim, haveRaw: fmtRaw(match.quantity, match.unit), setQty: need.value, setUnit: canonUnitFor(need.dim) },
-        })
-      }
-      // No structured need → presence of stock is enough; not listed.
-      continue
-    }
-    // No inventory item at all → "not in stock" (you're out), with the needed
-    // amount when we can compute it.
-    needed.push({
-      name: data.displayName, usages: data.usages, matchedInventoryId: null,
-      shortfall: need ? { kind: 'need', neededVal: need.value, dim: need.dim } : { kind: 'out' },
-    })
-  }
-
-  // Restockable freezer/store-bought meals assigned upcoming but currently empty.
-  const restockByName = {}
-  for (const row of stashPlanData || []) {
-    const fs = row.freezer_stash
-    if (!fs || !fs.typically_restocked || Number(fs.portions) > 0) continue
-    const key = fs.recipe_name
-    if (!restockByName[key]) restockByName[key] = { name: `🛒 ${fs.recipe_name}`, usages: [], matchedInventoryId: null }
-    restockByName[key].usages.push({ recipe_id: row.stash_item_id, recipeName: fs.recipe_name, date: row.plan_date, dateLabel: fmtPlanDate(row.plan_date) })
-  }
-  needed.push(...Object.values(restockByName))
-
-  // Sort each section the same way: low-stock first (status out/very_low/low OR a
-  // shortfall), by last_updated_at DESC with never-checked items at the bottom of
-  // that group; everything else alphabetically by name.
-  annotatedOOS.sort(grocerySort)   // OOS rows are inventory items (out → all low-stock)
-  needed.sort(grocerySort)
-  groceryData = { outOfStock: annotatedOOS, needed }
+  groceryData = { lowStock, snapshot: (snapRows && snapRows[0]) || null }
 }
 
 // ── Quantity reconciliation (needed vs available) ─────────
@@ -1329,24 +1167,17 @@ function findInventoryMatch(ingNorm, inventoryItems) {
 
 function renderGrocery() {
   contentEl.innerHTML = ''
+  const { lowStock, snapshot } = groceryData
 
-  const { outOfStock, needed } = groceryData
-  if (!outOfStock.length && !needed.length) {
-    contentEl.appendChild(mkEmpty('Nothing needed — you\'re all set!'))
-    return
-  }
-
-  if (outOfStock.length) {
-    contentEl.appendChild(buildCollapsibleSection('oos', 'Out of stock', outOfStock.length, groceryOpenState, (card) => {
-      outOfStock.forEach((item, i) => card.appendChild(buildGroceryOOSRow(item, i < outOfStock.length - 1)))
+  // Section 1 — Absurdly Low Stock (live inventory; tap a row to edit it)
+  if (lowStock.length) {
+    contentEl.appendChild(buildCollapsibleSection('low', 'Absurdly Low Stock', lowStock.length, groceryOpenState, (card) => {
+      lowStock.forEach((item, i) => card.appendChild(buildLowStockRow(item, i < lowStock.length - 1)))
     }))
   }
 
-  if (needed.length) {
-    contentEl.appendChild(buildCollapsibleSection('needed', 'Needed for upcoming meals', needed.length, groceryOpenState, (card) => {
-      needed.forEach((item, i) => card.appendChild(buildGroceryNeededRow(item, i < needed.length - 1)))
-    }))
-  }
+  // Section 2 — Absurd Plan Requirements (saved AI snapshot)
+  contentEl.appendChild(buildSnapshotSection(snapshot))
 }
 
 // Reusable collapsible section (label + count + chevron header over a card),
@@ -1383,120 +1214,138 @@ function buildCollapsibleSection(key, label, count, openMap, fillCard) {
   return wrap
 }
 
-function buildGroceryOOSRow(item, ruled) {
+// Section 1 row — live low-stock inventory item. No checkbox; tap to edit it.
+function buildLowStockRow(item, ruled) {
   const row = document.createElement('div')
-  row.className = 'pn-grocery-row' + (ruled ? ' pn-row--ruled' : '')
-
-  const check = mkGroceryCheck(() => gotItOOS(item.id))
+  row.className = 'pn-grocery-row pn-grocery-row--tap' + (ruled ? ' pn-row--ruled' : '')
   const body = document.createElement('div')
   body.className = 'pn-grocery-body'
-
   const name = document.createElement('div')
   name.className = 'pn-row__main'
   name.textContent = item.name
-
   const meta = document.createElement('div')
   meta.className = 'pn-row__meta'
-  meta.textContent = CAT_LABELS[item.category] || item.category || ''
-
+  const statusLbl = STATUS_LABEL[item.status] || (Number(item.quantity) === 0 ? 'Out' : '')
+  const storage   = CAT_LABELS[item.category] || item.category || ''
+  meta.textContent = [statusLbl, storage].filter(Boolean).join(' · ')
   body.append(name, meta)
-
-  if (item.neededFor?.length) {
-    const also = document.createElement('div')
-    also.className = 'pn-grocery-also'
-    const recipes = [...new Map(item.neededFor.map(u => [u.recipe_id + u.date, u])).values()]
-    also.textContent = 'Also needed: ' + recipes.map(u => `${u.recipeName} (${u.dateLabel})`).join(', ')
-    body.appendChild(also)
-  }
-
-  row.append(check, body)
+  row.appendChild(body)
+  row.addEventListener('click', () => openInventoryForm(item.id, item.category || 'pantry'))
   return row
 }
 
-function buildGroceryNeededRow(item, ruled) {
-  const row = document.createElement('div')
-  row.className = 'pn-grocery-row' + (ruled ? ' pn-row--ruled' : '')
+// Section 2 — the saved snapshot. Header + "Generated … · covers …" + Regenerate,
+// then items grouped by supermarket aisle. No interaction on the items.
+const SNAP_CAT_ORDER  = ['produce', 'meat', 'dairy', 'pantry', 'other']
+const SNAP_CAT_LABELS = { produce: '🥬 Produce', meat: '🥩 Meat', dairy: '🧀 Dairy', pantry: '🥫 Pantry', other: '📦 Other' }
 
-  const check = mkGroceryCheck(() => gotItNeeded(item))
+function buildSnapshotSection(snap) {
+  const wrap = document.createElement('div')
+  wrap.className = 'pn-section pn-snapshot'
+
+  const header = document.createElement('div')
+  header.className = 'pn-section-header'
+  header.innerHTML = '<span class="pn-section-label">Absurd Plan Requirements</span>'
+  wrap.appendChild(header)
+
+  const metaRow = document.createElement('div')
+  metaRow.className = 'pn-snapshot__meta'
+  const ts = document.createElement('span')
+  ts.className = 'pn-snapshot__ts'
+  if (snap) {
+    const range = `${fmtShortDate(snap.plan_date_range_start)}–${fmtShortDate(snap.plan_date_range_end)}`
+    ts.textContent = `Generated ${relTime(snap.generated_at)} · covers ${range}`
+  }
+  const regen = document.createElement('button')
+  regen.className = 'pn-snapshot__regen'
+  regen.textContent = snapshotLoading ? 'Generating…' : 'Regenerate'
+  regen.disabled = snapshotLoading
+  regen.addEventListener('click', regenerateSnapshot)
+  metaRow.append(ts, regen)
+  wrap.appendChild(metaRow)
+
+  if (snapshotLoading) {
+    const l = document.createElement('div')
+    l.className = 'pn-snapshot__loading'
+    l.innerHTML = '<div class="spinner"></div>Building your shopping list…'
+    wrap.appendChild(l)
+    return wrap
+  }
+  if (!snap) {
+    const e = document.createElement('div')
+    e.className = 'pn-snapshot__empty'
+    e.textContent = 'No shopping list yet — tap Regenerate to build one'
+    wrap.appendChild(e)
+    return wrap
+  }
+  const items = snap.items || []
+  if (!items.length) {
+    const e = document.createElement('div')
+    e.className = 'pn-snapshot__empty'
+    e.textContent = "You're all set — nothing extra to buy for the upcoming plan."
+    wrap.appendChild(e)
+    return wrap
+  }
+
+  const groups = {}
+  for (const it of items) {
+    const c = SNAP_CAT_ORDER.includes(it.category) ? it.category : 'other'
+    ;(groups[c] = groups[c] || []).push(it)
+  }
+  const card = document.createElement('div')
+  card.className = 'card pn-section-card'
+  for (const cat of SNAP_CAT_ORDER) {
+    const list = groups[cat]
+    if (!list || !list.length) continue
+    const ch = document.createElement('div')
+    ch.className = 'pn-snapshot__cat'
+    ch.textContent = SNAP_CAT_LABELS[cat]
+    card.appendChild(ch)
+    list.forEach(it => card.appendChild(buildSnapshotRow(it)))
+  }
+  wrap.appendChild(card)
+  return wrap
+}
+
+function buildSnapshotRow(it) {
+  const row = document.createElement('div')
+  row.className = 'pn-grocery-row pn-snapshot-row'
   const body = document.createElement('div')
   body.className = 'pn-grocery-body'
-
   const name = document.createElement('div')
   name.className = 'pn-row__main'
-  name.textContent = item.name
+  const qty = it.quantity && it.quantity !== 'as needed' ? ` — ${it.quantity}` : ''
+  name.textContent = `${it.name}${qty}`
   body.appendChild(name)
-
-  // Availability hint, shown with (not instead of) the recipe context.
-  // Quantity-aware even when units don't reconcile: precise shortfall when we can
-  // compute it, else a softer "you have some" / "not in stock".
-  const s = item.shortfall
-  if (s) {
-    const sl = document.createElement('div')
-    sl.className = 'pn-grocery-shortfall'
-    if (s.kind === 'short') {
-      const have = `${s.estimate ? '~' : ''}${fmtCanonical(s.dim, s.availVal)}`
-      const est  = s.estimate ? ` (estimated from ‘${s.statusLabel}’)` : ''
-      const buy  = fmtCanonical(s.dim, s.neededVal - s.availVal)
-      // Rest of the sentence stays muted; only the actionable buy amount is green.
-      sl.innerHTML = `Need ${fmtCanonical(s.dim, s.neededVal)}, have ${have}${est} — buy at least <span class="pn-grocery-buy">${buy} more</span>`
-    } else if (s.kind === 'have_some') {
-      sl.className += ' pn-grocery-shortfall--soft'
-      sl.textContent = `Need ${fmtCanonical(s.dim, s.neededVal)} · you have some (${s.haveRaw}) — double-check it's enough`
-    } else if (s.kind === 'need') {
-      sl.textContent = `Need ${fmtCanonical(s.dim, s.neededVal)} · not in stock`
-    } else {   // 'out'
-      sl.textContent = 'Not in stock'
-    }
-    body.appendChild(sl)
+  if (it.note) {
+    const n = document.createElement('div')
+    n.className = 'pn-row__meta'
+    n.textContent = it.note
+    body.appendChild(n)
   }
-
-  const meta = document.createElement('div')
-  meta.className = 'pn-row__meta'
-  const deduped = [...new Map(item.usages.map(u => [u.recipe_id + u.date, u])).values()]
-  meta.textContent = deduped.map(u => `${u.emoji ? u.emoji + ' ' : ''}${u.recipeName} (${u.dateLabel})`).join(', ')
-  body.appendChild(meta)
-
-  row.append(check, body)
+  row.appendChild(body)
   return row
 }
 
-function mkGroceryCheck(onClick) {
-  const btn = document.createElement('button')
-  btn.className = 'pn-grocery-check'
-  btn.setAttribute('aria-label', 'Got it')
-  btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`
-  btn.addEventListener('click', async e => {
-    e.stopPropagation()
-    btn.disabled = true
-    btn.classList.add('pn-grocery-check--busy')
-    await onClick()
-  })
-  return btn
-}
-
-async function gotItOOS(itemId) {
-  await supabase.from('inventory').update({ quantity: 1 }).eq('id', itemId)
-  toast('Marked as bought')
-  await loadGrocery(); renderGrocery()
-}
-
-async function gotItNeeded(item) {
-  const s = item.shortfall
-  if (item.matchedInventoryId && s && s.setQty != null) {
-    // Top up to the needed amount. For a 'have_some' item we also normalise the
-    // unit to the comparable one (s.setUnit) so it reconciles next time. Clearing
-    // status marks it a real count; the trigger refreshes last_updated_at/expiry.
-    const upd = { quantity: s.setQty, status: null }
-    if (s.setUnit) upd.unit = s.setUnit
-    await supabase.from('inventory').update(upd).eq('id', item.matchedInventoryId)
-  } else if (item.matchedInventoryId) {
-    // Shortfall not confidently known (presence/absence) → simple default.
-    await supabase.from('inventory').update({ quantity: 1, status: null }).eq('id', item.matchedInventoryId)
-  } else {
-    await supabase.from('inventory').insert({ name: item.name, quantity: 1, category: 'pantry', active: true })
+async function regenerateSnapshot() {
+  if (snapshotLoading) return
+  snapshotLoading = true
+  renderGrocery()
+  try {
+    const res = await fetch(`${FUNCTIONS_URL}/grocery-snapshot`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ triggered_by: 'manual' }),
+    })
+    const data = await res.json()
+    if (!data.success) throw new Error(data.error)
+    groceryData.snapshot = data.snapshot
+    toast('Shopping list updated')
+  } catch {
+    toast('Could not generate the list — try again', { error: true })
+  } finally {
+    snapshotLoading = false
+    renderGrocery()
   }
-  toast('Marked as bought')
-  await loadGrocery(); renderGrocery()
 }
 
 function fmtPlanDate(iso) {

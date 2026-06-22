@@ -870,6 +870,21 @@ Deno.serve(async (req: Request) => {
     const vacationDates = (ctx.daySettings as DaySetting[]).filter(d => d.is_vacation).map(d => d.day);
     await writePlan(supabase, result.plan, mode, targetDates, start_date, vacationDates, ctx.daySettings as DaySetting[]);
 
+    // After the Sunday cron run, build a fresh grocery snapshot so a shopping
+    // list is ready alongside the new plan (non-fatal if it fails).
+    if (triggeredBy === "scheduled") {
+      try {
+        const fnUrl = `${Deno.env.get("SUPABASE_URL")}/functions/v1/grocery-snapshot`;
+        await fetch(fnUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}` },
+          body: JSON.stringify({ triggered_by: "cron" }),
+        });
+      } catch (e) {
+        console.error("grocery-snapshot trigger failed (non-fatal):", e);
+      }
+    }
+
     // dinner rows are the only ones written; report that count
     const dinnerCount = result.plan.filter((p) => p.meal_type === "dinner").length;
     const daysPlanned = mode === "targeted"

@@ -3416,6 +3416,34 @@ body {
 .pn-grocery-check:active svg { stroke: #16a34a; }
 .pn-grocery-check--busy { opacity: 0.4; cursor: default; }
 .pn-grocery-body { flex: 1; min-width: 0; }
+.pn-grocery-row--tap { cursor: pointer; }
+.pn-grocery-row--tap:active { background: rgba(0,0,0,0.04); }
+
+/* Section 2 — Absurd Plan Requirements (snapshot) */
+.pn-snapshot { margin-top: 4px; }
+.pn-snapshot__meta {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 0 16px 8px;
+}
+.pn-snapshot__ts { font-size: 11.4px; color: var(--text-on-page-muted); line-height: 1.3; }
+.pn-snapshot__regen {
+  flex-shrink: 0;
+  background: var(--primary); border: none; color: var(--text-on-page);
+  border-radius: 999px; padding: 6px 14px;
+  font-family: var(--font); font-size: 12.4px; font-weight: 700;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.pn-snapshot__regen:disabled { opacity: 0.6; cursor: default; }
+.pn-snapshot__loading {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 16px 14px; font-size: 13.8px; color: var(--text-on-page-muted);
+}
+.pn-snapshot__empty { padding: 2px 16px 14px; font-size: 13.8px; color: var(--text-on-page-muted); }
+.pn-snapshot__cat {
+  font-size: 10.6px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px;
+  color: var(--text-muted); padding: 11px 14px 3px;
+}
+.pn-snapshot-row { padding-top: 7px; padding-bottom: 7px; min-height: 0; }
 .pn-grocery-also {
   font-size: 11.7px;
   color: var(--primary);
