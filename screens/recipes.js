@@ -45,20 +45,24 @@ async function loadData() {
       .eq('active', false).or('is_placeholder.is.null,is_placeholder.eq.false').order('name'),
     supabase.from('freezer_stash')
       .select('recipe_id, portions').eq('used', false),
-    // Upcoming scheduled slots (today forward), to compute each recipe's next
-    // planned date — regardless of actually_made.
+    // Upcoming scheduled slots (today forward). Read both recipe_id and
+    // actual_recipe_id so swaps are attributed to the recipe actually in the
+    // slot, not the one that was replaced.
     supabase.from('meal_plans')
-      .select('recipe_id, plan_date').gte('plan_date', todayStr)
-      .not('recipe_id', 'is', null).order('plan_date'),
+      .select('recipe_id, actual_recipe_id, plan_date').gte('plan_date', todayStr)
+      .order('plan_date'),
   ])
 
   allRecipes      = recipeRes.data   || []
   inactiveRecipes = inactiveRes.data || []
 
+  // The effective recipe for a slot is the substitute if one was set, else the
+  // planned recipe. A swapped-out original gets no credit; the substitute does.
   // recipe_id → earliest upcoming plan_date (rows arrive ordered ascending).
   nextPlanByRecipe = new Map()
   for (const row of (upcomingRes.data || [])) {
-    if (!nextPlanByRecipe.has(row.recipe_id)) nextPlanByRecipe.set(row.recipe_id, row.plan_date)
+    const eff = row.actual_recipe_id || row.recipe_id
+    if (eff && !nextPlanByRecipe.has(eff)) nextPlanByRecipe.set(eff, row.plan_date)
   }
 
   stashMap = {}
