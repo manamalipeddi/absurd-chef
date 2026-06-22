@@ -1064,8 +1064,11 @@ async function loadGrocery() {
   // recipes stay intact, but a deactivated master falls back to fuzzy matching).
   const activeMasters = new Set((activeMasterData || []).map(m => m.id))
 
-  // Source 1: items explicitly out of stock
-  const outOfStock = allInventory.filter(i => i.quantity == null || Number(i.quantity) === 0)
+  // Source 1: items explicitly out of stock. "Never checked" items (no
+  // last_updated_at) are NOT assumed out — we simply haven't measured them — so
+  // they're excluded here. They can still appear under "Needed for upcoming
+  // meals" when a planned recipe calls for them (handled below).
+  const outOfStock = allInventory.filter(i => i.last_updated_at != null && (i.quantity == null || Number(i.quantity) === 0))
 
   // Filter plan: skip freezer_stash and store_bought
   const planRows = (planData || []).filter(p =>
@@ -1141,10 +1144,22 @@ async function loadGrocery() {
     // Prefer the reliable master_ingredient_id link (active only); fall back to fuzzy name match.
     const match = (data.masterId && activeMasters.has(data.masterId) && invByMaster.get(data.masterId)) || findInventoryMatch(key, allInventory)
 
-    // Out of stock entirely → annotate the OOS row (Source 1 owns it).
+    // Matched inventory item is out (0/empty).
     if (match && (match.quantity == null || Number(match.quantity) === 0)) {
       const idx = oosIdxById.get(match.id)
-      if (idx != null) annotatedOOS[idx].neededFor.push(...data.usages)
+      if (idx != null) {
+        // Checked & out → the "Out of stock" section owns it (annotate usage).
+        annotatedOOS[idx].neededFor.push(...data.usages)
+      } else {
+        // Never-checked (excluded from "Out of stock") → still surface it under
+        // "Needed for upcoming meals" since a planned recipe calls for it.
+        const need = sumNeeded(data.contribs, data.masterId ? masterConv.get(data.masterId) : null)
+        needed.push({
+          name: data.displayName, usages: data.usages, matchedInventoryId: match.id,
+          lastUpdated: match.last_updated_at || null, status: match.status || null, fav: !!match.is_favourite,
+          shortfall: need ? { kind: 'need', neededVal: need.value, dim: need.dim } : { kind: 'out' },
+        })
+      }
       continue
     }
 
