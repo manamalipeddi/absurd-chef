@@ -213,8 +213,19 @@ function renderInventory() {
 
     let hasAny = false
     CAT_LIST.forEach(catKey => {
-      const items = bycat[catKey]
+      let items = bycat[catKey]
       if (!items?.length) return
+      // Fridge: soonest-expiring first; items with no expiry keep the regular
+      // order (stable sort preserves the global favourites→checked→alpha tiers).
+      if (catKey === 'fridge') {
+        items = [...items].sort((a, b) => {
+          const ea = a.expiry_date || null, eb = b.expiry_date || null
+          if (ea && eb) return ea < eb ? -1 : ea > eb ? 1 : 0
+          if (ea) return -1
+          if (eb) return 1
+          return 0
+        })
+      }
       hasAny = true
       listEl.appendChild(buildInventorySection(catKey, items))
     })
