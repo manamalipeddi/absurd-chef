@@ -1214,22 +1214,36 @@ function buildCollapsibleSection(key, label, count, openMap, fillCard) {
   return wrap
 }
 
-// Section 1 row — live low-stock inventory item. No checkbox; tap to edit it.
+// Section 1 row — compact single row: name (left), then status pill + staleness/
+// expiry (right). No category. Tap to open the item's Inventory edit.
 function buildLowStockRow(item, ruled) {
   const row = document.createElement('div')
-  row.className = 'pn-grocery-row pn-grocery-row--tap' + (ruled ? ' pn-row--ruled' : '')
-  const body = document.createElement('div')
-  body.className = 'pn-grocery-body'
+  row.className = 'pn-grocery-row pn-grocery-row--tap pn-low-row' + (ruled ? ' pn-row--ruled' : '')
+
   const name = document.createElement('div')
-  name.className = 'pn-row__main'
+  name.className = 'pn-row__main pn-low-row__name'
   name.textContent = item.name
-  const meta = document.createElement('div')
-  meta.className = 'pn-row__meta'
-  const statusLbl = STATUS_LABEL[item.status] || (Number(item.quantity) === 0 ? 'Out' : '')
-  const storage   = CAT_LABELS[item.category] || item.category || ''
-  meta.textContent = [statusLbl, storage].filter(Boolean).join(' · ')
-  body.append(name, meta)
-  row.appendChild(body)
+
+  const right = document.createElement('div')
+  right.className = 'pn-low-row__right'
+
+  const pill = document.createElement('span')
+  pill.className = 'pn-status-pill pn-status-pill--low pn-low-row__pill'
+  pill.textContent = STATUS_LABEL[item.status] || 'Out'
+  right.appendChild(pill)
+
+  const segs = []
+  if (item.last_updated_at) segs.push('updated ' + relTime(item.last_updated_at))
+  const ei = expiryInfo(item.expiry_date)
+  if (ei) segs.push(ei.text)
+  if (segs.length) {
+    const sub = document.createElement('span')
+    sub.className = 'pn-low-row__sub'
+    sub.textContent = segs.join(' · ')
+    right.appendChild(sub)
+  }
+
+  row.append(name, right)
   row.addEventListener('click', () => openInventoryForm(item.id, item.category || 'pantry'))
   return row
 }
@@ -1243,10 +1257,14 @@ function buildSnapshotSection(snap) {
   const wrap = document.createElement('div')
   wrap.className = 'pn-section pn-snapshot'
 
-  const header = document.createElement('div')
-  header.className = 'pn-section-header'
-  header.innerHTML = '<span class="pn-section-label">Absurd Plan Requirements</span>'
-  wrap.appendChild(header)
+  // Everything (header, timestamp, Regenerate, item list) sits inside one card.
+  const card = document.createElement('div')
+  card.className = 'card pn-snapshot__card'
+
+  const title = document.createElement('div')
+  title.className = 'pn-snapshot__title'
+  title.textContent = 'Absurd Plan Requirements'
+  card.appendChild(title)
 
   const metaRow = document.createElement('div')
   metaRow.className = 'pn-snapshot__meta'
@@ -1262,47 +1280,40 @@ function buildSnapshotSection(snap) {
   regen.disabled = snapshotLoading
   regen.addEventListener('click', regenerateSnapshot)
   metaRow.append(ts, regen)
-  wrap.appendChild(metaRow)
+  card.appendChild(metaRow)
 
   if (snapshotLoading) {
     const l = document.createElement('div')
     l.className = 'pn-snapshot__loading'
     l.innerHTML = '<div class="spinner"></div>Building your shopping list…'
-    wrap.appendChild(l)
-    return wrap
-  }
-  if (!snap) {
+    card.appendChild(l)
+  } else if (!snap) {
     const e = document.createElement('div')
     e.className = 'pn-snapshot__empty'
     e.textContent = 'No shopping list yet — tap Regenerate to build one'
-    wrap.appendChild(e)
-    return wrap
-  }
-  const items = snap.items || []
-  if (!items.length) {
+    card.appendChild(e)
+  } else if (!(snap.items || []).length) {
     const e = document.createElement('div')
     e.className = 'pn-snapshot__empty'
     e.textContent = "You're all set — nothing extra to buy for the upcoming plan."
-    wrap.appendChild(e)
-    return wrap
+    card.appendChild(e)
+  } else {
+    const groups = {}
+    for (const it of snap.items) {
+      const c = SNAP_CAT_ORDER.includes(it.category) ? it.category : 'other'
+      ;(groups[c] = groups[c] || []).push(it)
+    }
+    for (const cat of SNAP_CAT_ORDER) {
+      const list = groups[cat]
+      if (!list || !list.length) continue
+      const ch = document.createElement('div')
+      ch.className = 'pn-snapshot__cat'
+      ch.textContent = SNAP_CAT_LABELS[cat]
+      card.appendChild(ch)
+      list.forEach(it => card.appendChild(buildSnapshotRow(it)))
+    }
   }
 
-  const groups = {}
-  for (const it of items) {
-    const c = SNAP_CAT_ORDER.includes(it.category) ? it.category : 'other'
-    ;(groups[c] = groups[c] || []).push(it)
-  }
-  const card = document.createElement('div')
-  card.className = 'card pn-section-card'
-  for (const cat of SNAP_CAT_ORDER) {
-    const list = groups[cat]
-    if (!list || !list.length) continue
-    const ch = document.createElement('div')
-    ch.className = 'pn-snapshot__cat'
-    ch.textContent = SNAP_CAT_LABELS[cat]
-    card.appendChild(ch)
-    list.forEach(it => card.appendChild(buildSnapshotRow(it)))
-  }
   wrap.appendChild(card)
   return wrap
 }

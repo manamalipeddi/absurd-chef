@@ -78,19 +78,21 @@ Deno.serve(async (req: Request) => {
     let items: unknown[] = []
     if (needed.length) {
       const listText = needed
-        .map(e => `- ${e.name} (needed in ${e.recipes.size} recipe${e.recipes.size !== 1 ? 's' : ''})`)
+        .map(e => `- ${e.name} (recipes: ${[...e.recipes].join(', ')})`)
         .join('\n')
 
-      const prompt = `You are cleaning up a raw grocery list pulled from a 2-week meal plan. The raw list repeats ingredients across recipes and uses inconsistent names and quantities.
+      const prompt = `You are cleaning up a raw grocery list pulled from a 2-week meal plan. The raw list repeats ingredients across recipes and uses inconsistent names and quantities. Each line shows which recipe(s) need that ingredient.
 
-Produce a clean, consolidated shopping list. Merge duplicates and obvious variants (e.g. "onion", "onions", "1 red onion" → one "Onions" entry). For each consolidated item return:
+Produce a clean, consolidated shopping list. Merge duplicates and obvious variants (e.g. "onion", "onions", "1 red onion" → one "Onions" entry).
+
+Rules:
 - "name": clean display name, Title Case, plural where natural
-- "note": short context such as "needed across 4 recipes", or null if not useful
 - "quantity": a rough human amount if sensible ("several", "1 bunch", "~500g"), else "as needed"
 - "category": exactly one of: produce | meat | dairy | pantry | other (infer from the ingredient type)
+- "note": which recipe(s) need this item — recipe names only, comma-separated, no dates or meal-type detail. If more than 3 recipes need it, list the first 2 then "+ N more" (e.g. "Chicken Tagine, White Bean Soup + 2 more"). When you merge variants, combine their recipes into this list.
 
 Return ONLY a JSON array — your entire response must start with [ and end with ]. No prose.
-[{"name":"Onions","note":"needed across 4 recipes","quantity":"several","category":"produce"}]
+[{"name":"Onions","quantity":"several","category":"produce","note":"Chicken Tagine, White Bean Soup + 1 more"}]
 
 RAW LIST:
 ${listText}`
