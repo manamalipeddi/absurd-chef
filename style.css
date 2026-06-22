@@ -4,14 +4,14 @@
 :root {
   --page:               #5e2536;   /* deep burgundy — the app background */
   --page-deep:          #4c1d2c;
-  /* Deep mauve-rose neutrals — pushed darker so they stay moody on bright phone
-     panels (Pixel etc.) rather than washing out.
-     (Lighter steps to fall back to: dusty rose surface #ddcaca / bg #d2bdbd /
-      border #c6b1b1 · deeper-blush #e6d6d5 / #dccac9 / #d0bcbb · original blush
+  /* Dusty-rose neutrals — deep enough to read moody on bright phone panels
+     (Pixel etc.) without washing out, but not as heavy as the deeper mauve.
+     (Other steps to try: deeper mauve surface #d0b8b8 / bg #c5acac / border
+      #b89e9e · deeper-blush #e6d6d5 / #dccac9 / #d0bcbb · original blush
       #efe4e3 / #e7d9d8 / #ddccca.) */
-  --bg:                 #c5acac;   /* soft mauve-rose fill inside cards / inputs / active rows */
-  --surface:            #d0b8b8;   /* deep mauve-rose — card surfaces */
-  --border:             #b89e9e;   /* mauve-rose border */
+  --bg:                 #d2bdbd;   /* soft rose fill inside cards / inputs / active rows */
+  --surface:            #ddcaca;   /* dusty rose — card surfaces */
+  --border:             #c6b1b1;   /* rose border */
   --primary:            #013F33;  /* deep green — the contrast / action colour */
   --primary-light:      #047a5f;   /* lighter green — gradient partner for --primary */
   --primary-bg:         #d6e9e2;   /* pale green tint for icon backgrounds, badges */
@@ -19,11 +19,11 @@
   --accent-warm:        #b5485f;
   --text:               #3a3a3a;  /* dark, readable on light-green surfaces */
   --text-muted:         #6f6168;
-  --text-on-page:       #d0b8b8;   /* mauve-rose — light text/titles on the burgundy (matches --surface) */
+  --text-on-page:       #ddcaca;   /* rose — light text/titles on the burgundy (matches --surface) */
   --text-on-page-muted: #d6b3bf;
-  /* Bottom nav sits on burgundy: mauve-rose text, dimmer when inactive. */
-  --nav-inactive:       rgba(208, 184, 184, 0.55);
-  --nav-active:         #d0b8b8;
+  /* Bottom nav sits on burgundy: rose text, dimmer rose when inactive. */
+  --nav-inactive:       rgba(221, 202, 202, 0.55);
+  --nav-active:         #ddcaca;
   --radius:             14px;
   --radius-sm:          10px;
   --header-h:           60px;
