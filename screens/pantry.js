@@ -20,7 +20,7 @@ let showHiddenFreezer   = false
 let inventorySearch     = ''
 
 const catOpenState = { fridge: true, freezer: true, pantry: true }
-const groceryOpenState = { low: true }
+const groceryOpenState = { low: true, plan: true }
 
 const CAT_LABELS = { fridge: '🧊 Fridge', freezer: '❄️ Freezer', pantry: '🥫 Pantry' }
 const CAT_WORD   = { fridge: 'Fridge', freezer: 'Freezer', pantry: 'Pantry' }
@@ -1239,68 +1239,60 @@ const SNAP_CAT_ORDER  = ['produce', 'meat', 'dairy', 'pantry', 'other']
 const SNAP_CAT_LABELS = { produce: '🥬 Produce', meat: '🥩 Meat', dairy: '🧀 Dairy', pantry: '🥫 Pantry', other: '📦 Other' }
 
 function buildSnapshotSection(snap) {
-  const wrap = document.createElement('div')
-  wrap.className = 'pn-section pn-snapshot'
-
-  // Everything (header, timestamp, Regenerate, item list) sits inside one card.
-  const card = document.createElement('div')
-  card.className = 'card pn-snapshot__card'
-
-  const title = document.createElement('div')
-  title.className = 'pn-snapshot__title'
-  title.textContent = 'Absurd Plan Requirements'
-  card.appendChild(title)
-
-  const metaRow = document.createElement('div')
-  metaRow.className = 'pn-snapshot__meta'
-  const ts = document.createElement('span')
-  ts.className = 'pn-snapshot__ts'
-  if (snap) {
-    const range = `${fmtShortDate(snap.plan_date_range_start)}–${fmtShortDate(snap.plan_date_range_end)}`
-    ts.textContent = `Generated ${relTime(snap.generated_at)} · covers ${range}`
-  }
-  const regen = document.createElement('button')
-  regen.className = 'pn-snapshot__regen'
-  regen.textContent = snapshotLoading ? 'Generating…' : 'Regenerate'
-  regen.disabled = snapshotLoading
-  regen.addEventListener('click', regenerateSnapshot)
-  metaRow.append(ts, regen)
-  card.appendChild(metaRow)
-
-  if (snapshotLoading) {
-    const l = document.createElement('div')
-    l.className = 'pn-snapshot__loading'
-    l.innerHTML = '<div class="spinner"></div>Building your shopping list…'
-    card.appendChild(l)
-  } else if (!snap) {
-    const e = document.createElement('div')
-    e.className = 'pn-snapshot__empty'
-    e.textContent = 'No shopping list yet — tap Regenerate to build one'
-    card.appendChild(e)
-  } else if (!(snap.items || []).length) {
-    const e = document.createElement('div')
-    e.className = 'pn-snapshot__empty'
-    e.textContent = "You're all set — nothing extra to buy for the upcoming plan."
-    card.appendChild(e)
-  } else {
-    const groups = {}
-    for (const it of snap.items) {
-      const c = SNAP_CAT_ORDER.includes(it.category) ? it.category : 'other'
-      ;(groups[c] = groups[c] || []).push(it)
+  // Same collapsible header as "Absurdly Low Stock"; timestamp, Regenerate, and
+  // the item list live in the section's card body.
+  const count = snap && snap.items ? snap.items.length : 0
+  const section = buildCollapsibleSection('plan', 'Absurd Plan Requirements', count, groceryOpenState, (card) => {
+    const metaRow = document.createElement('div')
+    metaRow.className = 'pn-snapshot__meta'
+    const ts = document.createElement('span')
+    ts.className = 'pn-snapshot__ts'
+    if (snap) {
+      const range = `${fmtShortDate(snap.plan_date_range_start)}–${fmtShortDate(snap.plan_date_range_end)}`
+      ts.textContent = `Generated ${relTime(snap.generated_at)} · covers ${range}`
     }
-    for (const cat of SNAP_CAT_ORDER) {
-      const list = groups[cat]
-      if (!list || !list.length) continue
-      const ch = document.createElement('div')
-      ch.className = 'pn-snapshot__cat'
-      ch.textContent = SNAP_CAT_LABELS[cat]
-      card.appendChild(ch)
-      list.forEach(it => card.appendChild(buildSnapshotRow(it)))
-    }
-  }
+    const regen = document.createElement('button')
+    regen.className = 'pn-snapshot__regen'
+    regen.textContent = snapshotLoading ? 'Generating…' : 'Regenerate'
+    regen.disabled = snapshotLoading
+    regen.addEventListener('click', regenerateSnapshot)
+    metaRow.append(ts, regen)
+    card.appendChild(metaRow)
 
-  wrap.appendChild(card)
-  return wrap
+    if (snapshotLoading) {
+      const l = document.createElement('div')
+      l.className = 'pn-snapshot__loading'
+      l.innerHTML = '<div class="spinner"></div>Building your shopping list…'
+      card.appendChild(l)
+    } else if (!snap) {
+      const e = document.createElement('div')
+      e.className = 'pn-snapshot__empty'
+      e.textContent = 'No shopping list yet — tap Regenerate to build one'
+      card.appendChild(e)
+    } else if (!count) {
+      const e = document.createElement('div')
+      e.className = 'pn-snapshot__empty'
+      e.textContent = "You're all set — nothing extra to buy for the upcoming plan."
+      card.appendChild(e)
+    } else {
+      const groups = {}
+      for (const it of snap.items) {
+        const c = SNAP_CAT_ORDER.includes(it.category) ? it.category : 'other'
+        ;(groups[c] = groups[c] || []).push(it)
+      }
+      for (const cat of SNAP_CAT_ORDER) {
+        const list = groups[cat]
+        if (!list || !list.length) continue
+        const ch = document.createElement('div')
+        ch.className = 'pn-snapshot__cat'
+        ch.textContent = SNAP_CAT_LABELS[cat]
+        card.appendChild(ch)
+        list.forEach(it => card.appendChild(buildSnapshotRow(it)))
+      }
+    }
+  })
+  section.classList.add('pn-snapshot')
+  return section
 }
 
 function buildSnapshotRow(it) {
