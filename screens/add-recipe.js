@@ -23,6 +23,18 @@ const EMOJI_FALLBACKS = {
   breakfast: '🍳', lunch_dinner: '🍽️', snack: '🍎', special: '🎉',
 }
 
+// Coerce any meal_type (incl. AI-extracted guesses like "dinner" / "dessert" /
+// "kids") to one of the four section values the Recipes tab actually filters on.
+// Anything unrecognised falls back to 'lunch_dinner' so a recipe is never saved
+// with a meal_type that hides it from every section.
+function normalizeMealType(v) {
+  const m = norm(v)
+  if (m === 'breakfast') return 'breakfast'
+  if (m === 'snack') return 'snack'
+  if (m === 'special' || m === 'dessert') return 'special'
+  return 'lunch_dinner'   // lunch_dinner, dinner, lunch, kids, '', anything else
+}
+
 const norm = s => String(s || '').toLowerCase().trim()
 // Looser key for vocab matching — ignores case + spaces/underscores/hyphens so
 // "Pressure Cook" / "pressure_cook" don't fragment during paste extraction.
@@ -131,7 +143,7 @@ async function loadForEdit() {
   formData = {
     name:                 r.name || '',
     emoji:                r.emoji || '',
-    meal_type:            r.meal_type || 'lunch_dinner',
+    meal_type:            normalizeMealType(r.meal_type),
     cuisine:              r.cuisine || '',
     protein:              r.protein || '',
     style:                r.style || '',
@@ -249,7 +261,7 @@ async function runExtract(rawText) {
     formData = {
       name:                 data.name || '',
       emoji:                data.emoji || '',
-      meal_type:            data.meal_type || 'lunch_dinner',
+      meal_type:            normalizeMealType(data.meal_type),
       // Match the extracted guess against managed vocab first (case/space-
       // insensitive) so automated extraction doesn't fragment the vocabulary.
       cuisine:              matchVocab(data.cuisine, allCuisines) || '',
@@ -595,7 +607,7 @@ async function handleSave(form) {
   const data = {
     name,
     emoji:                g('emoji')?.value.trim()    || null,
-    meal_type:            g('meal_type')?.value       || 'lunch_dinner',
+    meal_type:            normalizeMealType(g('meal_type')?.value),
     cuisine:              g('cuisine')?.value.trim()  || null,
     protein:              g('protein')?.value.trim()  || null,
     style:                g('style')?.value.trim()    || null,

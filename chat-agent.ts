@@ -275,7 +275,7 @@ const TOOLS: Anthropic.Tool[] = [
             required: ['name'],
           },
         },
-        meal_type:      { type: 'string' },
+        meal_type:      { type: 'string', enum: ['breakfast', 'lunch_dinner', 'snack', 'special'], description: "One of exactly these four. Any dinner/lunch recipe is 'lunch_dinner'; desserts are 'special'." },
         protein:        { type: 'string' },
         style:          { type: 'string' },
         cooking_method: { type: 'string' },
@@ -977,8 +977,17 @@ async function toolAddRecipe(input: Record<string, unknown>, db: DB) {
     return { success: true, recipe_id: existingRecipes[0].id, name: existingRecipes[0].name, already_existed: true }
   }
 
+  // Only the four section values are valid; map anything else (incl. a natural
+  // "dinner"/"dessert"/"kids" guess) so the recipe shows on the Recipes tab.
+  const mt = String(meal_type || '').toLowerCase().trim()
+  const normalizedMealType =
+    mt === 'breakfast' ? 'breakfast'
+    : mt === 'snack' ? 'snack'
+    : (mt === 'special' || mt === 'dessert') ? 'special'
+    : 'lunch_dinner'
+
   const { data: newRec, error } = await db.from('recipes').insert({
-    name, original_instructions, meal_type: meal_type || 'lunch_dinner',
+    name, original_instructions, meal_type: normalizedMealType,
     protein: protein || null, style: style || null,
     cooking_method: cooking_method || null, serves_base: serves_base || 4, active: true,
   }).select('id').single()
