@@ -724,8 +724,18 @@ async function generateAndSaveLayers(recipeId, recipeName, instructions, ings) {
         night_before:       data.night_before        || [],
         morning_of:         data.morning_of          || [],
         when_cooking:       data.when_cooking         || [],
-        hacks_and_shortcuts: data.hacks_and_shortcuts || [],
       }).eq('id', recipeId)
+    }
+    // AI tips go into the global notes — append-only, deduped, never overwriting
+    // user-written notes (hacks_and_shortcuts column was retired).
+    const tips = data.hacks_and_shortcuts || []
+    if (tips.length) {
+      const { data: cur } = await supabase.from('recipes').select('notes').eq('id', recipeId).single()
+      const existing = cur?.notes || []
+      const merged = [...existing, ...tips.filter(t => !existing.includes(t))]
+      if (merged.length !== existing.length) {
+        await supabase.from('recipes').update({ notes: merged }).eq('id', recipeId)
+      }
     }
   } catch (e) {
     console.error('Layer generation failed:', e)

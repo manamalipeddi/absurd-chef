@@ -1048,6 +1048,69 @@ body {
 /* Active version = green text + green outline (no green fill — green marks
    "the one you're viewing", it never fills the pill). */
 .rd-pill--active { border-color: var(--primary); background: var(--surface); color: var(--primary); font-weight: 700; }
+/* Discuss-this-recipe icon, right-aligned on the pills row (Plan-card glyph) */
+.rd-pills__discuss {
+  margin-left: auto;
+  flex-shrink: 0;
+  align-self: center;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  -webkit-tap-highlight-color: transparent;
+}
+.rd-pills__discuss svg { width: 20px; height: 20px; display: block; }
+.rd-pills__discuss:active { opacity: 0.6; }
+
+/* Notes — global editable list */
+.rd-notes__list { list-style: none; padding-left: 0; margin: 0; }
+.rd-notes__item { display: flex; align-items: flex-start; gap: 8px; padding: 3px 0; }
+.rd-notes__item .rd-notes__text { flex: 1; cursor: text; line-height: 1.4; }
+.rd-notes__del {
+  flex-shrink: 0; background: none; border: none; cursor: pointer;
+  color: var(--text-muted); font-size: 18px; line-height: 1; padding: 0 4px;
+  -webkit-tap-highlight-color: transparent;
+}
+.rd-notes__del:active { opacity: 0.6; }
+.rd-notes__edit {
+  flex: 1; width: 100%; font-family: var(--font); font-size: 13.8px;
+  padding: 6px 9px; border: 1.5px solid var(--primary); border-radius: 8px;
+  background: var(--surface); color: var(--text); -webkit-appearance: none;
+}
+.rd-notes__edit:focus { outline: none; }
+.rd-notes__add { display: flex; gap: 8px; margin: 10px 0; }
+.rd-notes__input {
+  flex: 1; font-family: var(--font); font-size: 13.8px;
+  padding: 8px 11px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--text); -webkit-appearance: none;
+}
+.rd-notes__input:focus { outline: none; border-color: var(--primary); }
+.rd-notes__addbtn {
+  flex-shrink: 0; background: var(--bg); border: 1.5px solid var(--primary);
+  color: var(--primary); border-radius: var(--radius-sm); padding: 0 14px;
+  font-family: var(--font); font-size: 13.8px; font-weight: 600; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.rd-notes__addbtn:active { opacity: 0.8; }
+.rd-notes__tipsbtn { margin: 2px 0 4px; }
+
+/* Scale: outline send-icon button (stroke only, no fill) */
+.rd-scale-send {
+  flex-shrink: 0;
+  width: 38px; height: 38px;
+  display: flex; align-items: center; justify-content: center;
+  background: none;
+  border: 1.5px solid var(--primary);
+  border-radius: 10px;
+  color: var(--primary);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.rd-scale-send svg { width: 18px; height: 18px; display: block; }
+.rd-scale-send:active { opacity: 0.7; }
 .rd-pill__star { font-size: 11px; }
 .rd-pill__setdefault {
   background: none; border: none; cursor: pointer; padding: 0 0 0 2px;

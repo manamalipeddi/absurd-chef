@@ -11,7 +11,7 @@ let preppedComponents = []
 let subMap           = {}   // `${tabId}:${ingId}` → {loading, message}
 let scaleResult      = null
 let scaleLabelDraft  = ''
-let hacksLoading     = false
+let notesLoading     = false
 let lastRecipeId     = null
 let screenEl         = null
 let ingListRef       = null
@@ -40,7 +40,7 @@ export async function activate({ headerLeft, headerRight }) {
     subMap          = {}
     scaleResult     = null
     scaleLabelDraft = ''
-    hacksLoading    = false
+    notesLoading    = false
     await loadAll(recipeId)
   }
 
@@ -76,7 +76,7 @@ export async function activate({ headerLeft, headerRight }) {
 async function loadAll(recipeId) {
   const [recipeRes, variantsRes, pcRes] = await Promise.all([
     supabase.from('recipes')
-      .select('id,name,emoji,meal_type,ease_descriptor,serves_base,default_variant_id,night_before,morning_of,when_cooking,hacks_and_shortcuts,original_instructions,protein,cooking_method,can_double')
+      .select('id,name,emoji,meal_type,ease_descriptor,serves_base,default_variant_id,night_before,morning_of,when_cooking,notes,original_instructions,protein,cooking_method,can_double')
       .eq('id', recipeId).single(),
     supabase.from('recipe_variants').select('*').eq('recipe_id', recipeId).order('created_at'),
     supabase.from('prepped_components').select('*').eq('recipe_id', recipeId).eq('active', true).order('made_date', { ascending: false }),
@@ -137,7 +137,7 @@ async function switchTab(tabId) {
   activeTabId     = tabId
   scaleResult     = null
   scaleLabelDraft = ''
-  hacksLoading    = false
+  notesLoading    = false
   ingListRef      = null
   await loadIngredients()
   const pillsEl   = screenEl.querySelector('.rd-pills')
@@ -191,6 +191,16 @@ function buildPills() {
 
   wrap.appendChild(makePill('original', `Serves ${recipe.serves_base ?? 4}`))
   for (const v of variants) wrap.appendChild(makePill(v.id, v.label))
+
+  // Discuss this recipe — right-aligned chat-bubble icon (same glyph as the
+  // Plan day-card). Opens chat pre-filled; not a saved variant.
+  const discuss = document.createElement('button')
+  discuss.className = 'rd-pills__discuss'
+  discuss.title = 'Discuss this recipe'
+  discuss.setAttribute('aria-label', 'Discuss this recipe')
+  discuss.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8.96 8.96 0 0 1-9 9c-1.6 0-3.1-.42-4.4-1.15L3 21l1.15-4.6A8.96 8.96 0 0 1 3 12a9 9 0 1 1 18 0z"/><path d="M8 10h8M8 13.5h5"/></svg>'
+  discuss.addEventListener('click', () => { navState.chatPrefill = `About ${recipe.name}: `; navigateTo('chat') })
+  wrap.appendChild(discuss)
   return wrap
 }
 
@@ -217,15 +227,14 @@ function buildContent() {
   if (layers?.night_before?.length)  wrap.appendChild(buildLayerList('🌙 Night before',  layers.night_before))
   if (layers?.morning_of?.length)    wrap.appendChild(buildLayerList('☀️ Morning of',    layers.morning_of))
 
-  // 7. Tips
-  wrap.appendChild(buildHacks(layers?.hacks_and_shortcuts || []))
+  // 7. About this version — variant tabs only (Original has no version to explain)
   if (!isOriginal && av?.notes) wrap.appendChild(buildVariantNotes(av.notes))
 
-  // 8. Action row (Use tonight | Schedule | Discuss)
-  wrap.appendChild(buildActions())
+  // 8. Notes — global, identical on every tab (recipes.notes); user-editable
+  wrap.appendChild(buildNotes())
 
-  // 9. AI-assisted actions (Suggest easier + Scale, grouped)
-  wrap.appendChild(buildAIActions())
+  // 9. Scale this recipe (reworked: outline send-icon, no Calculate button)
+  wrap.appendChild(buildScaleSection())
   if (scaleResult) wrap.appendChild(buildScaleResult())
 
   // 10. Prepped components (collapsed)
@@ -459,83 +468,139 @@ function buildOriginalInstructions(text) {
   return section
 }
 
-// ── Hacks and shortcuts ───────────────────────────────────
-function buildHacks(hacks) {
+// ── Notes (global, user-editable; AI may only add) ────────
+// One unified list of tips / shortcuts / freeform notes stored in recipes.notes.
+// Identical on every tab. User can add / edit / delete any entry; the AI ("Check
+// for more tips") may only append new, non-duplicate entries.
+function buildNotes() {
   const section = document.createElement('div')
-  section.className = 'rd-section rd-hacks'
+  section.className = 'rd-section rd-notes'
   const lbl = document.createElement('div')
   lbl.className = 'rd-section__title'
-  lbl.textContent = '💡 Tips for this recipe'
-
+  lbl.textContent = '📝 Notes'
   section.appendChild(lbl)
 
-  if (hacks?.length) {
-    const ul = document.createElement('ul')
-    ul.className = 'rd-layer-list rd-hacks__list'
-    hacks.forEach(h => { const li = document.createElement('li'); li.textContent = h; ul.appendChild(li) })
-    section.appendChild(ul)
-  }
+  const notes = recipe.notes || []
+  const ul = document.createElement('ul')
+  ul.className = 'rd-layer-list rd-notes__list'
+  notes.forEach((text, i) => ul.appendChild(buildNoteRow(text, i)))
+  section.appendChild(ul)
 
-  if (hacksLoading) {
+  // "+ Add" input
+  const addRow = document.createElement('div')
+  addRow.className = 'rd-notes__add'
+  const input = document.createElement('input')
+  input.type = 'text'; input.className = 'rd-notes__input'; input.placeholder = 'Add a note or tip…'
+  const addBtn = document.createElement('button')
+  addBtn.className = 'rd-notes__addbtn'; addBtn.textContent = '+ Add'
+  const submit = async () => {
+    const v = input.value.trim(); if (!v) return
+    await saveNotes([...(recipe.notes || []), v]); rerenderNotes()
+  }
+  addBtn.addEventListener('click', submit)
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); submit() } })
+  addRow.append(input, addBtn)
+  section.appendChild(addRow)
+
+  // AI: add-only "Check for more tips"
+  if (notesLoading) {
     const loading = document.createElement('div')
     loading.className = 'rd-hacks__loading'
     loading.innerHTML = '<div class="spinner"></div>Checking for more tips…'
     section.appendChild(loading)
   } else {
     const btn = document.createElement('button')
-    btn.className = 'rd-btn rd-hacks__btn'
+    btn.className = 'rd-btn rd-notes__tipsbtn'
     btn.textContent = '💡 Check for more tips'
-    btn.addEventListener('click', () => addMoreHacks())
+    btn.addEventListener('click', () => addMoreTips())
     section.appendChild(btn)
   }
   return section
 }
 
-async function addMoreHacks() {
-  hacksLoading = true
-  const hacksSection = screenEl.querySelector('.rd-hacks')
-  const isOriginal   = activeTabId === 'original'
-  const av           = variants.find(v => v.id === activeTabId)
-  const currentHacks = (isOriginal ? recipe.hacks_and_shortcuts : av?.hacks_and_shortcuts) || []
+function buildNoteRow(text, i) {
+  const li = document.createElement('li')
+  li.className = 'rd-notes__item'
+  const span = document.createElement('span')
+  span.className = 'rd-notes__text'
+  span.textContent = text
+  span.title = 'Tap to edit'
+  span.addEventListener('click', () => startEditNote(li, text, i))
+  const del = document.createElement('button')
+  del.className = 'rd-notes__del'; del.textContent = '×'; del.title = 'Delete note'
+  del.addEventListener('click', async (e) => {
+    e.stopPropagation()
+    const next = (recipe.notes || []).slice(); next.splice(i, 1)
+    await saveNotes(next); rerenderNotes()
+  })
+  li.append(span, del)
+  return li
+}
 
-  if (hacksSection) {
-    hacksSection.replaceWith(buildHacks(currentHacks))
+function startEditNote(li, text, i) {
+  li.innerHTML = ''
+  li.classList.add('rd-notes__item--editing')
+  const inp = document.createElement('input')
+  inp.type = 'text'; inp.className = 'rd-notes__edit'; inp.value = text
+  let done = false
+  const commit = async () => {
+    if (done) return; done = true
+    const v = inp.value.trim()
+    const next = (recipe.notes || []).slice()
+    if (!v) next.splice(i, 1); else next[i] = v
+    await saveNotes(next); rerenderNotes()
   }
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); commit() }
+    if (e.key === 'Escape') { done = true; rerenderNotes() }
+  })
+  inp.addEventListener('blur', commit)
+  li.appendChild(inp)
+  requestAnimationFrame(() => inp.focus())
+}
 
+async function saveNotes(arr) {
+  recipe.notes = arr
+  const { error } = await supabase.from('recipes').update({ notes: arr }).eq('id', recipe.id)
+  if (error) toast('Save failed', { error: true })
+}
+
+function rerenderNotes() {
+  const old = screenEl.querySelector('.rd-notes')
+  if (old) old.replaceWith(buildNotes())
+}
+
+// AI may only ADD non-duplicate tips to the global notes — never edit/delete.
+async function addMoreTips() {
+  notesLoading = true
+  rerenderNotes()
+  const current = recipe.notes || []
   try {
-    const res  = await fetch(`${FUNCTIONS_URL}/recipe-agent`, {
+    const res = await fetch(`${FUNCTIONS_URL}/recipe-agent`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         action: 'add_more_hacks',
         recipe_name: recipe.name,
         original_instructions: recipe.original_instructions || '',
         ingredients: ingredients.map(i => ({ name: i.name, quantity: i.quantity, unit: i.unit, notes: i.notes })),
-        existing_hacks: currentHacks,
+        existing_hacks: current,
       }),
     })
     const data = await res.json()
-    const newHacks = data.new_hacks || []
-
-    if (newHacks.length) {
-      const merged = [...currentHacks, ...newHacks]
-      const table  = isOriginal ? 'recipes' : 'recipe_variants'
-      const id     = isOriginal ? recipe.id : activeTabId
-      await supabase.from(table).update({ hacks_and_shortcuts: merged }).eq('id', id)
-      if (isOriginal) recipe.hacks_and_shortcuts = merged
-      else if (av) av.hacks_and_shortcuts = merged
-      toast(`${newHacks.length} new tip${newHacks.length > 1 ? 's' : ''} added`)
+    const newTips = data.new_hacks || []
+    if (newTips.length) {
+      const merged = [...current, ...newTips]
+      await supabase.from('recipes').update({ notes: merged }).eq('id', recipe.id)
+      recipe.notes = merged
+      toast(`${newTips.length} new tip${newTips.length > 1 ? 's' : ''} added`)
     } else {
       toast("No new tips found — you've got them all!")
     }
   } catch {
     toast('Could not reach server', { error: true })
   } finally {
-    hacksLoading = false
-    const av2    = variants.find(v => v.id === activeTabId)
-    const hacks  = (activeTabId === 'original' ? recipe.hacks_and_shortcuts : av2?.hacks_and_shortcuts) || []
-    const newSec = buildHacks(hacks)
-    const oldSec = screenEl.querySelector('.rd-hacks')
-    if (oldSec) oldSec.replaceWith(newSec)
+    notesLoading = false
+    rerenderNotes()
   }
 }
 
@@ -624,39 +689,6 @@ async function savePreppedComponent(form) {
   if (contentEl) { const nc = buildContent(); nc.id = 'rd-content'; contentEl.replaceWith(nc) }
 }
 
-// ── Actions ───────────────────────────────────────────────
-function buildActions() {
-  const wrap = document.createElement('div')
-  wrap.className = 'rd-actions'
-  const row = document.createElement('div')
-  row.className = 'rd-actions__row'
-
-  const btnUse = document.createElement('button')
-  btnUse.className   = 'rd-btn'
-  btnUse.textContent = 'Use tonight'
-  btnUse.addEventListener('click', () => toast('Coming soon — use Chat to change a day'))
-
-  const btnSched = document.createElement('button')
-  btnSched.className   = 'rd-btn'
-  btnSched.textContent = 'Schedule…'
-  btnSched.addEventListener('click', () => toast('Coming soon'))
-
-  // Open-ended chat about this recipe (questions, not a saved variant) — distinct
-  // from the AI generation actions below. Same pre-fill pattern as the Plan card.
-  const btnDiscuss = document.createElement('button')
-  btnDiscuss.className = 'rd-btn'
-  btnDiscuss.textContent = '💬 Discuss'
-  btnDiscuss.title = 'Discuss this recipe'
-  btnDiscuss.addEventListener('click', () => {
-    navState.chatPrefill = `About ${recipe.name}: `
-    navigateTo('chat')
-  })
-
-  row.append(btnUse, btnSched, btnDiscuss)
-  wrap.append(row)
-  return wrap
-}
-
 async function makeDefault() {
   const newDefault = activeTabId === 'original' ? null : activeTabId
   const { error }  = await supabase.from('recipes').update({ default_variant_id: newDefault }).eq('id', recipe.id)
@@ -669,19 +701,11 @@ async function makeDefault() {
   if (contentEl) { const nc = buildContent(); nc.id = 'rd-content'; contentEl.replaceWith(nc) }
 }
 
-// ── AI actions ────────────────────────────────────────────
-function buildAIActions() {
-  const wrap = document.createElement('div')
-  wrap.className = 'rd-ai-actions'
-  wrap.appendChild(buildEasierAction())
-  wrap.appendChild(buildScaleAction())
-  return wrap
-}
-
-// Section label + unified button on one row; the input is revealed below only
+// ── Scale this recipe ─────────────────────────────────────
+// Section label + reveal button on one row; the input is revealed below only
 // once the button is tapped (matches the Inventory status-pill expansion). The
 // same button then runs the action once an input value is present.
-function buildRevealAction({ title, btnText, loadingText, inputHtml, getValue, run }) {
+function buildRevealAction({ title, btnText, iconHtml, btnClass, loadingText, inputHtml, getValue, run }) {
   const container = document.createElement('div')
   container.className = 'rd-ai-item'
 
@@ -691,8 +715,8 @@ function buildRevealAction({ title, btnText, loadingText, inputHtml, getValue, r
   titleEl.className = 'rd-ai-head__title'
   titleEl.textContent = title
   const btn = document.createElement('button')
-  btn.className = 'rd-btn'
-  btn.textContent = btnText
+  btn.className = btnClass || 'rd-btn'
+  if (iconHtml) btn.innerHTML = iconHtml; else btn.textContent = btnText
   head.append(titleEl, btn)
 
   const panel = document.createElement('div')
@@ -712,21 +736,13 @@ function buildRevealAction({ title, btnText, loadingText, inputHtml, getValue, r
   return container
 }
 
-function buildEasierAction() {
-  return buildRevealAction({
-    title: '✨ Suggest an easier version',
-    btnText: 'Generate',
-    loadingText: 'Thinking…',
-    inputHtml: `<textarea class="rd-ai-panel__input" rows="2" placeholder="What's the situation? e.g. didn't prep anything last night"></textarea>`,
-    getValue: p => p.querySelector('textarea').value.trim(),
-    run: v => runSuggestEasier(v),
-  })
-}
-
-function buildScaleAction() {
+// Outline send-icon (paper-plane) — same glyph as the Chat input, stroke-only.
+const SCALE_SEND_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5"/></svg>'
+function buildScaleSection() {
   return buildRevealAction({
     title: '📏 Scale this recipe',
-    btnText: 'Calculate',
+    iconHtml: SCALE_SEND_ICON,
+    btnClass: 'rd-scale-send',
     loadingText: 'Scaling…',
     inputHtml: `<input class="rd-ai-panel__input" type="text" placeholder="e.g. 8 people or double it">`,
     getValue: p => p.querySelector('input').value.trim(),
@@ -796,56 +812,6 @@ function buildScaleResult() {
 }
 
 // ── AI runners ────────────────────────────────────────────
-async function runSuggestEasier(constraint) {
-  const isOriginal = activeTabId === 'original'
-  const av         = variants.find(v => v.id === activeTabId) || null
-  const layers     = isOriginal ? recipe : av
-  try {
-    const res  = await fetch(`${FUNCTIONS_URL}/recipe-agent`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action:         'suggest_easier',
-        recipe_name:    recipe.name,
-        current_serves: isOriginal ? (recipe.serves_base ?? 4) : (av?.serves ?? recipe.serves_base ?? 4),
-        ingredients:    ingredients.map(i => ({ name: i.name, quantity: i.quantity, unit: i.unit, notes: i.notes })),
-        instructions:   { night_before: layers?.night_before, morning_of: layers?.morning_of, when_cooking: layers?.when_cooking, hacks_and_shortcuts: layers?.hacks_and_shortcuts },
-        constraint,
-      }),
-    })
-    const data = await res.json()
-    if (data.error) { toast('AI error — try again', { error: true }); return }
-
-    const { data: newVariant, error } = await supabase.from('recipe_variants')
-      .insert({ recipe_id: recipe.id, label: data.label, serves: data.serves,
-        night_before: data.night_before || [], morning_of: data.morning_of || [],
-        when_cooking: data.when_cooking || [], hacks_and_shortcuts: data.hacks_and_shortcuts || [],
-        notes: data.notes, created_by: 'ai' }).select().single()
-    if (error || !newVariant) { toast('Save failed', { error: true }); return }
-
-    const changes  = data.ingredient_changes || []
-    const removeSet = new Set(changes.filter(c => c.action === 'remove').map(c => c.name?.toLowerCase()))
-    const subMap2   = Object.fromEntries(changes.filter(c => c.action === 'substitute').map(c => [c.from?.toLowerCase(), c]))
-    const varIngRows = []
-    for (const ing of ingredients) {
-      const lc = ing.name.toLowerCase()
-      if (removeSet.has(lc)) continue
-      const s = subMap2[lc]
-      varIngRows.push({
-        variant_id: newVariant.id,
-        name:  s ? s.to : ing.name,
-        quantity: s?.quantity ?? ing.quantity, unit: s?.unit ?? ing.unit,
-        notes: s?.notes ?? ing.notes, category: ing.category, order_index: ing.order_index,
-      })
-    }
-    if (varIngRows.length) await supabase.from('recipe_variant_ingredients').insert(varIngRows)
-    toast('Variant created!')
-    variants = [...variants, newVariant]
-    await switchTab(newVariant.id)
-  } catch (e) {
-    console.error(e); toast('Something went wrong', { error: true })
-  }
-}
-
 async function runScaleRecipe(target) {
   const isOriginal = activeTabId === 'original'
   const av         = variants.find(v => v.id === activeTabId) || null

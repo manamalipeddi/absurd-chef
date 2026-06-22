@@ -84,7 +84,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'get_today_recipe',
-    description: "Get today's planned dinner with full recipe: ingredients, night_before / morning_of / when_cooking steps, hacks_and_shortcuts.",
+    description: "Get today's planned dinner with full recipe: ingredients, night_before / morning_of / when_cooking steps, and notes (tips/shortcuts).",
     input_schema: { type: 'object' as const, properties: {} },
   },
   {
@@ -354,7 +354,7 @@ async function toolGetPlan(input: Record<string, unknown>, db: DB) {
 async function toolGetTodayRecipe(db: DB) {
   const t = today()
   const { data } = await db.from('meal_plans')
-    .select('plan_date, meal_type, cook_source, guest_count, stash_item_id, recipes!meal_plans_recipe_id_fkey(id, name, emoji, protein, serves_base, original_instructions, night_before, morning_of, when_cooking, hacks_and_shortcuts, recipe_ingredients(name, quantity, unit, notes, order_index))')
+    .select('plan_date, meal_type, cook_source, guest_count, stash_item_id, recipes!meal_plans_recipe_id_fkey(id, name, emoji, protein, serves_base, original_instructions, night_before, morning_of, when_cooking, notes, recipe_ingredients(name, quantity, unit, notes, order_index))')
     .eq('plan_date', t).in('meal_type', ['dinner', 'lunch']).order('meal_type')
   if (!data?.length) return { message: 'No meal planned for today.' }
 
@@ -1012,7 +1012,9 @@ async function toolAddRecipe(input: Record<string, unknown>, db: DB) {
     if (layers.night_before || layers.when_cooking) {
       await db.from('recipes').update({
         night_before: layers.night_before || null, morning_of: layers.morning_of || null,
-        when_cooking: layers.when_cooking || null, hacks_and_shortcuts: layers.hacks_and_shortcuts || null,
+        when_cooking: layers.when_cooking || null,
+        // hacks_and_shortcuts retired → AI tips seed the global notes (new recipe).
+        notes: (layers.hacks_and_shortcuts && layers.hacks_and_shortcuts.length) ? layers.hacks_and_shortcuts : null,
       }).eq('id', newRec.id)
     }
   } catch (_) { /* layers optional */ }
