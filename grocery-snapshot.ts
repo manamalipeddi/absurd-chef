@@ -30,7 +30,15 @@ Deno.serve(async (req: Request) => {
     const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 
     const today = new Date().toISOString().slice(0, 10)
-    const end   = new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10)
+    // Fixed shopping horizon: today through the Wednesday of week 2 (the next
+    // Wednesday on/after today + 7 days). Anything later is covered by next
+    // week's order, which arrives Tue/Wed. No shelf-life math — just the cutoff
+    // that matches how the household actually shops. (The plan still runs 14
+    // days; only the grocery list has this shorter horizon.)
+    const cutoff = new Date(today + 'T12:00:00Z')
+    cutoff.setUTCDate(cutoff.getUTCDate() + 7)
+    cutoff.setUTCDate(cutoff.getUTCDate() + ((3 - cutoff.getUTCDay() + 7) % 7))   // 3 = Wednesday
+    const end = cutoff.toISOString().slice(0, 10)
 
     // 1. Ingredients needed by planned, home-cooked meals in the window.
     const { data: plan } = await db.from('meal_plans')
