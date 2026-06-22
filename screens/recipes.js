@@ -2,7 +2,7 @@ import { supabase, navigateTo, navState, mkFab } from '../app.js'
 
 // ── Section config ────────────────────────────────────────
 const SECTIONS = [
-  { type: 'breakfast',    label: 'Breakfast',       defaultEmoji: '🍳',  open: false },
+  { type: 'breakfast',    label: 'Breakfast',       defaultEmoji: '🍳',  open: true  },
   { type: 'lunch_dinner', label: 'Dinner/Lunch',    defaultEmoji: '🍽️', open: true  },
   { type: 'snack',        label: 'Snacks',           defaultEmoji: '🍎',  open: false },
   { type: 'special',      label: 'Special Occasion', defaultEmoji: '🎉',  open: false },
@@ -12,7 +12,7 @@ const SECTIONS = [
 let allRecipes      = []
 let inactiveRecipes = []
 let stashMap        = {}
-let todayPlanIds    = new Set()   // recipe ids planned (or logged) for today
+let nextPlanByRecipe = new Map()  // recipe_id → earliest upcoming plan_date
 let screenEl        = null
 let showInactive    = false
 let recipeSearch    = ''          // name filter across all sections
@@ -36,7 +36,7 @@ export async function activate({ headerLeft, headerRight }) {
 async function loadData() {
   const d = new Date()
   const todayStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-  const [recipeRes, inactiveRes, stashRes, todayRes] = await Promise.all([
+  const [recipeRes, inactiveRes, stashRes, upcomingRes] = await Promise.all([
     supabase.from('recipes')
       .select('id, name, meal_type, is_preferred, ease_descriptor, emoji, active, last_made, prep_time_min, cook_time_min')
       .eq('active', true).or('is_placeholder.is.null,is_placeholder.eq.false').order('name'),
@@ -45,17 +45,20 @@ async function loadData() {
       .eq('active', false).or('is_placeholder.is.null,is_placeholder.eq.false').order('name'),
     supabase.from('freezer_stash')
       .select('recipe_id, portions').eq('used', false),
+    // Upcoming scheduled slots (today forward), to compute each recipe's next
+    // planned date — regardless of actually_made.
     supabase.from('meal_plans')
-      .select('recipe_id, actual_recipe_id').eq('plan_date', todayStr),
+      .select('recipe_id, plan_date').gte('plan_date', todayStr)
+      .not('recipe_id', 'is', null).order('plan_date'),
   ])
 
   allRecipes      = recipeRes.data   || []
   inactiveRecipes = inactiveRes.data || []
 
-  todayPlanIds = new Set()
-  for (const row of (todayRes.data || [])) {
-    if (row.recipe_id)        todayPlanIds.add(row.recipe_id)
-    if (row.actual_recipe_id) todayPlanIds.add(row.actual_recipe_id)
+  // recipe_id → earliest upcoming plan_date (rows arrive ordered ascending).
+  nextPlanByRecipe = new Map()
+  for (const row of (upcomingRes.data || [])) {
+    if (!nextPlanByRecipe.has(row.recipe_id)) nextPlanByRecipe.set(row.recipe_id, row.plan_date)
   }
 
   stashMap = {}
@@ -225,8 +228,8 @@ function buildRow(recipe, fallbackEmoji) {
 
   const subParts = []
   if (recipe.ease_descriptor) subParts.push(recipe.ease_descriptor)
-  // If it's on today's plan, say so instead of the last-made text.
-  subParts.push(todayPlanIds.has(recipe.id) ? "in today's plan" : fmtLastMade(recipe.last_made))
+  // Forward-looking (next planned) wins over backward-looking (last served).
+  subParts.push(dateContextLabel(nextPlanByRecipe.get(recipe.id) || null, recipe.last_made))
   const active = fmtActiveTime(recipe.prep_time_min, recipe.cook_time_min)
   if (active) subParts.push(active)
   if (portions > 0)           subParts.push(`🧊 ${portions}`)
@@ -399,14 +402,35 @@ function buildHeart(recipe) {
 }
 
 // ── Helpers ───────────────────────────────────────────────
-// "made today" / "made 5 days ago" / "never made"
-function fmtLastMade(lastMade) {
-  if (!lastMade) return 'never made'
+// Forward- and backward-looking date context for a recipe card:
+//   next planned (wins) → "on the menu today" / "tomorrow" / "in X days"
+//   else last served    → "served yesterday" / "served X days/weeks/months ago"
+//   6+ months ago        → "pretend you never made it"
+//   neither              → "never made"
+function dateContextLabel(nextDate, lastMade) {
   const today = new Date(); today.setHours(0, 0, 0, 0)
-  const then = new Date(lastMade + 'T00:00:00')
-  const days = Math.round((today - then) / 86400000)
-  if (days <= 0) return 'made today'
-  return `made ${days} day${days === 1 ? '' : 's'} ago`
+
+  if (nextDate) {
+    const nd = new Date(nextDate + 'T00:00:00'); nd.setHours(0, 0, 0, 0)
+    const x = Math.round((nd - today) / 86400000)
+    if (x <= 0) return 'on the menu today'
+    if (x === 1) return 'tomorrow'
+    return `in ${x} days`
+  }
+
+  if (lastMade) {
+    const lm = new Date(lastMade + 'T00:00:00'); lm.setHours(0, 0, 0, 0)
+    const sixMonthsAgo = new Date(today); sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6)
+    if (lm < sixMonthsAgo) return 'pretend you never made it'
+    const d = Math.round((today - lm) / 86400000)
+    if (d <= 0) return 'served today'
+    if (d === 1) return 'served yesterday'
+    if (d <= 6) return `served ${d} days ago`
+    if (d <= 29) { const w = Math.round(d / 7); return `served ${w} week${w !== 1 ? 's' : ''} ago` }
+    const m = Math.round(d / 30); return `served ${m} month${m !== 1 ? 's' : ''} ago`
+  }
+
+  return 'never made'
 }
 
 // prep + cook combined active time; omit when neither is set.

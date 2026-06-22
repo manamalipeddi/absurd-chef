@@ -744,8 +744,12 @@ async function applyPick(date, slotType, recipeId, isActual, otherText) {
     })
   }
   if (error) { toast('Failed to save', { error: true }); return }
-  // Keep recipe recency truthful for no-repeat — but never for the placeholder.
-  if (recipeId && recipeId !== otherRecipe?.id) await supabase.from('recipes').update({ last_made: date }).eq('id', recipeId)
+  // last_made is updated ONLY when a recipe is logged as actually eaten
+  // (isActual) — never when planning a future day. (Bug fix: previously this
+  // fired on every pick, treating a scheduled future slot as "made".)
+  if (isActual && recipeId && recipeId !== otherRecipe?.id) {
+    await supabase.from('recipes').update({ last_made: date }).eq('id', recipeId)
+  }
   toast(isActual ? 'Logged' : 'Plan updated')
   await loadAndRender()
 }
