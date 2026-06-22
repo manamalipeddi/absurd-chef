@@ -172,7 +172,7 @@ async function loadAndRender() {
   // planned + actual recipe both reference recipes — disambiguate by FK.
   const planSelect =
     'plan_date, meal_type, recipe_id, slot_locked, is_commute_day, is_holiday, is_preschool_closed, guest_count, ' +
-    'notes, actually_made, actual_recipe_id, actual_notes, ' +
+    'notes, actually_made, actual_recipe_id, actual_notes, expiry_override, ' +
     'recipes!meal_plans_recipe_id_fkey(id, name, emoji, serves_base, is_placeholder), ' +
     'actual_recipe:recipes!meal_plans_actual_recipe_id_fkey(id, name, emoji, is_placeholder)'
 
@@ -557,6 +557,16 @@ function buildSlotRow(date, slot, entry, dayMeta, isPast = false) {
       ai.className = 'day-slot__ai'
       ai.textContent = 'AI'
       val.appendChild(ai)
+    }
+
+    // Expiry-override tag — this slot was chosen to use an ingredient before it
+    // expires. Full reason is in the day note.
+    if (entry.expiry_override) {
+      const tag = document.createElement('span')
+      tag.className = 'day-slot__expiry'
+      tag.textContent = '⏳ using before expiry'
+      tag.title = entry.notes || 'Chosen to use an ingredient before it expires'
+      val.appendChild(tag)
     }
 
     // Serving mismatch warning — only when there are guests that day

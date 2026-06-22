@@ -107,6 +107,7 @@ interface PlanDay {
   guest_count: number;
   stash_item_id: string | null;
   remap_log: object | null;
+  expiry_override?: boolean;
   notes: string | null;
 }
 
@@ -182,6 +183,8 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
     existingPlanRes,
     lockedSlotsRes,
     familyRes,
+    invExpiringRes,
+    recipeIngRes,
   ] = await Promise.all([
     supabase
       .from("recipes")
@@ -235,6 +238,18 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
       .from("family_members")
       .select("id, name, role, allergies, preferences")
       .eq("active", true),
+    // Inventory items expiring within the plan window (expiry-aware planning).
+    supabase
+      .from("inventory")
+      .select("name, food_category, expiry_date, quantity, status, master_ingredient_id")
+      .eq("active", true)
+      .not("expiry_date", "is", null)
+      .gte("expiry_date", startDate).lte("expiry_date", endDate)
+      .order("expiry_date"),
+    // Ingredient lists to match an expiring item to recipes that use it.
+    supabase
+      .from("recipe_ingredients")
+      .select("recipe_id, name, master_ingredient_id"),
   ]);
 
   return {
@@ -247,6 +262,8 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
     existingPlan: existingPlanRes.data || [],
     lockedSlots: lockedSlotsRes.data || [],
     family: familyRes.data || [],
+    inventoryExpiring: invExpiringRes.data || [],
+    recipeIngredients: recipeIngRes.data || [],
   };
 }
 
@@ -414,6 +431,46 @@ function buildPrompt(
     typically_restocked: !!(s as Record<string, unknown>).typically_restocked,
   }));
 
+  // ── Expiry-aware prioritisation: inventory expiring in-window + the active
+  //    recipes that could use each item, tagged with an urgency tier. ──
+  const recipeNameById = new Map((ctx.recipes as Recipe[]).map(r => [r.id, r.name]));
+  const activeRecipeIds = new Set((ctx.recipes as Recipe[]).map(r => r.id));
+  const byMaster = new Map<string, Set<string>>();
+  const ingRows: { n: string; recipe_id: string }[] = [];
+  for (const ri of (ctx.recipeIngredients as { recipe_id: string; name: string; master_ingredient_id: string | null }[])) {
+    if (!activeRecipeIds.has(ri.recipe_id)) continue;
+    if (ri.master_ingredient_id) {
+      if (!byMaster.has(ri.master_ingredient_id)) byMaster.set(ri.master_ingredient_id, new Set());
+      byMaster.get(ri.master_ingredient_id)!.add(ri.recipe_id);
+    }
+    ingRows.push({ n: (ri.name || "").toLowerCase(), recipe_id: ri.recipe_id });
+  }
+  const matchRecipes = (item: { name: string; master_ingredient_id: string | null }) => {
+    const ids = new Set<string>();
+    if (item.master_ingredient_id && byMaster.has(item.master_ingredient_id))
+      for (const id of byMaster.get(item.master_ingredient_id)!) ids.add(id);
+    const n = (item.name || "").toLowerCase();
+    const words = n.split(/[\s,-]+/).filter(w => w.length >= 4);
+    for (const ri of ingRows) {
+      if (ri.n === n || ri.n.includes(n) || n.includes(ri.n) || words.some(w => ri.n.includes(w))) ids.add(ri.recipe_id);
+    }
+    return [...ids].map(id => recipeNameById.get(id)).filter(Boolean).slice(0, 5);
+  };
+  const FISH_RE = /\b(fish|salmon|tuna|cod|prawn|shrimp|seafood|haddock|mackerel|sardine)\b/i;
+  const expiringIngredients = (ctx.inventoryExpiring as { name: string; food_category: string | null; expiry_date: string; quantity: number | null; status: string | null; master_ingredient_id: string | null }[])
+    .filter(it => !(Number(it.quantity) === 0 || it.status === "out"))   // skip empty
+    .map(it => {
+      const daysUntil = daysBetween(startDate, it.expiry_date);
+      const isMeatFish = it.food_category === "meat" || FISH_RE.test(it.name || "");
+      return {
+        name: it.name,
+        expires: it.expiry_date,
+        days_until: daysUntil,
+        urgency: (isMeatFish && daysUntil <= 2) ? "critical" : "standard",
+        matching_recipes: matchRecipes(it),
+      };
+    });
+
   return `You are AbsurdChef, an autonomous meal planning agent for a busy family.
 
 FAMILY
@@ -531,6 +588,24 @@ PLANNING RULES
 17. STORE-BOUGHT stash items (source = "store_bought") need no cooking instructions;
     treat them exactly like homemade stash for assignment. Keep cook_source
     "freezer_stash" and reference stash_item_id.
+18. EXPIRY PRIORITISATION — apply BEFORE normal template filling. The EXPIRING
+    INGREDIENTS list shows inventory expiring within the window, each with an
+    urgency tier and matching_recipes (active recipes that use it). Goal: consume
+    ingredients before they expire as a natural result of good planning.
+    - "critical" (meat/fish expiring within 2 days): HARD override, same
+      non-negotiability as allergens. Slot a matching recipe into the NEAREST
+      available dinner slot regardless of the template. Set "expiry_override":
+      true and write notes: "Critical — [item] expiring [date], template
+      overridden." (Note any preschool/template conflict in the text, but it does
+      NOT block the override.)
+    - "standard": soft preference. Try a COMPATIBLE template day first; if none
+      exists within the urgency window, override the nearest available slot. Set
+      "expiry_override": true with notes like "Using [item] (expires [date]) —
+      template override, [slot] moved to next available day."
+    - If matching_recipes is EMPTY, do NOT invent a recipe. Add the item to
+      "unresolved" with: "[item] expires [date] — no matching recipe found.
+      Consider adding one or swapping via the Absurd Chef."
+    - Any slot filled for a normal (non-expiry) reason keeps "expiry_override": false.
 
 WEEKLY TEMPLATE (dinner)
 ${JSON.stringify(ctx.template.filter((t: TemplateRule) => t.meal_type === "dinner"), null, 2)}
@@ -543,6 +618,9 @@ ${JSON.stringify(dateList, null, 2)}
 
 AVAILABLE RECIPES (safe for this household)
 ${JSON.stringify(recipeList, null, 2)}
+
+EXPIRING INGREDIENTS (in-window — see rule 18; empty list = nothing expiring)
+${JSON.stringify(expiringIngredients, null, 2)}
 
 FREEZER STASH (available now)
 ${JSON.stringify(stashList, null, 2)}
@@ -574,6 +652,7 @@ meal_type "lunch" for each day where needs_lunch = true (rule 1/8).
       "guest_count": 0,
       "stash_item_id": "uuid or null",
       "remap_log": null or {"reason": "...", "original_date": "...", "swapped_with": "..."},
+      "expiry_override": true/false,
       "notes": "one short plain-English sentence: WHY this recipe was chosen for this slot (see rule 14)"
     }
   ],
@@ -728,6 +807,7 @@ async function writePlan(
     cook_source: p.cook_source,
     stash_item_id: p.stash_item_id,
     remap_log: p.remap_log,
+    expiry_override: p.expiry_override === true,
     notes: p.notes,
     swap_reason: p.remap_log
       ? (p.remap_log as {reason?: string}).reason || null

@@ -492,6 +492,18 @@ body {
   flex-shrink: 0;
   line-height: 1.4;
 }
+.day-slot__expiry {
+  font-size: 10.6px;
+  font-weight: 600;
+  color: var(--primary);
+  background: var(--bg);
+  border: 1px solid var(--primary);
+  border-radius: 4px;
+  padding: 1px 6px;
+  flex-shrink: 0;
+  line-height: 1.4;
+  white-space: nowrap;
+}
 
 /* Discuss button (inline in context strip) */
 .day-card__discuss {
