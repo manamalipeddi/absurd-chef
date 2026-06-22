@@ -1224,26 +1224,11 @@ function buildLowStockRow(item, ruled) {
   name.className = 'pn-row__main pn-low-row__name'
   name.textContent = item.name
 
-  const right = document.createElement('div')
-  right.className = 'pn-low-row__right'
-
   const pill = document.createElement('span')
   pill.className = 'pn-status-pill pn-status-pill--low pn-low-row__pill'
   pill.textContent = STATUS_LABEL[item.status] || 'Out'
-  right.appendChild(pill)
 
-  const segs = []
-  if (item.last_updated_at) segs.push('updated ' + relTime(item.last_updated_at))
-  const ei = expiryInfo(item.expiry_date)
-  if (ei) segs.push(ei.text)
-  if (segs.length) {
-    const sub = document.createElement('span')
-    sub.className = 'pn-low-row__sub'
-    sub.textContent = segs.join(' · ')
-    right.appendChild(sub)
-  }
-
-  row.append(name, right)
+  row.append(name, pill)
   row.addEventListener('click', () => openInventoryForm(item.id, item.category || 'pantry'))
   return row
 }

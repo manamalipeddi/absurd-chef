@@ -3419,15 +3419,13 @@ body {
 .pn-grocery-row--tap { cursor: pointer; }
 .pn-grocery-row--tap:active { background: rgba(0,0,0,0.04); }
 
-/* Section 1 — Absurdly Low Stock: compact single row (name | pill · meta) */
-.pn-low-row { align-items: center; gap: 10px; min-height: 0; }
+/* Section 1 — Absurdly Low Stock: two elements only, name | status pill */
+.pn-low-row { align-items: center; justify-content: space-between; gap: 10px; min-height: 0; }
 .pn-low-row__name {
   flex: 1; min-width: 0; font-size: 14.8px; font-weight: 500; color: var(--text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.pn-low-row__right { flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
-.pn-low-row__pill { padding: 4px 10px; font-size: 11.7px; cursor: inherit; }
-.pn-low-row__sub { font-size: 11.4px; color: var(--text-muted); white-space: nowrap; }
+.pn-low-row__pill { flex-shrink: 0; padding: 4px 10px; font-size: 11.7px; cursor: inherit; }
 
 /* Section 2 — Absurd Plan Requirements (snapshot), in its own card */
 .pn-snapshot { margin-top: 4px; }
