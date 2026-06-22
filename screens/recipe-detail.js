@@ -258,8 +258,18 @@ function buildEase(av) {
   const section = document.createElement('div')
   section.className = 'rd-ease'
 
+  // Book-blurb style headline over the ease descriptor (same style as the
+  // Ingredients heading).
+  function easeHeading() {
+    const h = document.createElement('div')
+    h.className = 'rd-section__title'
+    h.textContent = "Manasa's Absurd Notes"
+    return h
+  }
+
   function renderRead() {
     section.innerHTML = ''
+    section.appendChild(easeHeading())
     const cur = getCurrent()
     const read = document.createElement('div')
     read.className = 'rd-ease-read'
@@ -279,6 +289,7 @@ function buildEase(av) {
 
   function renderEdit() {
     section.innerHTML = ''
+    section.appendChild(easeHeading())
     const row = document.createElement('div')
     row.className = 'rd-ease-row'
     const input = document.createElement('input')

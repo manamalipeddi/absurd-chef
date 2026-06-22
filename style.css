@@ -1304,6 +1304,7 @@ body {
 .rd-ease-text {
   font-size: 12.7px;
   font-weight: 500;
+  font-style: italic;       /* book-blurb feel */
   color: var(--text);
   line-height: 1.4;
 }
