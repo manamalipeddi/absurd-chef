@@ -1044,7 +1044,10 @@ async function loadGrocery() {
   const [{ data: invData }, { data: planData }, { data: activeMasterData }, { data: stashPlanData }] = await Promise.all([
     supabase.from('inventory').select('*').eq('active', true),
     supabase.from('meal_plans')
-      .select('plan_date, recipe_id, cook_source, meal_type, recipes(id, name, emoji, default_variant_id)')
+      // Disambiguate the recipes embed: meal_plans has TWO FKs to recipes
+      // (recipe_id + actual_recipe_id), so a bare recipes(...) embed errors
+      // (PGRST201) and silently returned no plan rows → empty "Needed" section.
+      .select('plan_date, recipe_id, cook_source, meal_type, recipes!meal_plans_recipe_id_fkey(id, name, emoji, default_variant_id)')
       .gte('plan_date', today).lte('plan_date', end)
       .not('recipe_id', 'is', null)
       .neq('meal_type', 'snack')   // snack is never planned — ignore any legacy rows
