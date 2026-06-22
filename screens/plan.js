@@ -446,14 +446,16 @@ function buildDayCard(day, opts = {}) {
 // Returns null when there's nothing to show. recipeIdForNav is null for Other.
 function slotDisplay(entry) {
   if (!entry) return null
-  if (entry.actually_made === false) {
-    const ar = entry.actual_recipe
-    if (entry.actual_recipe_id && ar) {
-      if (ar.is_placeholder) return { name: entry.actual_notes || 'Other', nav: null, actual: true }
-      return { name: ar.name, nav: entry.actual_recipe_id, actual: true }
-    }
-    if (entry.actual_notes) return { name: entry.actual_notes, nav: null, actual: true }
+  // A logged/swapped actual recipe wins over the planned one — shown whenever
+  // actual_recipe_id is set (manual swaps now mark actually_made = true; the
+  // chat "made something different" flow uses actually_made = false). The
+  // "actual" flag (the "instead" styling) only applies when it differs from plan.
+  const ar = entry.actual_recipe
+  if (entry.actual_recipe_id && ar) {
+    if (ar.is_placeholder) return { name: entry.actual_notes || 'Other', nav: null, actual: true }
+    return { name: ar.name, nav: entry.actual_recipe_id, actual: entry.actual_recipe_id !== entry.recipe_id }
   }
+  if (entry.actually_made === false && entry.actual_notes) return { name: entry.actual_notes, nav: null, actual: true }
   const r = entry.recipes
   if (entry.recipe_id && r) {
     if (r.is_placeholder) return { name: entry.notes || 'Other', nav: null, actual: false }
@@ -726,10 +728,14 @@ async function clearSlot(date, slotType) {
 async function applyPick(date, slotType, recipeId, isActual, otherText) {
   let error
   if (isActual) {
-    // Logging reality: actual_recipe_id (+ optional free text for "Other").
+    // Past/current manual pick = the strongest signal it was actually cooked:
+    // record the chosen recipe AND mark it made (true). Re-picking the same
+    // planned recipe is the natural "confirm as made" gesture. last_made updates
+    // below. (AI-driven remaps go through the plan-generator, which never sets
+    // actually_made — that distinction is preserved.)
     ;({ error } = await supabase.from('meal_plans').upsert({
       plan_date: date, meal_type: slotType,
-      actually_made: false, actual_recipe_id: recipeId, actual_notes: otherText,
+      actually_made: true, actual_recipe_id: recipeId, actual_notes: otherText,
     }, { onConflict: 'plan_date,meal_type' }))
   } else {
     // Changing the plan itself (future day): recipe_id + lock; reset any actuals.

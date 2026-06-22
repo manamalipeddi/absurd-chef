@@ -359,7 +359,10 @@ function buildPrompt(
   // Reads reality: if a past day was made differently, the actual recipe is
   // what counts against the no-repeat window — not the original plan.
   const recentlyUsed = ctx.existingPlan.map((p: {plan_date: string; actually_made: boolean | null; actual_recipe_id: string | null; planned: {name: string; is_placeholder?: boolean} | null; actual: {name: string; is_placeholder?: boolean} | null}) => {
-    const useActual = p.actually_made === false && p.actual_recipe_id;
+    // Whenever an actual recipe was recorded (a manual swap now also sets
+    // actually_made = true, the chat "made different" flow uses false), that's
+    // what was eaten and what counts against no-repeat — not the original plan.
+    const useActual = !!p.actual_recipe_id;
     const r = useActual ? p.actual : p.planned;
     // "Other" is excluded from no-repeat entirely.
     return { date: p.plan_date, name: (r && !r.is_placeholder) ? r.name : null };
