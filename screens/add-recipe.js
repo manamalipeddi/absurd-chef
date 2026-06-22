@@ -636,6 +636,15 @@ async function handleSave(form) {
   render()
 
   try {
+    // Read the STORED can_double before this edit is applied, so auto-scaling
+    // only fires on a genuine false->true transition (not on every save of an
+    // already-doubled recipe). Compares DB value vs new value, not form state.
+    let prevCanDouble = false
+    if (mode === 'edit') {
+      const { data: cur } = await supabase.from('recipes').select('can_double').eq('id', editRecipeId).single()
+      prevCanDouble = !!cur?.can_double
+    }
+
     let recipeId
     if (mode === 'add') {
       const { data: rec, error } = await supabase.from('recipes').insert(data).select('id').single()
@@ -677,12 +686,13 @@ async function handleSave(form) {
       await generateAndSaveLayers(recipeId, data.name, data.original_instructions, parsedIngs)
     }
 
-    // Auto-scale for can_double if brand new or newly toggled
-    if (data.can_double) {
-      const shouldAutoScale = mode === 'add' || (mode === 'edit' && !editSnapshot?.hadCanDouble)
-      if (shouldAutoScale) {
-        await autoScaleVariants(recipeId, data.name, data.serves_base || 4, parsedIngs)
-      }
+    // Auto-scale ONLY on a genuine transition to can_double = true: a brand-new
+    // recipe saved with it checked, or an edit where the stored value was false.
+    // An already-doubled recipe (prev true) never regenerates. (autoScaleVariants
+    // also skips any batch label that already exists, so no duplicates ever.)
+    const transitionedToDouble = !!data.can_double && (mode === 'add' || !prevCanDouble)
+    if (transitionedToDouble) {
+      await autoScaleVariants(recipeId, data.name, data.serves_base || 4, parsedIngs)
     }
 
     navState.recipeId = recipeId
@@ -725,20 +735,24 @@ async function generateAndSaveLayers(recipeId, recipeName, instructions, ings) {
 
 async function autoScaleVariants(recipeId, recipeName, currentServes, ings) {
   try {
-    const [r2, r3] = await Promise.all([
-      fetch(`${FUNCTIONS_URL}/recipe-agent`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'scale_recipe', recipe_name: recipeName,
-          current_serves: currentServes, ingredients: ings, target: '2x' }),
-      }).then(r => r.json()),
-      fetch(`${FUNCTIONS_URL}/recipe-agent`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'scale_recipe', recipe_name: recipeName,
-          current_serves: currentServes, ingredients: ings, target: '3x' }),
-      }).then(r => r.json()),
-    ])
+    // Never duplicate: only generate batch labels that don't already exist.
+    const { data: existingVars } = await supabase.from('recipe_variants')
+      .select('label').eq('recipe_id', recipeId)
+    const have = new Set((existingVars || []).map(v => v.label))
+    const targets = [['2x', '2x batch'], ['3x', '3x batch']].filter(([, label]) => !have.has(label))
+    if (!targets.length) return
 
-    for (const [scaleData, label] of [[r2, '2x batch'], [r3, '3x batch']]) {
+    const results = await Promise.all(targets.map(([target]) =>
+      fetch(`${FUNCTIONS_URL}/recipe-agent`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'scale_recipe', recipe_name: recipeName,
+          current_serves: currentServes, ingredients: ings, target }),
+      }).then(r => r.json())
+    ))
+
+    for (let k = 0; k < targets.length; k++) {
+      const scaleData = results[k]
+      const label = targets[k][1]
       if (!scaleData?.ingredients) continue
       const { data: nv } = await supabase.from('recipe_variants').insert({
         recipe_id: recipeId, label,
