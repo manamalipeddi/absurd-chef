@@ -642,8 +642,10 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB) {
   if (!rawText.trim()) return { error: 'No order text provided to parse.' }
 
   const [{ data: inv }, { data: masters }] = await Promise.all([
-    db.from('inventory').select('id, name, category, food_category, quantity, unit, master_ingredient_id')
-      .eq('active', true).order('name'),
+    // Include INACTIVE rows too: a purchased item that matches a deactivated row
+    // must reactivate it, never create a duplicate.
+    db.from('inventory').select('id, name, category, food_category, quantity, unit, master_ingredient_id, active')
+      .order('name'),
     db.from('master_ingredients').select('id, canonical_name, aliases')
       .eq('active', true).order('canonical_name'),
   ])
@@ -673,7 +675,7 @@ For EACH item output these fields:
 - master_ingredient_id: if the item confidently equals a master ingredient (by canonical_name or any alias), that id; else null.
 - match_uncertain (boolean), note (short string or null).
 
-EXISTING INVENTORY (active): ${JSON.stringify(inventory.map(i => ({ id: i.id, name: i.name, category: i.category })))}
+EXISTING INVENTORY (match against ALL of these, including currently-inactive items — a purchase reactivates a matched inactive row): ${JSON.stringify(inventory.map(i => ({ id: i.id, name: i.name, category: i.category })))}
 MASTER INGREDIENTS: ${JSON.stringify(masterList.map(m => ({ id: m.id, canonical_name: m.canonical_name, aliases: m.aliases })))}
 
 ORDER TEXT:
@@ -810,16 +812,19 @@ async function toolCommitGroceryImport(input: Record<string, unknown>, db: DB) {
   const restockIds = [...new Set(items
     .map(i => adjByIdx.get(i.idx)?.matched_inventory_id ?? i.matched_inventory_id)
     .filter(Boolean) as string[])]
-  const curQty = new Map<string, { quantity: number; unit: string | null; name: string; food_category: string }>()
+  // No active filter — an inactive matched row must be found (and reactivated),
+  // not skipped (which would insert a duplicate).
+  const curQty = new Map<string, { quantity: number; unit: string | null; name: string; food_category: string; active: boolean }>()
   if (restockIds.length) {
     const { data: rows } = await db.from('inventory')
-      .select('id, quantity, unit, name, food_category').in('id', restockIds).eq('active', true)
+      .select('id, quantity, unit, name, food_category, active').in('id', restockIds)
     for (const r of (rows || []) as Record<string, unknown>[])
-      curQty.set(r.id as string, { quantity: Number(r.quantity) || 0, unit: (r.unit as string) || null, name: r.name as string, food_category: (r.food_category as string) || 'other' })
+      curQty.set(r.id as string, { quantity: Number(r.quantity) || 0, unit: (r.unit as string) || null, name: r.name as string, food_category: (r.food_category as string) || 'other', active: r.active !== false })
   }
 
   const added: { name: string; quantity: number; category: string }[] = []
   const restocked: { name: string; from: number; to: number }[] = []
+  const reactivated: string[] = []   // inactive rows brought back by a purchase
   const skipped: { name: string; reason: string }[] = []
   const removed: string[] = []
   const leftover_notices: string[] = []
@@ -849,8 +854,11 @@ async function toolCommitGroceryImport(input: Record<string, unknown>, db: DB) {
       }
       const upd: Record<string, unknown> = { quantity: to }
       if (!cur.unit && item.package_size) upd.unit = item.package_size
+      // Buying it is an unambiguous signal it's relevant again → reactivate.
+      if (!cur.active) upd.active = true
       const { error } = await db.from('inventory').update(upd).eq('id', matchedId)
       if (error) { skipped.push({ name, reason: error.message }); continue }
+      if (!cur.active) { cur.active = true; reactivated.push(cur.name) }
       restocked.push({ name: cur.name, from: cur.quantity, to })
       cur.quantity = to   // in case two lines restock the same row
     } else {
@@ -871,8 +879,8 @@ async function toolCommitGroceryImport(input: Record<string, unknown>, db: DB) {
 
   return {
     success: true,
-    added, restocked, skipped, removed, leftover_notices,
-    summary: `${added.length} added, ${restocked.length} restocked${removed.length ? `, ${removed.length} removed` : ''}${skipped.length ? `, ${skipped.length} skipped` : ''}.`,
+    added, restocked, reactivated, skipped, removed, leftover_notices,
+    summary: `${added.length} added, ${restocked.length} restocked${reactivated.length ? `, ${reactivated.length} reactivated` : ''}${removed.length ? `, ${removed.length} removed` : ''}${skipped.length ? `, ${skipped.length} skipped` : ''}.`,
     note: leftover_notices.length ? 'Relay each leftover_notice to the user as a brief heads-up about using older perishable stock first.' : undefined,
   }
 }
