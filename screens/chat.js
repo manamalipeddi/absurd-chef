@@ -5,7 +5,6 @@ let listEl          = null
 let inputEl         = null
 let sendBtn         = null
 let busy            = false
-let historyLoaded   = false
 let oldestCreatedAt = null
 let loadMoreBtn     = null
 
@@ -56,10 +55,10 @@ export async function activate({ headerLeft, headerRight }) {
     requestAnimationFrame(() => inputEl.focus())
   }
 
-  if (!historyLoaded) {
-    historyLoaded = true
-    await loadHistory()
-  }
+  // Read the last messages from the DB on every mount, so a response that
+  // completed server-side while away shows up on return. Skip only while a send
+  // is in flight on this instance (the open stream is still updating the list).
+  if (!busy) await loadHistory()
 }
 
 // ── History loading ───────────────────────────────────────
@@ -181,20 +180,48 @@ async function sendMessage() {
   setSendState(false)
 
   appendBubble('user', text)
-  const typingEl = showTyping()
+  const statusEl = showStatus('Reading your message…')
+  const labelEl  = statusEl.querySelector('.chat-status__label')
+  let lastLabel  = 'Reading your message…'
+  const fail = (msg) => `Something went wrong while ${lastLabel.replace(/…$/, '').toLowerCase()}. ${msg}`
 
   try {
-    const res  = await fetch(`${FUNCTIONS_URL}/chat-agent`, {
+    const res = await fetch(`${FUNCTIONS_URL}/chat-agent`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ message: text }),
     })
-    const json = await res.json()
-    typingEl.remove()
-    appendBubble('assistant', json.reply || json.message || 'Something went wrong.')
+    if (!res.ok || !res.body) throw new Error('stream unavailable')
+
+    // Read the SSE stream: status events update the line in place; done carries
+    // the full reply; error carries a where-it-failed message.
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = '', replyText = null, errMsg = null, finished = false
+
+    while (!finished) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      let i
+      while ((i = buf.indexOf('\n\n')) >= 0) {
+        const dataLine = buf.slice(0, i).split('\n').find(l => l.startsWith('data:'))
+        buf = buf.slice(i + 2)
+        if (!dataLine) continue
+        let evt; try { evt = JSON.parse(dataLine.slice(5).trim()) } catch { continue }
+        if (evt.type === 'status') { lastLabel = evt.label; if (labelEl) labelEl.textContent = evt.label }
+        else if (evt.type === 'done')  { replyText = evt.text || 'Done.'; finished = true }
+        else if (evt.type === 'error') { errMsg = evt.message || fail('Try again.'); finished = true }
+      }
+    }
+
+    statusEl.remove()
+    if (replyText != null)   appendBubble('assistant', replyText)
+    else if (errMsg)         appendBubble('assistant', errMsg)
+    else                     appendBubble('assistant', fail('Try again — your changes may still have saved.'))
   } catch {
-    typingEl.remove()
-    appendBubble('assistant', 'Sorry, something went wrong. Try again.')
+    statusEl.remove()
+    appendBubble('assistant', fail('Try again or check the relevant tab.'))
     toast('Chat error', { error: true })
   } finally {
     busy = false
@@ -221,12 +248,16 @@ function appendBubble(role, text) {
   return wrap
 }
 
-function showTyping() {
+// Live status line: animated dots + an updating label, in the assistant
+// position. One line, replaced in place as each status event arrives.
+function showStatus(label) {
   const wrap = document.createElement('div')
-  wrap.className = 'chat-bubble chat-bubble--assistant'
-  wrap.innerHTML = `<div class="chat-bubble__inner chat-typing">
-    <span></span><span></span><span></span>
+  wrap.className = 'chat-bubble chat-bubble--assistant chat-status'
+  wrap.innerHTML = `<div class="chat-bubble__inner chat-status__inner">
+    <span class="chat-typing"><span></span><span></span><span></span></span>
+    <span class="chat-status__label"></span>
   </div>`
+  wrap.querySelector('.chat-status__label').textContent = label
   listEl.appendChild(wrap)
   scrollToBottom()
   return wrap
@@ -245,7 +276,10 @@ function renderText(text) {
 // ── UI helpers ────────────────────────────────────────────
 function setSendState(enabled) {
   if (sendBtn) sendBtn.disabled = !enabled
-  if (inputEl) inputEl.disabled = !enabled
+  if (inputEl) {
+    inputEl.disabled = !enabled
+    inputEl.placeholder = enabled ? 'How can Absurd Chef help you?' : 'Waiting for response…'
+  }
 }
 
 function scrollToBottom() {

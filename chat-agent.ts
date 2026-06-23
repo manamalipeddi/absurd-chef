@@ -1207,10 +1207,38 @@ async function dispatch(name: string, input: Record<string, unknown>, db: DB, us
 
 // ── Agent loop ────────────────────────────────────────────
 
+// Human-readable progress label for a tool call (shown as the live status line).
+function statusLabel(name: string, input: Record<string, unknown>): string {
+  switch (name) {
+    case 'get_plan':               return 'Checking the plan…'
+    case 'get_today_recipe':       return "Looking up today's recipe…"
+    case 'search_recipes':         return 'Searching recipes…'
+    case 'get_inventory':          return 'Checking your inventory…'
+    case 'get_freezer_stash':      return 'Checking the freezer stash…'
+    case 'get_prepped_components': return 'Checking prepped components…'
+    case 'check_substitutes':      return 'Finding substitutes…'
+    case 'get_family_context':     return 'Checking family details…'
+    case 'get_weekly_template':    return 'Reading the weekly template…'
+    case 'get_special_days':       return 'Checking the calendar…'
+    case 'get_commute_days':       return 'Checking commute days…'
+    case 'update_inventory_from_description': return 'Updating your stock…'
+    case 'import_grocery_order':   return 'Parsing order confirmation…'
+    case 'commit_grocery_import':  return 'Updating stock levels…'
+    case 'update_plan_slot':       return 'Updating the plan…'
+    case 'update_actual_outcome':  return 'Logging what you had…'
+    case 'use_stash_item':         return 'Updating the freezer stash…'
+    case 'add_recipe':             return `Adding ${(input?.name as string) || 'the recipe'}…`
+    case 'log_plan_edit':          return 'Saving the change…'
+    case 'trigger_replan':         return 'Regenerating the plan…'
+    default:                       return 'Working on it…'
+  }
+}
+
 async function runLoop(
   userMessage: string,
   history: { role: 'user' | 'assistant'; content: string }[],
   db: DB,
+  emit: (label: string) => void = () => {},
 ): Promise<{ reply: string; toolCalls: unknown[]; toolResults: unknown[] }> {
   const messages: Anthropic.MessageParam[] = [
     ...history.map(h => ({ role: h.role, content: h.content })),
@@ -1245,6 +1273,7 @@ async function runLoop(
 
     const toolResults: Anthropic.ToolResultBlockParam[] = []
     for (const block of toolUseBlocks) {
+      emit(statusLabel(block.name, block.input as Record<string, unknown>))
       const raw = await dispatch(block.name, block.input as Record<string, unknown>, db, userMessage)
       toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: raw })
       allToolResults.push({ tool: block.name, result: JSON.parse(raw) })
@@ -1300,18 +1329,41 @@ Deno.serve(async (req: Request) => {
       .limit(20)
     const history = (histRows || []).reverse() as { role: 'user' | 'assistant'; content: string }[]
 
-    const { reply, toolCalls, toolResults } = await runLoop(message.trim(), history, db)
+    // Server-Sent Events: emit a status event before each step of work, then a
+    // final `done` event carrying the full reply (the reply itself is NOT
+    // token-streamed). The function runs to completion server-side regardless of
+    // whether the client stays connected, so chat_history is always written.
+    const enc = new TextEncoder()
+    let lastLabel = 'Reading your message…'
+    const stream = new ReadableStream({
+      async start(controller) {
+        const send = (obj: Record<string, unknown>) => {
+          try { controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`)) } catch (_e) { /* client gone */ }
+        }
+        send({ type: 'status', label: lastLabel })
+        try {
+          const emit = (label: string) => { lastLabel = label; send({ type: 'status', label }) }
+          const { reply, toolCalls, toolResults } = await runLoop(message.trim(), history, db, emit)
 
-    // Distinct timestamps so the user message always sorts before its reply
-    // (a single batch insert would give both the same created_at default).
-    const nowMs = Date.now()
-    await db.from('chat_history').insert([
-      { role: 'user', content: message.trim(), created_at: new Date(nowMs).toISOString() },
-      { role: 'assistant', content: reply, tool_calls: toolCalls, tool_results: toolResults, created_at: new Date(nowMs + 1).toISOString() },
-    ])
+          // Distinct timestamps so the user message sorts before its reply.
+          const nowMs = Date.now()
+          await db.from('chat_history').insert([
+            { role: 'user', content: message.trim(), created_at: new Date(nowMs).toISOString() },
+            { role: 'assistant', content: reply, tool_calls: toolCalls, tool_results: toolResults, created_at: new Date(nowMs + 1).toISOString() },
+          ])
 
-    return new Response(JSON.stringify({ reply }), {
-      headers: { ...CORS, 'Content-Type': 'application/json' },
+          send({ type: 'done', text: reply })
+        } catch (err) {
+          console.error('chat-agent stream:', err)
+          send({ type: 'error', label: lastLabel, message: 'Something went wrong while ' + lastLabel.replace(/…$/, '').toLowerCase() + '. Try again or check the relevant tab.' })
+        } finally {
+          controller.close()
+        }
+      },
+    })
+
+    return new Response(stream, {
+      headers: { ...CORS, 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' },
     })
   } catch (err) {
     console.error('chat-agent:', err)

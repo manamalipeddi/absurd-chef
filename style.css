@@ -1711,7 +1711,7 @@ body {
   border-bottom-color: var(--text-on-page);
 }
 #chat-input::placeholder { color: var(--text-on-page-muted); }
-#chat-input:disabled { opacity: 0.5; }
+#chat-input:disabled { cursor: not-allowed; }
 
 #chat-send {
   width: 42px;
@@ -1730,7 +1730,7 @@ body {
 }
 #chat-send svg { width: 18px; height: 18px; }
 #chat-send:active  { transform: scale(0.92); }
-#chat-send:disabled { opacity: 0.4; cursor: default; transform: none; box-shadow: none; }
+#chat-send:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
 
 /* ── Chat bubbles ──────────────────────────────────────── */
 .chat-bubble {
@@ -1787,6 +1787,11 @@ body {
 }
 .chat-typing span:nth-child(2) { animation-delay: 0.2s; }
 .chat-typing span:nth-child(3) { animation-delay: 0.4s; }
+
+/* Live status line (dots + updating label) */
+.chat-status__inner { display: flex; align-items: center; gap: 8px; }
+.chat-status__inner .chat-typing { padding: 0; }
+.chat-status__label { font-size: 13.5px; color: var(--text-muted); }
 
 @keyframes typing-dot {
   0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
