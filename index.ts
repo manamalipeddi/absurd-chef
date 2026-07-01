@@ -9,6 +9,13 @@ const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY")!;
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
+// rolling_7 is written in small batches to stay well under the 150s Edge limit.
+// Each entry is a [startOffset, endOffset) slice of the 7-day next-week window,
+// so no invocation generates more than ~4 days. The Sunday cron fires one call
+// per batch (see supabase/migrations — weekly-rolling-plan-batch{1,2}).
+const ROLLING_BATCHES: Array<[number, number]> = [[0, 3], [3, 7]]; // days 1–3, then 4–7
+const TOTAL_ROLLING_BATCHES = ROLLING_BATCHES.length;
+
 // ── Planning rules ─────────────────────────────────────────────────────────
 // BREAKFAST AND SNACK ARE NEVER PLANNED BY THE AI.
 // Breakfast is decided same-day by Manasa based on energy/mood/freezer stash;
@@ -24,6 +31,10 @@ interface PlanRequest {
   days?: number;
   triggered_by?: "scheduled" | "manual";
   target_dates?: string[];
+  // rolling_7 only: which chunk of the next-week window to generate (1-based).
+  // The Sunday cron fires one call per batch so no single Edge invocation has to
+  // generate the whole week (which was blowing past the 150s limit).
+  batch?: number;
 }
 
 interface Recipe {
@@ -272,9 +283,16 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
 function buildPrompt(
   startDate: string,
   days: number,
-  ctx: Awaited<ReturnType<typeof fetchContext>>
+  ctx: Awaited<ReturnType<typeof fetchContext>>,
+  // Monday of the CURRENT week — the reference point for week-relative inventory
+  // (rule 16). Days on/after weekBase+7 are "week 2" (a full week of lead time).
+  // Defaults to startDate so full_14 / targeted keep their existing behaviour;
+  // batched rolling passes the original current-week Monday so a next-week batch
+  // is still correctly treated as week 2 even though it starts mid-window.
+  weekBase: string = startDate
 ): string {
   const endDate = addDays(startDate, days - 1);
+  const week2Boundary = addDays(weekBase, 7);
 
   // Collect allergens from household members only — guests are date-scoped, not global
   const allergens: string[] = [];
@@ -354,7 +372,7 @@ function buildPrompt(
       day_of_week: dow,
       day_name: ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][dow],
       is_vacation: !!ds?.is_vacation,            // overrides everything (rule 0)
-      week: i < 7 ? 1 : 2,                       // week-relative inventory (rule 16)
+      week: date >= week2Boundary ? 2 : 1,       // week-relative inventory (rule 16)
       is_commute: isCommute,
       kids_home: kidsHome,
       weekday_kids_home: kidsHome && dow >= 1 && dow <= 5,   // effort chain (rule 15)
@@ -471,7 +489,9 @@ function buildPrompt(
       };
     });
 
-  return `You are AbsurdChef, an autonomous meal planning agent for a busy family.
+  return `You must respond with valid JSON only. No preamble, no explanation, no prose. Your entire response must be parseable by JSON.parse(). If you cannot complete the task, return a JSON error object: {"error": "reason"}. Never return plain text under any circumstances.
+
+You are AbsurdChef, an autonomous meal planning agent for a busy family.
 
 FAMILY
 - 2 adults (Manasa, Gintas), 3 young children (Lara 6, Ari 3, Astrid 1)
@@ -674,7 +694,9 @@ meal_type "lunch" for each day where needs_lunch = true (rule 1/8).
       "reason": "plain English — e.g. double batch covers commute day on June 23"
     }
   ]
-}`;
+}
+
+IMPORTANT: Your response must be valid JSON only. Nothing else.`;
 }
 
 // ── Write plan to Supabase ─────────────────────────────────────────────────
@@ -687,6 +709,15 @@ async function writePlan(
   startDate?: string,
   vacationDates?: string[],
   daySettings?: DaySetting[],
+  // rolling_7 batching: the exact calendar days this invocation is responsible
+  // for. When set, every generated dinner in this window is written (the old
+  // "generate 14, keep days 8–14" slice no longer applies — the batch already
+  // generated only its own days).
+  windowDates?: string[],
+  // Monday of the CURRENT week — reference point for week-2 restock eligibility
+  // (rules 16b/17). Defaults to startDate; batched rolling passes the original
+  // current-week Monday so next-week batch days stay week-2 eligible.
+  weekBase?: string,
 ) {
   const MEALS = ["dinner", "lunch"];          // the planner writes these two
   const lockedKey = (d: string, m: string) => `${d}|${m}`;
@@ -715,7 +746,11 @@ async function writePlan(
   const dinnerDates = [...new Set(rowsAll.filter(p => p.meal_type === "dinner").map(p => p.date))].sort();
 
   let writeDates: Set<string>;
-  if (mode === "rolling_7") writeDates = new Set(dinnerDates.slice(7));   // days 8–14
+  if (windowDates?.length) {
+    // Batched rolling: write every generated dinner that falls in this batch.
+    const win = new Set(windowDates);
+    writeDates = new Set(dinnerDates.filter((d) => win.has(d)));
+  } else if (mode === "rolling_7") writeDates = new Set(dinnerDates.slice(7));   // days 8–14
   else if (mode === "targeted" && targetDates?.length) writeDates = new Set(targetDates);
   else writeDates = new Set(dinnerDates);
   // Never write a vacation day, even if the model mistakenly emits one.
@@ -725,7 +760,8 @@ async function writePlan(
   // portions > 0, BUT a typically_restocked item is also allowed in WEEK 2
   // (date >= startDate+7) even at portions 0 — the user has a week of lead time
   // to restock, and the need is surfaced on the Grocery List.
-  const week2From = startDate ? addDays(startDate, 7) : null;
+  const week2Base = weekBase ?? startDate;
+  const week2From = week2Base ? addDays(week2Base, 7) : null;
   const stashPlanItems = toWrite.filter(p => p.cook_source === "freezer_stash" && p.stash_item_id);
   if (stashPlanItems.length > 0) {
     const { data: stashRows } = await supabase.from("freezer_stash")
@@ -751,7 +787,9 @@ async function writePlan(
   // them (locked rows are still protected by the slot_locked guard below).
   let vacInWindow: string[] = [];
   if (vacSet.size > 0) {
-    if (mode === "targeted" && targetDates?.length) {
+    if (windowDates?.length) {
+      vacInWindow = [...vacSet].filter(d => windowDates.includes(d));
+    } else if (mode === "targeted" && targetDates?.length) {
       vacInWindow = [...vacSet].filter(d => targetDates.includes(d));
     } else if (startDate) {
       const winStart = mode === "rolling_7" ? addDays(startDate, 7) : startDate;
@@ -835,6 +873,56 @@ async function writePlan(
   }
 }
 
+// ── Extend day_settings forward ────────────────────────────────────────────
+// Keep the day_settings window covering at least 3 weeks ahead (current week +
+// 2 future weeks) so the planner always has per-day context to read. Runs at the
+// start of every invocation, before any planning decisions. Idempotent: it only
+// inserts the calendar days that don't already have a row, so re-running is a
+// no-op. Mirrors the SQL generate_series backfill, done in JS so the function
+// needs no extra DB routine.
+async function extendDaySettings(supabase: ReturnType<typeof createClient>) {
+  const today = new Date().toISOString().slice(0, 10);
+  const target = addDays(today, 21);                       // current + 2 future weeks
+
+  const { data: maxRow } = await supabase
+    .from("day_settings")
+    .select("day")
+    .order("day", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const maxDay = (maxRow as { day?: string } | null)?.day ?? null;
+  const start = maxDay ? addDays(maxDay, 1) : today;
+  if (start > target) return;                              // window already covers 3 weeks
+
+  // Belt-and-suspenders idempotency: skip any day that already has a row.
+  const { data: existing } = await supabase
+    .from("day_settings")
+    .select("day")
+    .gte("day", start)
+    .lte("day", target);
+  const have = new Set(((existing as { day: string }[]) || []).map((r) => r.day));
+
+  const rows: Array<Record<string, unknown>> = [];
+  for (let d = start; d <= target; d = addDays(d, 1)) {
+    if (have.has(d)) continue;
+    rows.push({
+      day: d,
+      is_commute_day: false,
+      kids_home: false,
+      gintas_away: false,
+      guest_count: 0,
+      is_vacation: false,
+    });
+  }
+
+  if (rows.length > 0) {
+    const { error } = await supabase.from("day_settings").insert(rows);
+    if (error) throw new Error(`day_settings extend failed: ${error.message}`);
+    console.log(`Extended day_settings by ${rows.length} day(s) through ${target}`);
+  }
+}
+
 // ── Main handler ───────────────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
@@ -873,6 +961,16 @@ Deno.serve(async (req: Request) => {
       .single();
     logId = logRow?.id ?? null;
 
+    // Before any planning: keep day_settings extended forward by (at least) a
+    // week, so the lookahead window always covers current + 2 future weeks. This
+    // replaces the missing Sunday-cron extension. Non-fatal — the planner falls
+    // back to read-time defaults if a day has no row.
+    try {
+      await extendDaySettings(supabase);
+    } catch (e) {
+      console.error("day_settings extension failed (non-fatal):", e);
+    }
+
     // targeted: scoped replan of specific dates only (from the Day Settings
     // grid). Window spans the requested dates; only those rows are written.
     const targetDates = (mode === "targeted" && Array.isArray(body.target_dates))
@@ -880,8 +978,8 @@ Deno.serve(async (req: Request) => {
       : undefined;
 
     // start_date is optional: when omitted (e.g. the scheduled Sunday rolling
-    // run) default to the Monday of the current week. With rolling_7 the
-    // generator writes days 8–14, i.e. it extends the plan into next week.
+    // run) default to the Monday of the current week. rolling_7 extends the plan
+    // into next week (start_date+7 … +13), generated in batches — see below.
     const start_date =
       (targetDates?.length ? targetDates[0] : body.start_date) ||
       getMondayOf(new Date().toISOString().slice(0, 10));
@@ -894,14 +992,42 @@ Deno.serve(async (req: Request) => {
       days = Math.min(14, Math.max(1, span));
     }
 
-    console.log(`Planning ${mode} from ${start_date} (${triggeredBy})`);
+    // rolling_7 batching: the next-week window (start_date+7 … start_date+13) is
+    // split into small chunks so no single invocation has to generate the whole
+    // week — one 14-day generation was the source of the 150s Edge timeouts.
+    // Each batch generates ONLY its own days (the DB already holds the current
+    // week + prior week, which fetchContext surfaces as recently_used for
+    // no-repeat / protein continuity).
+    let genStart = start_date;
+    let genDays = days;
+    let rollingBatch = 0;
+    let windowDates: string[] | undefined;
+
+    if (mode === "rolling_7") {
+      rollingBatch =
+        body.batch && body.batch >= 1 && body.batch <= TOTAL_ROLLING_BATCHES
+          ? body.batch
+          : 1;
+      const [offA, offB] = ROLLING_BATCHES[rollingBatch - 1];
+      const nextWeekStart = addDays(start_date, 7);
+      genStart = addDays(nextWeekStart, offA);
+      genDays = offB - offA;
+      windowDates = Array.from({ length: genDays }, (_, i) => addDays(genStart, i));
+    }
+
+    console.log(
+      `Planning ${mode} from ${genStart} for ${genDays} day(s)` +
+        (rollingBatch ? ` (batch ${rollingBatch}/${TOTAL_ROLLING_BATCHES})` : "") +
+        ` (${triggeredBy})`
+    );
 
     // 1. Fetch all context from DB
-    const ctx = await fetchContext(supabase, start_date, days);
+    const ctx = await fetchContext(supabase, genStart, genDays);
     console.log(`Context: ${ctx.recipes.length} recipes, ${ctx.stash.length} stash items`);
 
-    // 2. Build prompt
-    const prompt = buildPrompt(start_date, days, ctx);
+    // 2. Build prompt (weekBase = current-week Monday, so a next-week batch is
+    //    still labelled week 2 for inventory purposes)
+    const prompt = buildPrompt(genStart, genDays, ctx, start_date);
 
     // 3. Call Claude
     const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
@@ -917,6 +1043,10 @@ Deno.serve(async (req: Request) => {
         // worst-case generation time (and worker resource use) in check.
         model: "claude-sonnet-4-6",
         max_tokens: 11000,
+        system:
+          "You must respond with valid JSON only. No preamble, no explanation, no prose. " +
+          "Your entire response must be parseable by JSON.parse(). If you cannot complete the task, " +
+          'return a JSON error object: {"error": "reason"}. Never return plain text under any circumstances.',
         messages: [{ role: "user", content: prompt }],
       }),
     });
@@ -941,9 +1071,26 @@ Deno.serve(async (req: Request) => {
     try {
       result = JSON.parse(clean);
     } catch (_e) {
-      console.error("Plan JSON parse failed. First 500 chars:", clean.slice(0, 500));
-      throw new Error("The planner returned an unreadable response — please try again.");
+      // Log the actual Claude output to error_message so future failures show
+      // WHAT came back (prose, truncated JSON, an apology…), not just that it
+      // was "unreadable". Truncated to keep the log row a sane size.
+      const raw = (rawText || "").slice(0, 2000);
+      console.error("Plan JSON parse failed. Raw Claude response:", raw);
+      throw new Error(`The planner returned an unreadable (non-JSON) response. Raw Claude output: ${raw}`);
     }
+
+    // The prompt tells Claude to emit {"error": "..."} when it can't complete —
+    // surface that instead of crashing on a missing plan array.
+    if (result && (result as { error?: string }).error) {
+      throw new Error(`The planner reported it could not complete: ${(result as { error?: string }).error}`);
+    }
+    if (!result || !Array.isArray(result.plan)) {
+      const raw = (rawText || "").slice(0, 2000);
+      throw new Error(`The planner response had no "plan" array. Raw Claude output: ${raw}`);
+    }
+    // Tolerate a missing unresolved / stash_recommendations array.
+    result.unresolved = Array.isArray(result.unresolved) ? result.unresolved : [];
+    result.stash_recommendations = Array.isArray(result.stash_recommendations) ? result.stash_recommendations : [];
 
     console.log(
       `Plan: ${result.plan.length} days, ${result.unresolved.length} unresolved`
@@ -951,11 +1098,32 @@ Deno.serve(async (req: Request) => {
 
     // 5. Write plan to DB (skip & clear vacation days)
     const vacationDates = (ctx.daySettings as DaySetting[]).filter(d => d.is_vacation).map(d => d.day);
-    await writePlan(supabase, result.plan, mode, targetDates, start_date, vacationDates, ctx.daySettings as DaySetting[]);
+    await writePlan(supabase, result.plan, mode, targetDates, genStart, vacationDates, ctx.daySettings as DaySetting[], windowDates, start_date);
+
+    // Batched rolling_7 next-batch handoff:
+    //  • SCHEDULED runs rely on the two Sunday cron entries (batch 1 @ 06:00,
+    //    batch 2 @ 06:15) — they must NOT self-chain, or batch 2 would run twice.
+    //  • MANUAL "Plan Week N" has no cron to continue the chain, so it triggers
+    //    the next batch itself. Fire-and-forget (no await) so this invocation
+    //    still returns quickly and stays well under the 150s limit; waitUntil
+    //    keeps the instance alive just long enough to dispatch the request.
+    if (mode === "rolling_7" && triggeredBy === "manual" && rollingBatch < TOTAL_ROLLING_BATCHES) {
+      const fnUrl = `${SUPABASE_URL}/functions/v1/plan-generator`;
+      const next = fetch(fnUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}` },
+        body: JSON.stringify({ mode: "rolling_7", triggered_by: "manual", batch: rollingBatch + 1, start_date }),
+      }).catch((e) => console.error("rolling_7 next-batch trigger failed:", e));
+      (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime?.waitUntil?.(next);
+    }
 
     // After the Sunday cron run, build a fresh grocery snapshot so a shopping
-    // list is ready alongside the new plan (non-fatal if it fails).
-    if (triggeredBy === "scheduled") {
+    // list is ready alongside the new plan (non-fatal if it fails). For batched
+    // rolling_7 this must wait until the FINAL batch — otherwise batch 1 would
+    // snapshot a half-written week. Each batch is its own cron invocation, so
+    // earlier batches simply skip this.
+    const isFinalRollingBatch = mode !== "rolling_7" || rollingBatch >= TOTAL_ROLLING_BATCHES;
+    if (triggeredBy === "scheduled" && isFinalRollingBatch) {
       try {
         const fnUrl = `${Deno.env.get("SUPABASE_URL")}/functions/v1/grocery-snapshot`;
         await fetch(fnUrl, {
@@ -968,11 +1136,13 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // dinner rows are the only ones written; report that count
+    // dinner rows are the only ones written; report that count. Batched rolling_7
+    // now generates exactly the days it writes, so the old "generated 14, wrote 7"
+    // subtraction no longer applies — every generated dinner is a written day.
     const dinnerCount = result.plan.filter((p) => p.meal_type === "dinner").length;
     const daysPlanned = mode === "targeted"
       ? (targetDates?.length || 0)
-      : mode === "rolling_7" ? Math.max(0, dinnerCount - 7) : dinnerCount;
+      : dinnerCount;
 
     // Mark the log row succeeded.
     if (logId) {
