@@ -591,10 +591,24 @@ Return ONLY valid JSON, no other text:
 
   type UpdatedEntry = { name: string; quantity: number | null; unit: string | null }
   const updated: UpdatedEntry[] = []
+  // Atypical reconcile: load typical_quantity for the rows being updated. For an
+  // atypical item (typical = 0), a write that empties it (qty 0 / 'out') drops it
+  // out of inventory (active = false); any remaining stock marks it 'some'.
+  const updIds = updateItems.map(i => i.matched_id!).filter(Boolean)
+  const typicalById = new Map<string, number | null>()
+  if (updIds.length) {
+    const { data: trows } = await db.from('inventory').select('id, typical_quantity').in('id', updIds)
+    for (const r of (trows || []) as Record<string, unknown>[])
+      typicalById.set(r.id as string, r.typical_quantity == null ? null : Number(r.typical_quantity))
+  }
   for (const item of updateItems) {
-    const { error } = await db.from('inventory')
-      .update({ quantity: item.quantity ?? null, unit: item.unit ?? null })
-      .eq('id', item.matched_id!)
+    const upd: Record<string, unknown> = { quantity: item.quantity ?? null, unit: item.unit ?? null }
+    if (typicalById.get(item.matched_id!) === 0) {
+      const q = item.quantity
+      if (q == null || Number(q) <= 0) { upd.status = 'out'; upd.active = false }
+      else { upd.status = 'some' }
+    }
+    const { error } = await db.from('inventory').update(upd).eq('id', item.matched_id!)
     if (!error) updated.push({ name: item.name, quantity: item.quantity, unit: item.unit })
   }
 
@@ -814,12 +828,12 @@ async function toolCommitGroceryImport(input: Record<string, unknown>, db: DB) {
     .filter(Boolean) as string[])]
   // No active filter — an inactive matched row must be found (and reactivated),
   // not skipped (which would insert a duplicate).
-  const curQty = new Map<string, { quantity: number; unit: string | null; name: string; food_category: string; active: boolean }>()
+  const curQty = new Map<string, { quantity: number; unit: string | null; name: string; food_category: string; active: boolean; typical: number | null }>()
   if (restockIds.length) {
     const { data: rows } = await db.from('inventory')
-      .select('id, quantity, unit, name, food_category, active').in('id', restockIds)
+      .select('id, quantity, unit, name, food_category, active, typical_quantity').in('id', restockIds)
     for (const r of (rows || []) as Record<string, unknown>[])
-      curQty.set(r.id as string, { quantity: Number(r.quantity) || 0, unit: (r.unit as string) || null, name: r.name as string, food_category: (r.food_category as string) || 'other', active: r.active !== false })
+      curQty.set(r.id as string, { quantity: Number(r.quantity) || 0, unit: (r.unit as string) || null, name: r.name as string, food_category: (r.food_category as string) || 'other', active: r.active !== false, typical: r.typical_quantity == null ? null : Number(r.typical_quantity) })
   }
 
   const added: { name: string; quantity: number; category: string }[] = []
@@ -856,6 +870,8 @@ async function toolCommitGroceryImport(input: Record<string, unknown>, db: DB) {
       if (!cur.unit && item.package_size) upd.unit = item.package_size
       // Buying it is an unambiguous signal it's relevant again → reactivate.
       if (!cur.active) upd.active = true
+      // Atypical item (typical = 0) restocked → it has stock again, mark 'some'.
+      if (cur.typical === 0 && to > 0) upd.status = 'some'
       const { error } = await db.from('inventory').update(upd).eq('id', matchedId)
       if (error) { skipped.push({ name, reason: error.message }); continue }
       if (!cur.active) { cur.active = true; reactivated.push(cur.name) }
@@ -976,19 +992,6 @@ async function toolAddRecipe(input: Record<string, unknown>, db: DB) {
     meal_type?: string; protein?: string; style?: string; cooking_method?: string; serves_base?: number
   }
 
-  // Dedup guard: never create a second recipe with a name we already have.
-  // Reuse the existing active one instead (case-insensitive, trimmed match).
-  const trimmedName = (name || '').trim()
-  const { data: existingRecipes } = await db.from('recipes')
-    .select('id, name')
-    .ilike('name', trimmedName)
-    .eq('active', true)
-    .or('is_placeholder.is.null,is_placeholder.eq.false')
-    .limit(1)
-  if (existingRecipes && existingRecipes.length) {
-    return { success: true, recipe_id: existingRecipes[0].id, name: existingRecipes[0].name, already_existed: true }
-  }
-
   // Only the four section values are valid; map anything else (incl. a natural
   // "dinner"/"dessert"/"kids" guess) so the recipe shows on the Recipes tab.
   const mt = String(meal_type || '').toLowerCase().trim()
@@ -998,16 +1001,54 @@ async function toolAddRecipe(input: Record<string, unknown>, db: DB) {
     : (mt === 'special' || mt === 'dessert') ? 'special'
     : 'lunch_dinner'
 
-  const { data: newRec, error } = await db.from('recipes').insert({
+  const recipeFields = {
     name, original_instructions, meal_type: normalizedMealType,
     protein: protein || null, style: style || null,
     cooking_method: cooking_method || null, serves_base: serves_base || 4, active: true,
-  }).select('id').single()
-  if (error || !newRec) return { success: false, error: error?.message }
+  }
+
+  // Dedup guard: look for an existing active, non-placeholder recipe by name.
+  const trimmedName = (name || '').trim()
+  const { data: existingRecipes } = await db.from('recipes')
+    .select('id, name, original_instructions')
+    .ilike('name', trimmedName)
+    .eq('active', true)
+    .or('is_placeholder.is.null,is_placeholder.eq.false')
+    .limit(5)
+
+  let recipeId: string
+  let populatedExisting = false
+
+  if (existingRecipes && existingRecipes.length) {
+    // A real duplicate (has instructions) → reuse it, don't regenerate.
+    const withContent = existingRecipes.find(r => (r.original_instructions || '').trim())
+    if (withContent) {
+      return { success: true, recipe_id: withContent.id, name: withContent.name, already_existed: true }
+    }
+    // No match has instructions. If the first match is an empty name-only stub
+    // (no instructions AND no ingredients) — the case where a recipe was created
+    // shell-first — fill it IN PLACE, keeping its id and any plan slots, instead
+    // of silently no-op'ing as "already added" (which left it blank).
+    const stub = existingRecipes[0]
+    const { count: ingCount } = await db.from('recipe_ingredients')
+      .select('id', { count: 'exact', head: true })
+      .eq('recipe_id', stub.id)
+    if (ingCount) {
+      // Has ingredients but no instructions — unusual; treat as a real recipe.
+      return { success: true, recipe_id: stub.id, name: stub.name, already_existed: true }
+    }
+    await db.from('recipes').update(recipeFields).eq('id', stub.id)
+    recipeId = stub.id
+    populatedExisting = true
+  } else {
+    const { data: newRec, error } = await db.from('recipes').insert(recipeFields).select('id').single()
+    if (error || !newRec) return { success: false, error: error?.message }
+    recipeId = newRec.id
+  }
 
   await db.from('recipe_ingredients').insert(
     ingredients.map((ing, i) => ({
-      recipe_id: newRec.id, name: ing.name,
+      recipe_id: recipeId, name: ing.name,
       quantity: ing.quantity ?? null, unit: ing.unit ?? null,
       notes: ing.notes ?? null, order_index: i + 1,
     }))
@@ -1027,11 +1068,11 @@ async function toolAddRecipe(input: Record<string, unknown>, db: DB) {
         when_cooking: layers.when_cooking || null,
         // hacks_and_shortcuts retired → AI tips seed the global notes (new recipe).
         notes: (layers.hacks_and_shortcuts && layers.hacks_and_shortcuts.length) ? layers.hacks_and_shortcuts : null,
-      }).eq('id', newRec.id)
+      }).eq('id', recipeId)
     }
   } catch (_) { /* layers optional */ }
 
-  return { success: true, recipe_id: newRec.id, name }
+  return { success: true, recipe_id: recipeId, name, populated_existing: populatedExisting }
 }
 
 async function toolLogPlanEdit(input: Record<string, unknown>, db: DB) {

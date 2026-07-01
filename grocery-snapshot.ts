@@ -17,7 +17,7 @@ const CORS = {
   'Access-Control-Allow-Headers': 'content-type',
 }
 
-const LOW = new Set(['out', 'very_low', 'low'])
+const LOW = new Set(['out', 'very_low', 'some'])
 
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS })

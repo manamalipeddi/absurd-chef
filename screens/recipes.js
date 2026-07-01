@@ -120,6 +120,15 @@ function renderRecipeList(listEl) {
     hasAny = true
     listEl.appendChild(buildSection(section, recipes, !!q))
   }
+  // While searching, surface matching INACTIVE recipes (dimmed) so they're
+  // findable — tapping opens the detail screen (which offers Reactivate).
+  if (q) {
+    const inactiveHits = inactiveRecipes.filter(r => (r.name || '').toLowerCase().includes(q))
+    if (inactiveHits.length) {
+      hasAny = true
+      listEl.appendChild(buildInactiveSearchGroup(inactiveHits))
+    }
+  }
   if (!hasAny) {
     const wrap = document.createElement('div')
     wrap.className = 'placeholder-wrap'
@@ -292,6 +301,49 @@ function buildInactiveRow(recipe) {
 
   row.append(emojiEl, centre, btn)
   return row
+}
+
+// Inactive recipes surfaced in search results: dimmed, "Inactive" tag, tap opens
+// the detail screen (which shows the reactivate banner). No inline Reactivate
+// button here — that lives in the footer's manage list and on the detail screen.
+function buildInactiveSearchGroup(recipes) {
+  const wrap = document.createElement('div')
+  wrap.className = 'recipe-section'
+  const label = document.createElement('div')
+  label.className = 'section-label'
+  label.textContent = 'Inactive'
+  wrap.appendChild(label)
+  const card = document.createElement('div')
+  card.className = 'card'
+  card.style.margin = '0 16px 8px'
+  recipes.forEach((recipe, i) => {
+    const row = document.createElement('div')
+    row.className = 'recipe-row recipe-row--inactive' + (i < recipes.length - 1 ? ' recipe-row--ruled' : '')
+    row.style.cursor = 'pointer'
+    const emojiEl = document.createElement('div')
+    emojiEl.className = 'recipe-row__emoji'
+    emojiEl.setAttribute('aria-hidden', 'true')
+    emojiEl.textContent = recipe.emoji || '🍽️'
+    const centre = document.createElement('div')
+    centre.className = 'recipe-row__centre'
+    const name = document.createElement('span')
+    name.className = 'recipe-row__name'
+    name.textContent = recipe.name
+    centre.appendChild(name)
+    const tag = document.createElement('span')
+    tag.className = 'inactive-tag'
+    tag.textContent = 'Inactive'
+    row.append(emojiEl, centre, tag)
+    row.addEventListener('click', () => {
+      navState.recipeId = recipe.id
+      navState.recipeFrom = 'recipes'
+      navState.scrollRecipes = screenEl?.scrollTop ?? 0
+      navigateTo('recipe-detail')
+    })
+    card.appendChild(row)
+  })
+  wrap.appendChild(card)
+  return wrap
 }
 
 // ── Dots / dropdown ───────────────────────────────────────

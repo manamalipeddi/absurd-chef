@@ -293,6 +293,42 @@ body {
   animation: toast-in 0.2s ease;
 }
 .toast--error { background: #b91c1c; }
+/* Toast with a trailing action (e.g. Undo): text · button, on one line. */
+.toast:has(.toast__action) { display: flex; align-items: center; gap: 8px; }
+/* Centered action toast — mirrors the action sheet. Appended to <body>, so it
+   centers against the viewport; pointer-events:auto makes the button tappable
+   (the bottom toast container is pointer-events:none). */
+.toast--center {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 200;
+  width: calc(100% - 32px);
+  max-width: 360px;
+  justify-content: center;
+  text-align: center;
+  pointer-events: auto;
+  animation: toast-center-in 0.18s ease;
+}
+@keyframes toast-center-in {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(0.96); }
+  to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+.toast__sep { color: rgba(255,255,255,0.4); }
+.toast__action {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font-family: var(--font);
+  font-size: 14.8px;
+  font-weight: 700;
+  color: #fca5a5;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.toast__action:active { opacity: 0.6; }
 @keyframes toast-in {
   from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: translateY(0); }
@@ -810,6 +846,56 @@ body {
 .picker-other .picker-search { margin: 0; }
 .picker-other__save { width: 100%; }
 
+/* ── Contextual action sheet (centered) ──────────────────── */
+/* Revealed by long-press / right-click for destructive row actions. Centered
+   card, matching the app's other modals; reuses the openModal overlay/history
+   wiring. user-select/callout are disabled so a sustained press can't trigger
+   iOS text selection on the sheet's own labels. */
+.act-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  z-index: 300;
+  display: flex;
+  align-items: center;          /* centered, not bottom-anchored */
+  justify-content: center;
+  padding: 16px;
+}
+.act-sheet {
+  width: 100%;
+  max-width: 360px;
+  margin: 0;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  animation: act-sheet-in 0.18s ease;
+}
+@keyframes act-sheet-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.act-sheet__btn {
+  width: 100%;
+  padding: 15px 16px;
+  border: none;
+  border-radius: 14px;
+  background: var(--surface);
+  font-family: var(--font);
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.12);
+}
+.act-sheet__btn:active { background: var(--bg); }
+.act-sheet__btn--danger { color: #b91c1c; }
+.act-sheet__btn--danger:active { background: #fee2e2; }
+.act-sheet__btn--cancel { color: var(--text); font-weight: 700; }
+
 /* Guest fork body scrolls within the centered modal */
 .ds-fork__body { flex: 1; min-height: 0; }
 
@@ -966,6 +1052,57 @@ body {
 }
 .recipe-row--inactive:active { background: transparent; }
 .recipe-row--inactive .recipe-row__name { color: var(--text-muted); }
+
+/* ── Inactive-in-search treatment (shared across search surfaces) ──────────
+   Inactive items surface in search results so they're findable (preventing
+   duplicates), but are visually distinct: dimmed name + a small "Inactive"
+   tag, never a status pill. */
+.inactive-tag {
+  flex-shrink: 0;
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  opacity: 0.7;
+  white-space: nowrap;
+}
+.is-inactive-name { opacity: 0.55; }
+/* A name + Inactive tag sitting on one line. */
+.pn-inactive-line { display: flex; align-items: baseline; min-width: 0; }
+.pn-inv-item--inactive .pn-inv-tap { cursor: pointer; }
+.picker-row--inactive .picker-row__name { opacity: 0.55; }
+.picker-row--inactive { cursor: default; }
+
+/* Banner shown atop an edit/detail screen reached for an inactive item. */
+.reactivate-banner {
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--primary-bg);
+  color: var(--primary);
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.rd-reactivate {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.rd-reactivate__btn {
+  flex-shrink: 0;
+  padding: 7px 16px;
+  border: none;
+  border-radius: 999px;
+  background: var(--primary);
+  color: #fff;
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
 
 .recipe-row__dots {
   width: 36px;
@@ -2481,6 +2618,28 @@ body {
   padding-right: 32px;
 }
 .su-select:focus { outline: none; border-color: var(--primary); }
+/* Button that looks like a select but opens a searchable picker sheet. */
+.pn-picker-btn {
+  width: 100%;
+  padding: 8px 32px 8px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font);
+  font-size: 13.8px;
+  color: var(--text);
+  background: var(--surface);
+  box-sizing: border-box;
+  -webkit-appearance: none;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23746e6d' stroke-width='2'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='m19 9-7 7-7-7'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 16px;
+}
+.pn-picker-btn:active { border-color: var(--primary); }
+.pn-picker-btn--empty { color: var(--text-muted); }
 .su-sel-sm {
   padding: 5px 28px 5px 8px;
   border: 1px solid var(--border);
@@ -3202,7 +3361,16 @@ body {
 .pn-expiry-past { color: #dc2626; font-weight: 600; }
 
 /* ── Inventory compact row + quick-adjust ─────────────────── */
-.pn-inv-item { display: flex; flex-direction: column; }
+/* Disable the native long-press behaviour (text selection + callout, and the
+   extra haptic that comes with it on iOS) so the deactivate long-press is the
+   only thing that fires. */
+.pn-inv-item {
+  display: flex;
+  flex-direction: column;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
 .pn-inv-row { align-items: center; gap: 8px; cursor: default; }
 .pn-inv-tap { flex: 1; min-width: 0; cursor: pointer; }
 .pn-inv-name { font-size: 14.8px; font-weight: 600; }
@@ -3259,9 +3427,18 @@ body {
 }
 .pn-status-pill--open { border-color: var(--primary); color: var(--primary); }
 .pn-status-pill:active { background: var(--primary-bg); }
-/* Low-stock pills (out / very low / low): same as a regular pill, just a
+/* Low-stock pills (out / very low / some): same as a regular pill, just a
    darker green border to mark them out. */
 .pn-status-pill--low { border-color: var(--primary); }
+/* Atypical stock (typical_quantity = 0) at status 'some': amber outline pill —
+   distinguishes a one-off item that has stock from a regular low-stock item.
+   Same radius as every other pill; only border/background/text change. */
+.pn-status-pill--atypical {
+  border: 1.5px solid #D4A017;
+  background: transparent;
+  color: #D4A017;
+}
+.pn-status-pill--atypical:active { background: rgba(212, 160, 23, 0.10); }
 
 /* Expanded 2×3 status grid below the row */
 .pn-status-grid {

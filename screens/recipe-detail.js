@@ -76,7 +76,7 @@ export async function activate({ headerLeft, headerRight }) {
 async function loadAll(recipeId) {
   const [recipeRes, variantsRes, pcRes] = await Promise.all([
     supabase.from('recipes')
-      .select('id,name,emoji,meal_type,ease_descriptor,serves_base,default_variant_id,night_before,morning_of,when_cooking,notes,original_instructions,protein,cooking_method,can_double')
+      .select('id,name,emoji,meal_type,ease_descriptor,serves_base,default_variant_id,night_before,morning_of,when_cooking,notes,original_instructions,protein,cooking_method,can_double,active')
       .eq('id', recipeId).single(),
     supabase.from('recipe_variants').select('*').eq('recipe_id', recipeId).order('created_at'),
     supabase.from('prepped_components').select('*').eq('recipe_id', recipeId).eq('active', true).order('made_date', { ascending: false }),
@@ -126,11 +126,34 @@ function renderAll() {
 
   const root = document.createElement('div')
   root.className = 'rd'
+  if (recipe.active === false) root.appendChild(buildReactivateBanner())
   root.appendChild(buildInfo())
   const content = buildContent()
   content.id = 'rd-content'
   root.appendChild(content)
   screenEl.appendChild(root)
+}
+
+// Shown when an inactive recipe is opened (e.g. via search). One tap reactivates
+// it and re-renders without the banner.
+function buildReactivateBanner() {
+  const banner = document.createElement('div')
+  banner.className = 'reactivate-banner rd-reactivate'
+  const txt = document.createElement('span')
+  txt.textContent = 'This recipe is inactive.'
+  const btn = document.createElement('button')
+  btn.className = 'rd-reactivate__btn'
+  btn.textContent = 'Reactivate'
+  btn.addEventListener('click', async () => {
+    btn.disabled = true
+    const { error } = await supabase.from('recipes').update({ active: true }).eq('id', recipe.id)
+    if (error) { toast('Reactivate failed', { error: true }); btn.disabled = false; return }
+    recipe.active = true
+    toast('Recipe reactivated')
+    renderAll()
+  })
+  banner.append(txt, btn)
+  return banner
 }
 
 async function switchTab(tabId) {

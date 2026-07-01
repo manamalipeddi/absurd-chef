@@ -38,7 +38,7 @@ const mealTypeLabel = (mt) => MEAL_TYPE_LABEL[mt] || 'Other'
 function buildPickerPool(slotType) {
   const primaryLabel = mealTypeLabel(RECIPE_CATEGORY[slotType])
   const orderIdx = (mt) => { const i = MEAL_TYPE_ORDER.indexOf(mt); return i === -1 ? MEAL_TYPE_ORDER.length : i }
-  return allRecipes.filter(r => !r.is_placeholder).slice().sort((a, b) => {
+  return allRecipes.filter(r => !r.is_placeholder && r.active !== false).slice().sort((a, b) => {
     const ap = mealTypeLabel(a.meal_type) === primaryLabel ? 0 : 1
     const bp = mealTypeLabel(b.meal_type) === primaryLabel ? 0 : 1
     if (ap !== bp) return ap - bp
@@ -189,8 +189,7 @@ async function loadAndRender() {
       .gte('day', histFrom).lte('day', endDate),
     supabase
       .from('recipes')
-      .select('id, name, meal_type, emoji, is_placeholder')
-      .eq('active', true)
+      .select('id, name, meal_type, emoji, is_placeholder, active')
       .order('name'),
     supabase
       .from('family_members')
@@ -680,6 +679,18 @@ function showPicker(date, slotType) {
       list.appendChild(pickRow(r.emoji || slotEmoji(slotType), display, async () => {
         closeModal(overlay); await applyPick(date, slotType, r.id, isActual, null)
       }))
+    }
+    // While searching, surface matching INACTIVE recipes so the user can see the
+    // recipe already exists — but they're not selectable into a plan slot.
+    if (lq) {
+      const inactiveHits = allRecipes.filter(r => !r.is_placeholder && r.active === false && r.name.toLowerCase().includes(lq))
+      for (const r of inactiveHits) {
+        const row = document.createElement('button')
+        row.className = 'picker-row picker-row--inactive'
+        row.innerHTML = `<span class="picker-row__emoji" aria-hidden="true">${r.emoji || slotEmoji(slotType)}</span><span class="picker-row__name">${r.name}</span><span class="inactive-tag">Inactive</span>`
+        row.addEventListener('click', () => toast('Reactivate this recipe in the Recipes tab to use it in the plan'))
+        list.appendChild(row)
+      }
     }
     // "Other" is always present, regardless of search term or meal_type.
     if (otherRecipe) {

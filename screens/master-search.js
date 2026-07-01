@@ -8,8 +8,10 @@ const norm = s => String(s || '').toLowerCase().trim()
 // defaultCat seeds default_category for a newly created ingredient. Not
 // auto-focused (consistent with the recipe picker).
 export async function openMasterSearch(query, defaultCat, onPick) {
+  // Load all masters (incl. inactive) so a search can surface an existing
+  // inactive vocabulary entry instead of prompting a duplicate "create new".
   const { data } = await supabase.from('master_ingredients')
-    .select('id, canonical_name, aliases').eq('active', true).order('canonical_name')
+    .select('id, canonical_name, aliases, active').order('canonical_name')
   const masters = data || []
 
   const overlay = document.createElement('div'); overlay.className = 'picker-overlay'
@@ -24,18 +26,23 @@ export async function openMasterSearch(query, defaultCat, onPick) {
   search.value = query || ''
   const list = document.createElement('div'); list.className = 'picker-list'
 
-  const mkRow = (label, onClick, cls) => {
+  const mkRow = (label, onClick, cls, inactive) => {
     const b = document.createElement('button')
     b.className = 'picker-row' + (cls ? ' ' + cls : '')
-    const s = document.createElement('span'); s.className = 'picker-row__name'; s.textContent = label
-    b.appendChild(s); b.addEventListener('click', onClick); return b
+    const s = document.createElement('span'); s.className = 'picker-row__name' + (inactive ? ' is-inactive-name' : ''); s.textContent = label
+    b.appendChild(s)
+    // Inactive masters stay selectable (inactivity is a vocabulary state, not a
+    // block on linking) — just dimmed with an "Inactive" tag.
+    if (inactive) { const t = document.createElement('span'); t.className = 'inactive-tag'; t.textContent = 'Inactive'; b.appendChild(t) }
+    b.addEventListener('click', onClick); return b
   }
   function renderResults(q) {
     const lq = norm(q); list.innerHTML = ''
+    // Default view (no query) shows active only; a search includes inactive too.
     const hits = lq
       ? masters.filter(m => norm(m.canonical_name).includes(lq) || (m.aliases || []).some(a => norm(a).includes(lq)))
-      : masters.slice(0, 60)
-    for (const m of hits) list.appendChild(mkRow(m.canonical_name, () => { closeModal(overlay); onPick(m) }))
+      : masters.filter(m => m.active !== false).slice(0, 60)
+    for (const m of hits) list.appendChild(mkRow(m.canonical_name, () => { closeModal(overlay); onPick(m) }, null, m.active === false))
     if (lq && !masters.some(m => norm(m.canonical_name) === lq)) {
       list.appendChild(mkRow(`+ Create new ingredient: “${q.trim()}”`, async () => {
         const { data: row, error } = await supabase.from('master_ingredients')

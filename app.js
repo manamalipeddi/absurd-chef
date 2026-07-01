@@ -16,7 +16,7 @@ const SCREENS = {
   pantry:                  { title: 'Absurd Pantry',          module: './screens/pantry.js' },
   recipes:                 { title: 'Absurd Recipes',         module: './screens/recipes.js' },
   plan:                    { title: 'Absurd Plan',            module: './screens/plan.js' },
-  chat:                    { title: 'Chat with the Absurd Chef', module: './screens/chat.js' },
+  chat:                    { title: 'Ask the Absurd Chef', module: './screens/chat.js' },
   setup:                   { title: 'Not So Absurd Setup',    module: './screens/setup.js' },
   'setup-family':          { title: 'Family',           module: './screens/setup-family.js' },
   'setup-weekly-template': { title: 'Weekly Template',  module: './screens/setup-weekly-template.js' },
@@ -168,11 +168,37 @@ const toastContainer = document.createElement('div')
 toastContainer.id = 'toast-container'
 document.body.appendChild(toastContainer)
 
-export function toast(msg, { error = false, duration = 3000 } = {}) {
+// `action` (optional): { label, onClick } renders a trailing button (e.g. Undo)
+// separated by a middot. Tapping it fires onClick once and dismisses the toast.
+export function toast(msg, { error = false, duration = 3000, action = null } = {}) {
   const el = document.createElement('div')
   el.className = 'toast' + (error ? ' toast--error' : '')
-  el.textContent = msg
-  toastContainer.prepend(el)
+  if (action) {
+    const text = document.createElement('span')
+    text.textContent = msg
+    const sep = document.createElement('span')
+    sep.className = 'toast__sep'
+    sep.textContent = '·'
+    const btn = document.createElement('button')
+    btn.className = 'toast__action'
+    btn.textContent = action.label
+    let fired = false
+    btn.addEventListener('click', () => {
+      if (fired) return
+      fired = true
+      el.remove()
+      action.onClick()
+    })
+    el.append(text, sep, btn)
+    // Action toasts (e.g. Undo) appear centered, mirroring the action sheet.
+    // Appended to <body>, not the bottom container — the container's transform
+    // would otherwise trap position:fixed and break viewport centering.
+    el.classList.add('toast--center')
+    document.body.appendChild(el)
+  } else {
+    el.textContent = msg
+    toastContainer.prepend(el)
+  }
   setTimeout(() => el.remove(), duration)
 }
 

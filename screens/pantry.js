@@ -1,4 +1,4 @@
-import { supabase, FUNCTIONS_URL, navigateTo, navState, toast, pushView, mkFab } from '../app.js'
+import { supabase, FUNCTIONS_URL, navigateTo, navState, toast, pushView, mkFab, openModal, closeModal } from '../app.js'
 import { openMasterSearch } from './master-search.js'
 
 // ── Module state ──────────────────────────────────────────
@@ -33,9 +33,18 @@ const FOOD_CATS = [
 
 // Loose status ↔ quantity: status is an input convenience that resolves to a
 // real quantity against the item's typical_quantity baseline.
-const STATUS_ORDER = ['out', 'very_low', 'low', 'enough', 'plenty', 'overstock']
-const STATUS_PCT   = { out: 0, very_low: 0.10, low: 0.25, enough: 0.60, plenty: 0.85, overstock: 1.25 }
-const STATUS_LABEL = { out: 'Out', very_low: 'Very low', low: 'Low', enough: 'Enough', plenty: 'Plenty', overstock: 'Overstock' }
+const STATUS_ORDER = ['out', 'very_low', 'some', 'enough', 'plenty', 'overstock']
+const STATUS_PCT   = { out: 0, very_low: 0.10, some: 0.25, enough: 0.60, plenty: 0.85, overstock: 1.25 }
+const STATUS_LABEL = { out: 'Out', very_low: 'Very low', some: 'Some', enough: 'Enough', plenty: 'Plenty', overstock: 'Overstock' }
+
+// An item with typical_quantity = 0 is "atypical" — a one-off the household
+// doesn't normally stock. It has no baseline to derive a status against, so it
+// carries an explicit stored status ('some' while it has stock) instead.
+function isAtypical(item) { return Number(item.typical_quantity) === 0 }
+// Status to DISPLAY on the pill: stored for atypical items, derived otherwise.
+function displayStatus(item) {
+  return isAtypical(item) ? (item.status || null) : deriveStatus(item.quantity, item.typical_quantity)
+}
 
 function deriveStatus(qty, typical) {
   if (typical == null || Number(typical) <= 0) return null
@@ -195,12 +204,17 @@ function renderInventory() {
     const hidden = inventoryData.filter(i => i.active === false)
 
     // Filtered: flat list across all storage categories, normal sort preserved.
+    // Search also surfaces INACTIVE matches (dimmed, below the active ones) so an
+    // existing-but-inactive item is findable instead of being re-created.
     if (q) {
-      const hits = active.filter(i => (i.name || '').toLowerCase().includes(q))
-      if (!hits.length) { listEl.appendChild(mkEmpty('No items match your search.')); return }
+      const activeHits   = active.filter(i => (i.name || '').toLowerCase().includes(q))
+      const inactiveHits = hidden.filter(i => (i.name || '').toLowerCase().includes(q))
+      if (!activeHits.length && !inactiveHits.length) { listEl.appendChild(mkEmpty('No items match your search.')); return }
       const card = document.createElement('div')
       card.className = 'card su-card'
-      hits.forEach((item, i) => card.appendChild(buildInventoryRow(item, i < hits.length - 1)))
+      const total = activeHits.length + inactiveHits.length
+      activeHits.forEach((item, i) => card.appendChild(buildInventoryRow(item, i < total - 1)))
+      inactiveHits.forEach((item, i) => card.appendChild(buildInactiveInventoryRow(item, activeHits.length + i < total - 1)))
       listEl.appendChild(card)
       return
     }
@@ -319,10 +333,174 @@ function buildInventorySection(catKey, items) {
 // right side a numeric stepper (no baseline yet) or a status pill (baseline set).
 // Both quantity-control paths write the SAME quantity field. The whole item lives
 // in one wrapper so the status-grid can expand directly below the row.
+// Inactive item shown in search results: dimmed name + "Inactive" tag, no
+// status control. Tapping opens the edit form (which shows a reactivate banner).
+function buildInactiveInventoryRow(item, ruled) {
+  const wrap = document.createElement('div')
+  wrap.className = 'pn-inv-item pn-inv-item--inactive' + (ruled ? ' pn-row--ruled' : '')
+  const row = document.createElement('div')
+  row.className = 'pn-row pn-inv-row'
+  const tap = document.createElement('div')
+  tap.className = 'pn-inv-tap'
+  const line = document.createElement('div')
+  line.className = 'pn-inactive-line'
+  const name = document.createElement('div')
+  name.className = 'pn-row__main pn-inv-name is-inactive-name'
+  name.textContent = item.name
+  const tag = document.createElement('span')
+  tag.className = 'inactive-tag'
+  tag.textContent = 'Inactive'
+  line.append(name, tag)
+  tap.appendChild(line)
+  tap.addEventListener('click', () => openInventoryForm(item.id, item.category || 'pantry'))
+  row.appendChild(tap)
+  wrap.appendChild(row)
+  return wrap
+}
+
 function buildInventoryRow(item, ruled) {
   const wrap = document.createElement('div')
   renderInvItem(wrap, item, ruled)
+  // Long-press (mobile) / right-click (desktop) opens the deactivate sheet. The
+  // gesture lives on `wrap`, which survives in-place re-renders (renderInvItem
+  // only rebuilds children), so it's wired once and not duplicated on re-render.
+  attachDeactivateGesture(wrap, item)
   return wrap
+}
+
+// Reveal the deactivate action via a deliberate gesture, adding nothing visible
+// to the row. Touch: a sustained 450ms press that a scroll (>10px move) cancels,
+// so it can't fire while flicking the list. Desktop: contextmenu (right-click).
+// A long-press also swallows the trailing click so the row's edit-form tap (and
+// any child control) doesn't also fire.
+function attachDeactivateGesture(wrap, item) {
+  const LONG_PRESS_MS = 450
+  const MOVE_TOLERANCE = 10
+  let timer = null
+  let sx = 0, sy = 0
+  let suppressClick = false
+  let touchActive = false
+
+  const cancel = () => { if (timer) { clearTimeout(timer); timer = null } }
+
+  wrap.addEventListener('touchstart', e => {
+    touchActive = true
+    if (e.touches.length !== 1) { cancel(); return }
+    sx = e.touches[0].clientX; sy = e.touches[0].clientY
+    cancel()
+    timer = setTimeout(() => {
+      timer = null
+      // Swallow only the synthetic click from THIS press; self-expire so it can
+      // never eat a later legitimate tap (the click may land on the sheet
+      // overlay rather than the row, so it won't always reach the handler below).
+      suppressClick = true
+      setTimeout(() => { suppressClick = false }, 700)
+      if (navigator.vibrate) navigator.vibrate(10)
+      openDeactivateSheet(item)
+    }, LONG_PRESS_MS)
+  }, { passive: true })
+
+  wrap.addEventListener('touchmove', e => {
+    const t = e.touches[0]
+    if (!t) return
+    if (Math.abs(t.clientX - sx) > MOVE_TOLERANCE || Math.abs(t.clientY - sy) > MOVE_TOLERANCE) cancel()
+  }, { passive: true })
+
+  // Keep touchActive true briefly after lift so the contextmenu that some mobile
+  // browsers fire at the end of a long-press is still recognised as touch-driven.
+  const endTouch = () => { cancel(); setTimeout(() => { touchActive = false }, 700) }
+  wrap.addEventListener('touchend', endTouch, { passive: true })
+  wrap.addEventListener('touchcancel', endTouch, { passive: true })
+
+  // Capture-phase: eat the synthetic click that follows a fired long-press,
+  // before it reaches the row's own tap handler.
+  wrap.addEventListener('click', e => {
+    if (suppressClick) { e.stopPropagation(); e.preventDefault(); suppressClick = false }
+  }, true)
+
+  // contextmenu fires for BOTH desktop right-click and (on Android) a touch
+  // long-press. Always block the native menu; only open the sheet here when it
+  // was NOT a touch — the touch timer already handles long-press, so opening
+  // here too would fire the gesture twice.
+  wrap.addEventListener('contextmenu', e => {
+    e.preventDefault()
+    if (touchActive) return
+    openDeactivateSheet(item)
+  })
+}
+
+// Only one sheet at a time — belt-and-suspenders against a long-press firing
+// both the touch timer and a contextmenu before the first sheet's modal entry
+// settles.
+let deactivateSheetOpen = false
+
+// Centered contextual action sheet — same destructive-action treatment (muted
+// red) used elsewhere in the app. No confirmation screen: tapping Deactivate
+// acts immediately. Routed through openModal so Back/▷-swipe and an overlay tap
+// dismiss it cleanly.
+function openDeactivateSheet(item) {
+  if (deactivateSheetOpen) return
+  deactivateSheetOpen = true
+
+  const overlay = document.createElement('div')
+  overlay.className = 'act-overlay'
+  const sheet = document.createElement('div')
+  sheet.className = 'act-sheet'
+
+  // The long-press that opens this sheet ends in a click once the finger lifts.
+  // That "ghost click" lands on whatever is now under the finger — the overlay
+  // (or even a button, if the pressed row sat low on screen) — and would
+  // instantly dismiss the sheet or fire an action. Guard: only honour a click
+  // whose press STARTED inside the sheet. The opening press started on the row,
+  // before this overlay existed, so its trailing click registered no
+  // pointerdown/touchstart here and is ignored.
+  // Clears the single-open guard on every dismissal path (buttons, backdrop tap,
+  // and the Back-gesture onClose below).
+  const close = () => { deactivateSheetOpen = false; closeModal(overlay) }
+
+  let pressInside = false
+  const markInside = () => { pressInside = true }
+  overlay.addEventListener('pointerdown', markInside)
+  overlay.addEventListener('touchstart', markInside, { passive: true })
+  overlay.addEventListener('mousedown', markInside)
+
+  const deact = document.createElement('button')
+  deact.className = 'act-sheet__btn act-sheet__btn--danger'
+  deact.textContent = `Deactivate “${item.name}”`
+  deact.addEventListener('click', () => { if (!pressInside) return; close(); deactivateInventoryItem(item) })
+
+  const cancelBtn = document.createElement('button')
+  cancelBtn.className = 'act-sheet__btn act-sheet__btn--cancel'
+  cancelBtn.textContent = 'Cancel'
+  cancelBtn.addEventListener('click', () => { if (!pressInside) return; close() })
+
+  sheet.append(deact, cancelBtn)
+  overlay.appendChild(sheet)
+  overlay.addEventListener('click', e => { if (e.target === overlay && pressInside) close() })
+  document.body.appendChild(overlay)
+  openModal(overlay, () => { deactivateSheetOpen = false; overlay.remove() })
+}
+
+// Deactivate = active:false (the same hidden state as "Hide this item"). Optimistic:
+// flip local state and re-render so the row vanishes instantly, then offer a 5s Undo.
+async function deactivateInventoryItem(item) {
+  const { error } = await supabase.from('inventory').update({ active: false }).eq('id', item.id)
+  if (error) { toast('Deactivate failed', { error: true }); return }
+  const idx = inventoryData.findIndex(x => x.id === item.id)
+  if (idx >= 0) inventoryData[idx].active = false
+  renderInventory()
+  toast(`${item.name} deactivated`, {
+    duration: 5000,
+    action: { label: 'Undo', onClick: () => reactivateInventoryItem(item) },
+  })
+}
+
+async function reactivateInventoryItem(item) {
+  const { error } = await supabase.from('inventory').update({ active: true }).eq('id', item.id)
+  if (error) { toast('Undo failed', { error: true }); return }
+  const idx = inventoryData.findIndex(x => x.id === item.id)
+  if (idx >= 0) inventoryData[idx].active = true
+  renderInventory()
 }
 
 function renderInvItem(wrap, item, ruled) {
@@ -408,12 +586,25 @@ async function setFav(wrap, item, ruled) {
 async function setInvQuantity(wrap, item, ruled, newQty, statusKey) {
   const payload = { quantity: newQty }
   if (statusKey !== undefined) payload.status = statusKey
+  // Atypical items (typical_quantity = 0) auto-reconcile in the same write:
+  // any stock → status 'some'; emptied (qty 0 or status 'out') → auto-deactivate
+  // so the one-off drops out of inventory rather than sitting at zero.
+  let deactivated = false
+  if (isAtypical(item)) {
+    if (statusKey === 'out' || Number(newQty) <= 0) { payload.status = 'out'; payload.active = false; deactivated = true }
+    else { payload.status = 'some' }
+  }
   const { data, error } = await supabase.from('inventory').update(payload).eq('id', item.id).select('*').single()
   if (error || !data) { toast('Update failed', { error: true }); return }
   Object.assign(item, data)
   const idx = inventoryData.findIndex(x => x.id === item.id)
   if (idx >= 0) inventoryData[idx] = { ...inventoryData[idx], ...data }
-  renderInvItem(wrap, item, ruled)
+  if (deactivated) {
+    renderInventory()   // full re-render: the emptied atypical item disappears
+    toast(`${item.name} used up — removed from inventory`)
+  } else {
+    renderInvItem(wrap, item, ruled)
+  }
 }
 
 function buildStepper(wrap, item, ruled) {
@@ -451,15 +642,46 @@ function buildStepper(wrap, item, ruled) {
 function buildStatusControl(wrap, item, ruled) {
   const c = document.createElement('div')
   c.className = 'pn-qtyctl'
-  const cur = deriveStatus(item.quantity, item.typical_quantity)
+  const cur = displayStatus(item)
+  // Atypical item with stock → amber outline pill. Regular low-stock statuses
+  // (out / very low / some) → filled green pill so they stand out. The amber
+  // treatment takes precedence (an atypical 'some' is never also green).
+  const atypicalSome = isAtypical(item) && cur === 'some'
   const pill = document.createElement('button')
-  // Low-stock statuses (out / very low / low) get a filled green pill so they
-  // stand out in the list.
-  pill.className = 'pn-status-pill' + (LOW_STATUS.has(cur) ? ' pn-status-pill--low' : '')
+  pill.className = 'pn-status-pill'
+    + (atypicalSome ? ' pn-status-pill--atypical' : (LOW_STATUS.has(cur) ? ' pn-status-pill--low' : ''))
   pill.textContent = STATUS_LABEL[cur] || '—'
-  pill.addEventListener('click', e => { e.stopPropagation(); toggleStatusGrid(wrap, item, ruled, pill) })
+  // The percentage grid is meaningless when typical = 0 (every option resolves
+  // to qty 0), so atypical items get a direct exact-amount entry instead.
+  pill.addEventListener('click', e => {
+    e.stopPropagation()
+    if (isAtypical(item)) toggleExactAmount(wrap, item, ruled, pill)
+    else toggleStatusGrid(wrap, item, ruled, pill)
+  })
   c.appendChild(pill)
   return c
+}
+
+// Inline exact-amount entry for atypical items (typical = 0). Setting a value
+// >0 marks it 'some'; setting 0 empties it and setInvQuantity auto-deactivates.
+function toggleExactAmount(wrap, item, ruled, pill) {
+  const open = wrap.querySelector('.pn-status-grid')
+  if (open) { open.remove(); pill.classList.remove('pn-status-pill--open'); return }
+  pill.classList.add('pn-status-pill--open')
+  const grid = document.createElement('div')
+  grid.className = 'pn-status-grid pn-status-grid--exact'
+  const inp = document.createElement('input')
+  inp.type = 'number'; inp.className = 'pn-qty-input pn-qty-input--wide'; inp.min = 0; inp.step = 'any'
+  inp.value = item.quantity ?? ''
+  const ok = document.createElement('button'); ok.className = 'pn-status-exact pn-status-exact--set'; ok.textContent = 'Set'
+  let done = false
+  const commit = () => { if (done) return; done = true; const v = inp.value === '' ? 0 : Math.max(0, parseFloat(inp.value) || 0); setInvQuantity(wrap, item, ruled, v) }
+  ok.addEventListener('click', e2 => { e2.stopPropagation(); commit() })
+  inp.addEventListener('click', e2 => e2.stopPropagation())
+  inp.addEventListener('keydown', e2 => { if (e2.key === 'Enter') { e2.preventDefault(); commit() } })
+  grid.append(inp, ok)
+  wrap.appendChild(grid)
+  inp.focus()
 }
 
 function toggleStatusGrid(wrap, item, ruled, pill) {
@@ -612,6 +834,14 @@ function openInventoryForm(id, defaultCat = 'pantry') {
   const form = document.createElement('div')
   form.className = 'pn-form'
 
+  // Reactivation banner — shown when editing an inactive item reached via search.
+  if (item && item.active === false) {
+    const banner = document.createElement('div')
+    banner.className = 'reactivate-banner'
+    banner.textContent = 'This item is inactive. Saving changes will reactivate it.'
+    form.appendChild(banner)
+  }
+
   const nameInp  = mkInput('text',   item?.name        || '', 'e.g. Greek yoghurt')
   const qtyInp   = mkInput('number', item?.quantity     ?? '', '')
   qtyInp.min = 0; qtyInp.step = 'any'
@@ -666,6 +896,15 @@ function openInventoryForm(id, defaultCat = 'pantry') {
       expiry_date:        expInp.value || null,
       notes:              notesInp.value.trim() || null,
     }
+    // Saving an inactive item (reached via search) reactivates it. The atypical
+    // reconcile below may still re-hide it if it's a typical=0 item with no stock.
+    if (item && item.active === false) payload.active = true
+    // Atypical reconcile (typical_quantity = 0): stock → 'some'; emptied → drop
+    // it out of inventory (active = false) in the same save.
+    if (Number(payload.typical_quantity) === 0) {
+      if (payload.quantity == null || Number(payload.quantity) <= 0) { payload.status = 'out'; payload.active = false }
+      else { payload.status = 'some' }
+    }
     saveBtn.disabled = true; saveBtn.textContent = 'Saving…'
     const op = id
       ? supabase.from('inventory').update(payload).eq('id', id)
@@ -707,7 +946,7 @@ async function loadFreezer() {
     supabase.from('freezer_stash').select('*')
       .eq('used', false).eq('active', true)
       .order('frozen_date', { ascending: false }),
-    supabase.from('recipes').select('id, name').eq('active', true).order('name'),
+    supabase.from('recipes').select('id, name, meal_type, emoji, is_placeholder').eq('active', true).order('name'),
   ])
   freezerData = stashRes.data || []
   recipeList  = recipeRes.data || []
@@ -868,6 +1107,62 @@ function closeFreezerForm() {
   showFreezerList()
 }
 
+// Meal-type prefix shown in the recipe picker, mirroring the Plan-tab picker.
+const RLINK_MTYPE_LABEL = { breakfast: 'Breakfast', lunch_dinner: 'Dinner', snack: 'Snack', special: 'Dessert' }
+const RLINK_MTYPE_ORDER = ['lunch_dinner', 'breakfast', 'snack', 'special']
+const rlinkMealLabel = mt => RLINK_MTYPE_LABEL[mt] || 'Other'
+
+// Searchable recipe picker — same opaque sheet + search + meal-type prefix as the
+// Plan-tab meal picker. Replaces the old semi-transparent native <select> for
+// "link to recipe". onPick receives the chosen recipe row, or null for "not linked".
+function openRecipeLinkPicker(onPick) {
+  const overlay = document.createElement('div'); overlay.className = 'picker-overlay'
+  const sheet   = document.createElement('div'); sheet.className = 'picker-sheet'
+  const head    = document.createElement('div'); head.className = 'picker-header'
+  head.innerHTML = `<span class="picker-title">Link to recipe</span><button class="picker-close" aria-label="Close">✕</button>`
+  head.querySelector('.picker-close').addEventListener('click', () => closeModal(overlay))
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(overlay) })
+
+  const search = document.createElement('input')
+  search.type = 'text'; search.className = 'picker-search'; search.placeholder = 'Search recipes…'
+  const list = document.createElement('div'); list.className = 'picker-list'
+
+  // Pool: non-placeholder recipes, grouped by meal type (dinner first), alpha within.
+  const pool = recipeList.filter(r => !r.is_placeholder).slice().sort((a, b) => {
+    const ao = RLINK_MTYPE_ORDER.indexOf(a.meal_type), bo = RLINK_MTYPE_ORDER.indexOf(b.meal_type)
+    const av = ao === -1 ? 99 : ao, bv = bo === -1 ? 99 : bo
+    if (av !== bv) return av - bv
+    return (a.name || '').localeCompare(b.name || '')
+  })
+
+  const pickRow = (emoji, html, onClick, cls) => {
+    const row = document.createElement('button')
+    row.className = 'picker-row' + (cls ? ' ' + cls : '')
+    row.innerHTML = `<span class="picker-row__emoji" aria-hidden="true">${emoji}</span><span class="picker-row__name">${html}</span>`
+    row.addEventListener('click', onClick)
+    return row
+  }
+
+  function renderList(q) {
+    const lq = (q || '').toLowerCase()
+    list.innerHTML = ''
+    // "Not linked" clear option always on top.
+    list.appendChild(pickRow('🚫', 'Not linked', () => { closeModal(overlay); onPick(null) }, 'picker-row--other'))
+    const hits = lq ? pool.filter(r => (r.name || '').toLowerCase().includes(lq)) : pool
+    for (const r of hits) {
+      const display = `<span class="picker-row__cat">${rlinkMealLabel(r.meal_type)}</span>${r.name}`
+      list.appendChild(pickRow(r.emoji || '🍽️', display, () => { closeModal(overlay); onPick(r) }))
+    }
+  }
+  search.addEventListener('input', () => renderList(search.value))
+  renderList('')
+
+  sheet.append(head, search, list)
+  overlay.appendChild(sheet)
+  document.body.appendChild(overlay)
+  openModal(overlay, () => overlay.remove())
+}
+
 function openFreezerForm(id) {
   const entry = id ? freezerData.find(x => x.id === id) : null
   contentEl.innerHTML = ''
@@ -882,13 +1177,23 @@ function openFreezerForm(id) {
   const useByInp    = mkDateInput(entry?.use_by_date  || '')
   const notesInp    = mkInput('text',   entry?.notes        || '', 'Optional notes')
 
-  // Recipe link
-  const recipeOpts = [['', '— not linked —'], ...recipeList.map(r => [r.id, r.name])]
-  const recipeSel = mkSelect(recipeOpts, entry?.recipe_id || '')
-  recipeSel.addEventListener('change', () => {
-    const chosen = recipeList.find(r => r.id === recipeSel.value)
+  // Recipe link — opens the searchable recipe picker (same visual as the Plan
+  // tab) rather than a native dropdown.
+  const linkSel = { id: entry?.recipe_id || null }
+  const linkBtn = document.createElement('button')
+  linkBtn.type = 'button'
+  linkBtn.className = 'pn-picker-btn'
+  const refreshLinkBtn = () => {
+    const r = recipeList.find(x => x.id === linkSel.id)
+    linkBtn.textContent = r ? r.name : '— not linked —'
+    linkBtn.classList.toggle('pn-picker-btn--empty', !r)
+  }
+  refreshLinkBtn()
+  linkBtn.addEventListener('click', () => openRecipeLinkPicker((chosen) => {
+    linkSel.id = chosen ? chosen.id : null
+    refreshLinkBtn()
     if (chosen && !nameInp.value.trim()) nameInp.value = chosen.name
-  })
+  }))
 
   // Source toggle (Homemade / Store-bought); restock checkbox shows for store-bought.
   const sourceSel = mkSelect([['homemade', '🏠 Homemade'], ['store_bought', '🛒 Store-bought']], entry?.source || 'homemade')
@@ -908,7 +1213,7 @@ function openFreezerForm(id) {
     mkField('Recipe name *', nameInp),
     mkField('Type', sourceSel),
     restockField,
-    mkField('Link to recipe (optional)', recipeSel),
+    mkField('Link to recipe (optional)', linkBtn),
     mkField('Portions', portionsInp),
     mkField('Frozen date (optional)', frozenInp),
     mkField('Use-by date (optional)', useByInp),
@@ -925,7 +1230,7 @@ function openFreezerForm(id) {
     if (!name) { toast('Recipe name is required', { error: true }); return }
     const payload = {
       recipe_name:  name,
-      recipe_id:    recipeSel.value || null,
+      recipe_id:    linkSel.id || null,
       portions:     portionsInp.value !== '' ? parseInt(portionsInp.value) : null,
       frozen_date:  frozenInp.value || null,
       use_by_date:  useByInp.value  || null,
@@ -1142,7 +1447,7 @@ function canonUnitFor(dim) { return dim === 'mass' ? 'g' : dim === 'volume' ? 'm
 // (status out/very_low/low, a shortfall, or out of stock) by last_updated_at DESC
 // with never-checked items at the bottom of that group, then everything else
 // alphabetically. A favourite that's also low-stock stays in the favourites tier.
-const LOW_STATUS = new Set(['out', 'very_low', 'low'])
+const LOW_STATUS = new Set(['out', 'very_low', 'some'])
 function isLowStock(item) {
   return !!item.shortfall || LOW_STATUS.has(item.status) || item.quantity === 0 || item.quantity === null
 }
@@ -1236,7 +1541,10 @@ function buildLowStockRow(item, ruled) {
   name.textContent = item.name
 
   const pill = document.createElement('span')
-  pill.className = 'pn-status-pill pn-status-pill--low pn-low-row__pill'
+  // Atypical item with stock keeps its amber outline here too; otherwise the
+  // standard low-stock pill.
+  const atypicalSome = Number(item.typical_quantity) === 0 && item.status === 'some'
+  pill.className = 'pn-status-pill pn-low-row__pill ' + (atypicalSome ? 'pn-status-pill--atypical' : 'pn-status-pill--low')
   pill.textContent = STATUS_LABEL[item.status] || 'Out'
 
   row.append(name, pill)
