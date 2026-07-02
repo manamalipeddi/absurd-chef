@@ -61,6 +61,7 @@ async function applyScreen(id) {
   headerLeft.innerHTML  = ''
   headerRight.innerHTML = ''
   currentScreen = id
+  updatePill()   // pill hides on the chat screen, shows elsewhere while processing
 
   if (!loaded.has(id)) {
     loaded.add(id)
@@ -200,6 +201,34 @@ export function toast(msg, { error = false, duration = 3000, action = null } = {
     toastContainer.prepend(el)
   }
   setTimeout(() => el.remove(), duration)
+}
+
+// ── Processing pill (cross-screen "still working" indicator) ──
+// While a chat request is in flight, chat.js calls setProcessing(true, label).
+// The pill is shown only when the user is NOT on the chat screen (on chat, the
+// in-line status block already conveys progress). It clears on setProcessing(false),
+// which fires on the done/error event — regardless of which screen is showing.
+let processing = false
+let processingLabel = 'Processing…'
+const processingPill = document.createElement('button')
+processingPill.id = 'processing-pill'
+processingPill.type = 'button'
+processingPill.setAttribute('aria-label', 'Processing — tap to open chat')
+processingPill.innerHTML =
+  `<span class="chat-typing"><span></span><span></span><span></span></span><span class="processing-pill__label"></span>`
+processingPill.addEventListener('click', () => navigateTo('chat'))
+document.body.appendChild(processingPill)
+
+function updatePill() {
+  const show = processing && currentScreen !== 'chat'
+  processingPill.classList.toggle('visible', show)
+  processingPill.querySelector('.processing-pill__label').textContent = processingLabel
+}
+
+export function setProcessing(active, label) {
+  processing = active
+  if (label) processingLabel = label
+  updatePill()
 }
 
 // ── Boot ──────────────────────────────────────────────────

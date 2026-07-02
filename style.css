@@ -1925,10 +1925,71 @@ body {
 .chat-typing span:nth-child(2) { animation-delay: 0.2s; }
 .chat-typing span:nth-child(3) { animation-delay: 0.4s; }
 
-/* Live status line (dots + updating label) */
-.chat-status__inner { display: flex; align-items: center; gap: 8px; }
+/* Live status block: dots on top, a growing timestamped log below. */
+.chat-status__inner { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 190px; }
 .chat-status__inner .chat-typing { padding: 0; }
-.chat-status__label { font-size: 13.5px; color: var(--text-muted); }
+.chat-status__label { font-size: 13.5px; color: var(--text-muted); }   /* legacy */
+.chat-status__log { display: flex; flex-direction: column; gap: 3px; width: 100%; }
+.chat-status__line { display: flex; gap: 8px; font-size: 13px; line-height: 1.45; color: var(--text); }
+.chat-status__ts {
+  flex-shrink: 0; min-width: 58px;
+  color: var(--text-muted); opacity: 0.75;
+  font-variant-numeric: tabular-nums; font-feature-settings: "tnum";
+}
+.chat-status__line--error { color: var(--accent-warm); font-weight: 600; }
+.chat-status__line--error .chat-status__ts { color: var(--accent-warm); opacity: 1; }
+.chat-status--error .chat-bubble__inner { border-color: var(--accent-warm); }
+
+/* Collapsed "Show processing log" toggle under a completed reply. */
+.chat-log-wrap { align-self: flex-start; max-width: 82%; display: flex; flex-direction: column; gap: 4px; }
+.chat-log-toggle {
+  align-self: flex-start;
+  background: none; border: none; cursor: pointer;
+  font-family: var(--font); font-size: 12px; font-weight: 600;
+  color: var(--text-muted); padding: 2px;
+  text-decoration: underline; text-underline-offset: 2px;
+}
+.chat-log-toggle:active { opacity: 0.6; }
+.chat-log {
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 8px 12px; border-radius: 12px;
+  background: var(--surface); border: 1.5px solid var(--border);
+}
+.chat-log[hidden] { display: none; }
+
+/* "Still working" tip when tapping the disabled input mid-request. */
+#chat-input-area { position: relative; }
+#chat-input-tooltip {
+  position: absolute; left: 50%; bottom: calc(100% + 8px);
+  transform: translateX(-50%) translateY(4px);
+  background: var(--text); color: #fff;
+  font-size: 12.5px; font-weight: 600; white-space: nowrap;
+  padding: 7px 12px; border-radius: 10px;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.25);
+  opacity: 0; pointer-events: none; z-index: 120;
+  transition: opacity 0.18s, transform 0.18s;
+}
+#chat-input-tooltip.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* Cross-screen processing pill (shown off the chat screen while a request runs). */
+#processing-pill {
+  position: fixed; left: 50%; z-index: 150;
+  bottom: calc(var(--nav-h) + var(--safe-bottom) + 12px);
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 16px 9px 13px;
+  border: none; border-radius: 999px;
+  background: var(--accent); color: var(--nav-active);
+  font-family: var(--font); font-size: 13.5px; font-weight: 600;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22);
+  cursor: pointer;
+  visibility: hidden; opacity: 0; pointer-events: none;
+  transform: translateX(-50%) translateY(8px);
+  transition: opacity 0.2s, transform 0.2s, visibility 0.2s;
+}
+#processing-pill.visible { visibility: visible; opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0); }
+#processing-pill .chat-typing { padding: 0; gap: 4px; }
+#processing-pill .chat-typing span { width: 6px; height: 6px; background: var(--nav-active); }
+.processing-pill__label { white-space: nowrap; max-width: 62vw; overflow: hidden; text-overflow: ellipsis; }
 
 @keyframes typing-dot {
   0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }

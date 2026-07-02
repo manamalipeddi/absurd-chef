@@ -38,6 +38,15 @@ const DOW_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Frid
 function dayName(dow: number): string { return DOW_NAMES[dow] ?? `day_${dow}` }
 function dayNameFromDate(dateStr: string): string { return dayName(new Date(dateStr + 'T12:00:00Z').getUTCDay()) }
 
+// Wall-clock HH:MM:SS for a status event, in the CLIENT's local time. The client
+// passes tz_offset (Date.getTimezoneOffset() minutes, i.e. UTC−local); shifting
+// now by −offset gives local time, read out via getUTC* on the shifted instant.
+function fmtTs(tzOffsetMin: number): string {
+  const d = new Date(Date.now() - tzOffsetMin * 60000)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`
+}
+
 function buildSystem(): string {
   return `You are AbsurdChef, a meal planning assistant for the Malipeddi household.
 
@@ -650,11 +659,12 @@ function normaliseSource(s: unknown): string {
   return v === 'ica' || v === 'mathem' ? v : 'other'
 }
 
-async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB) {
+async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, emit: (label: string) => void = () => {}) {
   const rawText = (input.raw_text as string) || ''
   const source  = normaliseSource(input.source)
   if (!rawText.trim()) return { error: 'No order text provided to parse.' }
 
+  emit('Reading your order confirmation…')
   const [{ data: inv }, { data: masters }] = await Promise.all([
     // Include INACTIVE rows too: a purchased item that matches a deactivated row
     // must reactivate it, never create a duplicate.
@@ -713,6 +723,9 @@ Return ONLY valid JSON, no prose, no markdown fences:
   } catch (e) {
     return { error: `Couldn't parse that order text: ${String(e)}` }
   }
+
+  emit(`Parsing ${parsed.length} item${parsed.length === 1 ? '' : 's'}…`)
+  emit('Matching items to inventory…')
 
   // Normalise + validate matches server-side (never trust a hallucinated id).
   const cat = (c: unknown) => (c === 'fridge' || c === 'freezer' || c === 'pantry') ? c : 'pantry'
@@ -792,7 +805,7 @@ Return ONLY valid JSON, no prose, no markdown fences:
   }
 }
 
-async function toolCommitGroceryImport(input: Record<string, unknown>, db: DB) {
+async function toolCommitGroceryImport(input: Record<string, unknown>, db: DB, emit: (label: string) => void = () => {}) {
   const batchId = (input.batch_id as string) || null
 
   // Resolve the batch: by id when known, else fall back to the single pending
@@ -843,10 +856,21 @@ async function toolCommitGroceryImport(input: Record<string, unknown>, db: DB) {
   const removed: string[] = []
   const leftover_notices: string[] = []
 
+  // Progress: count only the food rows actually being written (non-food and
+  // user-removed rows don't count), and emit "Updating stock — N of X…" as each
+  // one is processed so the user sees movement, not a held label.
+  const writeTotal = items.filter(i => i.is_food && !adjByIdx.get(i.idx)?.remove).length
+  const step = Math.max(1, Math.ceil(writeTotal / 8))
+  let doneCount = 0
+
   for (const item of items) {
     const adj = adjByIdx.get(item.idx)
     if (adj?.remove) { removed.push(item.name); continue }
     if (!item.is_food) continue   // non-food is never written, ever
+
+    doneCount++
+    if (doneCount === 1 || doneCount === writeTotal || doneCount % step === 0)
+      emit(`Updating stock — ${doneCount} of ${writeTotal}…`)
 
     const name = (adj?.name || item.name).trim()
     const category = (adj?.category === 'fridge' || adj?.category === 'freezer' || adj?.category === 'pantry')
@@ -1222,7 +1246,7 @@ Output the corrected reply text only. No preamble.`
 
 // ── Tool dispatcher ───────────────────────────────────────
 
-async function dispatch(name: string, input: Record<string, unknown>, db: DB, userMsg: string): Promise<string> {
+async function dispatch(name: string, input: Record<string, unknown>, db: DB, userMsg: string, emit: (label: string) => void = () => {}): Promise<string> {
   try {
     let result: unknown
     switch (name) {
@@ -1238,8 +1262,8 @@ async function dispatch(name: string, input: Record<string, unknown>, db: DB, us
       case 'get_special_days':       result = await toolGetSpecialDays(input, db); break
       case 'get_commute_days':                   result = await toolGetCommuteDays(db); break
       case 'update_inventory_from_description':  result = await toolUpdateInventoryFromDescription(input, db); break
-      case 'import_grocery_order':               result = await toolImportGroceryOrder(input, db); break
-      case 'commit_grocery_import':              result = await toolCommitGroceryImport(input, db); break
+      case 'import_grocery_order':               result = await toolImportGroceryOrder(input, db, emit); break
+      case 'commit_grocery_import':              result = await toolCommitGroceryImport(input, db, emit); break
       case 'update_plan_slot':                   result = await toolUpdatePlanSlot(input, db, userMsg); break
       case 'update_actual_outcome':              result = await toolUpdateActualOutcome(input, db); break
       case 'use_stash_item':         result = await toolUseStashItem(input, db); break
@@ -1322,8 +1346,11 @@ async function runLoop(
 
     const toolResults: Anthropic.ToolResultBlockParam[] = []
     for (const block of toolUseBlocks) {
-      emit(statusLabel(block.name, block.input as Record<string, unknown>))
-      const raw = await dispatch(block.name, block.input as Record<string, unknown>, db, userMessage)
+      // Grocery tools emit their own fine-grained progress (Reading → Parsing N →
+      // Matching → Updating stock N of X); everything else gets one label here.
+      const ownsProgress = block.name === 'import_grocery_order' || block.name === 'commit_grocery_import'
+      if (!ownsProgress) emit(statusLabel(block.name, block.input as Record<string, unknown>))
+      const raw = await dispatch(block.name, block.input as Record<string, unknown>, db, userMessage, emit)
       toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: raw })
       allToolResults.push({ tool: block.name, result: JSON.parse(raw) })
     }
@@ -1357,7 +1384,10 @@ Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS })
 
   try {
-    const { message } = await req.json()
+    const { message, tz_offset } = await req.json()
+    // Client's Date.getTimezoneOffset() (minutes, UTC−local) so status timestamps
+    // render in the user's local wall-clock time. Falls back to UTC.
+    const tz = Number.isFinite(Number(tz_offset)) ? Number(tz_offset) : 0
     if (!message?.trim()) return new Response(
       JSON.stringify({ reply: 'No message received.' }),
       { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } }
@@ -1389,9 +1419,9 @@ Deno.serve(async (req: Request) => {
         const send = (obj: Record<string, unknown>) => {
           try { controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`)) } catch (_e) { /* client gone */ }
         }
-        send({ type: 'status', label: lastLabel })
+        send({ type: 'status', label: lastLabel, ts: fmtTs(tz) })
         try {
-          const emit = (label: string) => { lastLabel = label; send({ type: 'status', label }) }
+          const emit = (label: string) => { lastLabel = label; send({ type: 'status', label, ts: fmtTs(tz) }) }
           const { reply, toolCalls, toolResults } = await runLoop(message.trim(), history, db, emit)
 
           // Distinct timestamps so the user message sorts before its reply.
@@ -1401,10 +1431,10 @@ Deno.serve(async (req: Request) => {
             { role: 'assistant', content: reply, tool_calls: toolCalls, tool_results: toolResults, created_at: new Date(nowMs + 1).toISOString() },
           ])
 
-          send({ type: 'done', text: reply })
+          send({ type: 'done', text: reply, ts: fmtTs(tz) })
         } catch (err) {
           console.error('chat-agent stream:', err)
-          send({ type: 'error', label: lastLabel, message: 'Something went wrong while ' + lastLabel.replace(/…$/, '').toLowerCase() + '. Try again or check the relevant tab.' })
+          send({ type: 'error', label: lastLabel, ts: fmtTs(tz), message: 'Something went wrong while ' + lastLabel.replace(/…$/, '').toLowerCase() + '. Try again or check the relevant tab.' })
         } finally {
           controller.close()
         }

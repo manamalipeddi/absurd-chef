@@ -1,4 +1,4 @@
-const CACHE = 'absurdchef-v117'
+const CACHE = 'absurdchef-v118'
 
 // Local-dev guard: the SW never serves from cache when the page is loaded from a
 // dev host, so edited files always load fresh (no version bump / unregister

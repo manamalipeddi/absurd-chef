@@ -1,4 +1,4 @@
-import { supabase, FUNCTIONS_URL, toast, navState } from '../app.js'
+import { supabase, FUNCTIONS_URL, toast, navState, setProcessing } from '../app.js'
 
 // ── State (persists across tab switches) ──────────────────
 let listEl          = null
@@ -32,6 +32,10 @@ export function init(el) {
 
   inputEl = document.getElementById('chat-input')
   sendBtn = document.getElementById('chat-send')
+
+  // A disabled input swallows its own events, so listen on the (always-enabled)
+  // input area: tapping anywhere in it while busy shows the "still working" tip.
+  inputArea.addEventListener('pointerdown', () => { if (busy) showInputTooltip() })
 
   inputEl.addEventListener('input', () => {
     inputEl.style.height = 'auto'
@@ -178,26 +182,39 @@ async function sendMessage() {
   inputEl.style.height = 'auto'
   busy = true
   setSendState(false)
+  // Cross-screen indicator: if the user navigates away, app.js shows a pill.
+  setProcessing(true, 'Processing…')
 
   appendBubble('user', text)
-  const statusEl = showStatus('Reading your message…')
-  const labelEl  = statusEl.querySelector('.chat-status__label')
+  const statusEl = showStatus()
+  const logEl    = statusEl.querySelector('.chat-status__log')
+  const logLines = []                                   // {ts, label} — for the log toggle
   let lastLabel  = 'Reading your message…'
-  const fail = (msg) => `Something went wrong while ${lastLabel.replace(/…$/, '').toLowerCase()}. ${msg}`
+  const pushLine = (ts, label, isError) => {
+    logLines.push({ ts: ts || '', label })
+    addStatusLine(logEl, ts, label, isError)
+  }
+  // A failure mid inventory/order write needs a clearer, action-specific message.
+  const isInventoryStep = () => /stock|inventor|order/i.test(lastLabel)
+  const failMsg = () => isInventoryStep()
+    ? 'Failed while updating inventory. Your order confirmation has not been fully processed. Try again or paste it again into the chat.'
+    : `Something went wrong while ${lastLabel.replace(/…$/, '').toLowerCase()}. Try again or check the relevant tab.`
 
   try {
     const res = await fetch(`${FUNCTIONS_URL}/chat-agent`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ message: text }),
+      // tz_offset → status timestamps render in the user's local wall-clock time.
+      body:    JSON.stringify({ message: text, tz_offset: new Date().getTimezoneOffset() }),
     })
     if (!res.ok || !res.body) throw new Error('stream unavailable')
 
-    // Read the SSE stream: status events update the line in place; done carries
-    // the full reply; error carries a where-it-failed message.
+    // Read the SSE stream: each status event APPENDS a timestamped line to the
+    // growing log; done carries the full reply; error carries a where-it-failed
+    // message.
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
-    let buf = '', replyText = null, errMsg = null, finished = false
+    let buf = '', replyText = null, streamErr = null, finished = false
 
     while (!finished) {
       const { value, done } = await reader.read()
@@ -209,23 +226,35 @@ async function sendMessage() {
         buf = buf.slice(i + 2)
         if (!dataLine) continue
         let evt; try { evt = JSON.parse(dataLine.slice(5).trim()) } catch { continue }
-        if (evt.type === 'status') { lastLabel = evt.label; if (labelEl) labelEl.textContent = evt.label }
-        else if (evt.type === 'done')  { replyText = evt.text || 'Done.'; finished = true }
-        else if (evt.type === 'error') { errMsg = evt.message || fail('Try again.'); finished = true }
+        if (evt.type === 'status') {
+          lastLabel = evt.label
+          pushLine(evt.ts, evt.label)
+          setProcessing(true, evt.label)          // keep the pill label current
+        } else if (evt.type === 'done')  { replyText = evt.text || 'Done.'; finished = true }
+        else if (evt.type === 'error')   { streamErr = evt.message || failMsg(); finished = true }
       }
     }
 
-    statusEl.remove()
-    if (replyText != null)   appendBubble('assistant', replyText)
-    else if (errMsg)         appendBubble('assistant', errMsg)
-    else                     appendBubble('assistant', fail('Try again — your changes may still have saved.'))
+    if (replyText != null) {
+      // Replace the whole status block with the reply, then keep a collapsed log.
+      statusEl.remove()
+      appendBubble('assistant', replyText)
+      if (logLines.length >= 2) listEl.appendChild(buildLogToggle(logLines))
+      scrollToBottom()
+    } else {
+      // Errored (or stream ended without done): keep the log visible, stop the
+      // dots, and append the failure line so the last successful step is shown.
+      markStatusError(statusEl)
+      pushLine('', streamErr || failMsg(), true)
+    }
   } catch {
-    statusEl.remove()
-    appendBubble('assistant', fail('Try again or check the relevant tab.'))
+    markStatusError(statusEl)
+    pushLine('', failMsg(), true)
     toast('Chat error', { error: true })
   } finally {
     busy = false
     setSendState(true)
+    setProcessing(false)
     inputEl.focus()
   }
 }
@@ -248,19 +277,73 @@ function appendBubble(role, text) {
   return wrap
 }
 
-// Live status line: animated dots + an updating label, in the assistant
-// position. One line, replaced in place as each status event arrives.
-function showStatus(label) {
+// Live status block: animated dots (persist until done) above a GROWING
+// timestamped log. Each status event appends a new line rather than replacing
+// the previous one, so the user sees the whole trail of work.
+function showStatus() {
   const wrap = document.createElement('div')
   wrap.className = 'chat-bubble chat-bubble--assistant chat-status'
   wrap.innerHTML = `<div class="chat-bubble__inner chat-status__inner">
     <span class="chat-typing"><span></span><span></span><span></span></span>
-    <span class="chat-status__label"></span>
+    <div class="chat-status__log"></div>
   </div>`
-  wrap.querySelector('.chat-status__label').textContent = label
   listEl.appendChild(wrap)
   scrollToBottom()
   return wrap
+}
+
+// Append one "HH:MM:SS  label" row to a log container.
+function addStatusLine(logEl, ts, label, isError) {
+  if (!logEl) return
+  const line = document.createElement('div')
+  line.className = 'chat-status__line' + (isError ? ' chat-status__line--error' : '')
+  const t = document.createElement('span'); t.className = 'chat-status__ts';   t.textContent = ts || ''
+  const x = document.createElement('span'); x.className = 'chat-status__text'; x.textContent = label
+  line.append(t, x)
+  logEl.appendChild(line)
+  scrollToBottom()
+}
+
+// On error: stop the animated dots but keep the log + the appended error line,
+// so the block shows the last successful step and where it failed.
+function markStatusError(statusEl) {
+  statusEl.classList.add('chat-status--error')
+  statusEl.querySelector('.chat-typing')?.remove()
+}
+
+// Collapsed "Show processing log" control shown under a completed reply.
+function buildLogToggle(logLines) {
+  const wrap = document.createElement('div')
+  wrap.className = 'chat-log-wrap'
+  const btn = document.createElement('button')
+  btn.className = 'chat-log-toggle'
+  btn.textContent = 'Show processing log'
+  const log = document.createElement('div')
+  log.className = 'chat-log'
+  log.hidden = true
+  logLines.forEach(l => addStatusLine(log, l.ts, l.label))
+  btn.addEventListener('click', () => {
+    log.hidden = !log.hidden
+    btn.textContent = log.hidden ? 'Show processing log' : 'Hide processing log'
+    if (!log.hidden) scrollToBottom()
+  })
+  wrap.append(btn, log)
+  return wrap
+}
+
+// Brief "still working" tip when the user taps the disabled input mid-request.
+let tooltipTimer = null
+function showInputTooltip() {
+  let tip = document.getElementById('chat-input-tooltip')
+  if (!tip) {
+    tip = document.createElement('div')
+    tip.id = 'chat-input-tooltip'
+    tip.textContent = 'Still working on your last message'
+    document.getElementById('chat-input-area')?.appendChild(tip)
+  }
+  tip.classList.add('visible')
+  clearTimeout(tooltipTimer)
+  tooltipTimer = setTimeout(() => tip && tip.classList.remove('visible'), 1600)
 }
 
 // ── Text rendering ────────────────────────────────────────
@@ -278,7 +361,7 @@ function setSendState(enabled) {
   if (sendBtn) sendBtn.disabled = !enabled
   if (inputEl) {
     inputEl.disabled = !enabled
-    inputEl.placeholder = enabled ? 'How can Absurd Chef help you?' : 'Waiting for response…'
+    inputEl.placeholder = enabled ? 'How can Absurd Chef help you?' : 'Processing — please wait…'
   }
 }
 
