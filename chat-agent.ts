@@ -664,6 +664,31 @@ function inferStorageCategory(name: string, food: string | null): string {
   return 'pantry'
 }
 
+// Strip a verbose Mathem product name to its descriptor for a NEW inventory row:
+// remove brand, size/weight/percent/pack tokens, and quality/marketing words;
+// keep functional descriptors (Laktosfri, Fryst, flavours). e.g. "Arla® Mild
+// Kvarg Vanilj Laktosfri Utan Tillsatt Socker 0,2% 450 g" → "Mild Kvarg Vanilj
+// Laktosfri". Unicode-aware word boundaries so Swedish-initial words match.
+const GROCERY_BRANDS = ['arla ko', 'arla', 'garant', 'valio', 'kronägg', 'kronfågel', 'dole', 'oatly', 'felix', 'santa maria', 'zeta', "ben's original", 'dr.oetker', 'dr oetker', 'eldorado', 'daily greens', 'semper', 'yoplait safari', 'yoplait', 'keso', 'friggs', 'star nutrition', 'biosalma', "patak's", 'pop bakery', 'masalamagic nirus', 'masalamagic', 'zeinas', 'itigo', 'blå band', 'dafgårds', 'axa', 'vanish', 'frukost', 'scan', 'guldfågeln']
+const GROCERY_MKT = ['eko', 'krav', 'ekologisk', 'klass 1', 'klass1', 'fairtrade', 'utan tillsatt socker', 'med lång hållbarhet', 'lång hållbarhet', 'färdigsköljd', 'frigående', 'hållbar', 'ätmogen', 'svenska', 'svensk', 'hel', 'delikatess', 'original', 'boil-in-bag', "quick n' easy", 'quick n easy', 'klassisk']
+const reEsc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const BRAND_PREFIX_RE = new RegExp('^\\s*(?:' + GROCERY_BRANDS.map(reEsc).join('|') + ')(?=[^\\p{L}]|$)[.\\s]*', 'iu')
+function cleanProductName(raw: string): string {
+  let s = String(raw || '').replace(/[®™]/g, ' ')
+  s = s.replace(BRAND_PREFIX_RE, '')
+  s = s.replace(/\b\d+([.,]\d+)?\s*-\s*\d+([.,]\d+)?\s*%/g, ' ')     // 3,8-4,5%
+  s = s.replace(/\b\d+([.,]\d+)?\s*%/g, ' ')                        // 0,2%  3%
+  s = s.replace(/\b\d+\s*[xX]\s*\d+\s*\w*/g, ' ')                   // 4x125g
+  s = s.replace(/\b\d+([.,]\d+)?\s*(kg|g|l|dl|cl|ml)\b/gi, ' ')     // 450 g, 1,5 L
+  s = s.replace(/\b\d+\s*(pc\.?|pcs|st|stk)\b/gi, ' ')             // 20 pc.
+  s = s.replace(/\b\d+\s*-?\s*p(ack)?\b/gi, ' ')                    // 4-p, 6-p
+  s = s.replace(/\b\d+\s*M\b/g, ' ')                                // 12M (baby food age)
+  for (const w of GROCERY_MKT) s = s.replace(new RegExp('(^|[^\\p{L}])' + reEsc(w) + '(?=[^\\p{L}]|$)', 'giu'), '$1 ')
+  s = s.replace(/\s*\/\s*/g, ' ').replace(/\s{2,}/g, ' ').trim()
+  s = s.replace(/^[\s,;:/–-]+|[\s,;:/–-]+$/g, '').trim()
+  return s || String(raw || '').trim()
+}
+
 // Parse one line → { name, qty, vat } or null (header / notification / price /
 // noise). vat is captured (not for pricing — it's the reliable non-food signal).
 function parseOrderLine(rawLine: string): { name: string; qty: number; vat: number | null } | null {
@@ -846,14 +871,15 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
         if (error) flagged.push(`${g.name} — write failed (${error.message})`)
         else updatedNames.push(wasInactive ? `${row.name as string} (reactivated)` : (row.name as string))
       } else {
-        const fc = inferFoodCategory(g.name)
+        const fc = inferFoodCategory(g.name)                 // category from the full raw name
+        const cleanName = cleanProductName(g.name)           // but store a stripped display name
         const { error } = await db.from('inventory').insert({
-          name: g.name, quantity: g.net, status: 'enough',
+          name: cleanName, quantity: g.net, status: 'enough',
           food_category: fc, category: inferStorageCategory(g.name, fc),
           source: 'grocery_import', active: true, last_updated_at: nowIso,
         })
-        if (error) flagged.push(`${g.name} — create failed (${error.message})`)
-        else createdNames.push(g.name)
+        if (error) flagged.push(`${cleanName} — create failed (${error.message})`)
+        else createdNames.push(cleanName)
       }
       done++
     }
