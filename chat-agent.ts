@@ -718,37 +718,43 @@ function parseOrderLine(rawLine: string): { name: string; qty: number; vat: numb
 
 type GroceryGroup = { name: string; norm: string; net: number; hasPositive: boolean; vat: number | null }
 
-// Claude pass: map purchased items that missed the deterministic matcher onto an
-// existing inventory row (same product, ignoring brand/size/pack wording), else
-// null → create new. Ids are validated against the real set; failure → all new.
-async function aiMatchGrocery(items: GroceryGroup[], invRows: Record<string, unknown>[]): Promise<Map<string, string>> {
-  const out = new Map<string, string>()
-  if (!items.length || !invRows.length) return out
+// Claude pass for items that missed the deterministic matcher. For each, either
+// map it to an existing inventory row (same product, ignoring brand/size/pack),
+// OR return a concise ENGLISH name for a new row (translated from Swedish, brand/
+// size/marketing stripped, in the household's naming style). Ids are validated;
+// on failure everything falls back to the deterministic clean name.
+async function aiMatchGrocery(items: GroceryGroup[], invRows: Record<string, unknown>[]): Promise<Map<string, { id?: string; name?: string }>> {
+  const out = new Map<string, { id?: string; name?: string }>()
+  if (!items.length) return out
   const invForAI = invRows.map(r => ({ id: r.id, name: r.name, food_category: r.food_category, active: r.active !== false }))
-  const prompt = `You match purchased grocery items to a household's existing inventory rows. For each PURCHASED item, decide whether it is the SAME product as an existing inventory row (same food; ignore brand, size, pack count, and marketing words). Return that row's id, or null if none is clearly the same (it will be created as a new row).
+  const prompt = `You process purchased grocery items (Swedish Mathem names) for a household whose inventory is kept in ENGLISH. For EACH purchased item do ONE of:
+(a) If it is clearly the SAME product as an existing inventory row (same food; ignore brand, size, pack count, marketing words), return that row's id in "inventory_id" (and leave "name" null).
+(b) Otherwise set "inventory_id": null and return "name": a concise ENGLISH name for a NEW row — translate from Swedish, strip brand/size/pack/marketing, keep the descriptor and functional words (lactose-free, frozen, flavour). Match the style of the existing English names (e.g. "Cashew butter", "Yoghurt - Strawberry & Raspberry", "Basmati rice", "Naan - Garlic", "Chicken Thigh Strips", "Pizza - 4 Cheese (frozen)").
 
 PURCHASED ITEMS:
 ${JSON.stringify(items.map((g, i) => ({ i, name: g.name })))}
 
-EXISTING INVENTORY (you MAY match an inactive row; ids are the only valid outputs):
+EXISTING INVENTORY (you MAY match an inactive row; ids are the only valid match outputs):
 ${JSON.stringify(invForAI)}
 
 Rules:
-- Match only when clearly the same product, e.g. "Arla Mild Kvarg Vanilj 0,2% 450 g" → an existing "Kvarg - Vanilla". A different flavour/variant/type → null.
+- Match only when clearly the same product. A different flavour/variant/type → null + an English name.
 - Never invent an id. Use only ids from the list above, or null.
 
-Return ONLY JSON, no prose: {"matches":[{"i":0,"inventory_id":"<uuid or null>"}]}`
+Return ONLY JSON, no prose: {"items":[{"i":0,"inventory_id":"<uuid or null>","name":"<english name or null>"}]}`
   try {
-    const resp = await ac.messages.create({ model: 'claude-sonnet-4-6', max_tokens: 2000, messages: [{ role: 'user', content: prompt }] })
+    const resp = await ac.messages.create({ model: 'claude-sonnet-4-6', max_tokens: 3000, messages: [{ role: 'user', content: prompt }] })
     const raw = ((resp.content[0] as Anthropic.TextBlock).text || '').trim()
     const jsonStr = raw.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '')
-    const parsed = JSON.parse(jsonStr) as { matches?: Array<{ i: number; inventory_id: string | null }> }
+    const parsed = JSON.parse(jsonStr) as { items?: Array<{ i: number; inventory_id: string | null; name: string | null }> }
     const idSet = new Set(invRows.map(r => r.id as string))
-    for (const m of (parsed.matches || [])) {
+    for (const m of (parsed.items || [])) {
       const g = items[m.i]
-      if (g && m.inventory_id && idSet.has(m.inventory_id)) out.set(g.norm, m.inventory_id)
+      if (!g) continue
+      if (m.inventory_id && idSet.has(m.inventory_id)) out.set(g.norm, { id: m.inventory_id })
+      else if (m.name && String(m.name).trim()) out.set(g.norm, { name: String(m.name).trim() })
     }
-  } catch (_e) { /* AI match unavailable → everything falls back to create-new */ }
+  } catch (_e) { /* AI unavailable → deterministic clean name fallback */ }
   return out
 }
 
@@ -830,9 +836,10 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
     return null
   }
 
-  // Resolve every net>0 item to an inventory row (or null = create new). Items
-  // that miss the deterministic matcher get a Claude matching pass.
-  type Resolved = { g: GroceryGroup; row: Record<string, unknown> | null; wasInactive: boolean }
+  // Resolve every net>0 item to an inventory row (or null = create new, with an
+  // English display name). Items that miss the deterministic matcher get a Claude
+  // pass that both matches AND translates a new-item name to English.
+  type Resolved = { g: GroceryGroup; row: Record<string, unknown> | null; wasInactive: boolean; newName?: string }
   const resolved: Resolved[] = []
   const unresolved: GroceryGroup[] = []
   for (const g of toUpdate) {
@@ -844,9 +851,13 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
     emit(`Matching ${unresolved.length} item${unresolved.length === 1 ? '' : 's'} with the Absurd Chef…`)
     const aiMap = await aiMatchGrocery(unresolved, invRows)
     for (const g of unresolved) {
-      const id = aiMap.get(g.norm)
-      const row = id ? (invById.get(id) || null) : null
-      resolved.push({ g, row, wasInactive: !!row && row.active === false })
+      const hit = aiMap.get(g.norm)
+      if (hit?.id) {
+        const row = invById.get(hit.id) || null
+        resolved.push({ g, row, wasInactive: !!row && row.active === false })
+      } else {
+        resolved.push({ g, row: null, wasInactive: false, newName: hit?.name })
+      }
     }
   }
 
@@ -859,7 +870,7 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
   const X = resolved.length
   let done = 0
   for (let b = 0; b < resolved.length; b += 10) {
-    for (const { g, row, wasInactive } of resolved.slice(b, b + 10)) {
+    for (const { g, row, wasInactive, newName } of resolved.slice(b, b + 10)) {
       if (row) {
         const upd: Record<string, unknown> = {
           quantity: (Number(row.quantity) || 0) + g.net,   // delivered qty adds to current stock
@@ -872,7 +883,8 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
         else updatedNames.push(wasInactive ? `${row.name as string} (reactivated)` : (row.name as string))
       } else {
         const fc = inferFoodCategory(g.name)                 // category from the full raw name
-        const cleanName = cleanProductName(g.name)           // but store a stripped display name
+        // English name from the AI pass; deterministic Swedish-stripped fallback.
+        const cleanName = (newName && newName.trim()) || cleanProductName(g.name)
         const { error } = await db.from('inventory').insert({
           name: cleanName, quantity: g.net, status: 'enough',
           food_category: fc, category: inferStorageCategory(g.name, fc),
