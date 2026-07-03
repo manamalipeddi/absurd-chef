@@ -10,6 +10,27 @@ let loadMoreBtn     = null
 // The most recent completed reply's processing log — re-attached after a
 // DB-driven reload so the log survives navigating away from the chat and back.
 let lastLog         = null   // { content, lines }
+let lastRenderedDate = null  // day-key of the last rendered bubble (for date separators)
+
+// ── Date / time helpers (WhatsApp-style grouping) ─────────
+function dayKey(iso)   { const d = new Date(iso); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` }
+function timeLabel(iso) { return new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) }
+function dateLabel(iso) {
+  const d = new Date(iso), now = new Date()
+  const dk = dayKey(iso)
+  const yest = new Date(now); yest.setDate(now.getDate() - 1)
+  if (dk === dayKey(now.toISOString()))  return 'Today'
+  if (dk === dayKey(yest.toISOString())) return 'Yesterday'
+  const sameYear = d.getFullYear() === now.getFullYear()
+  return d.toLocaleDateString('en-GB', sameYear ? { day: 'numeric', month: 'long' } : { day: 'numeric', month: 'long', year: 'numeric' })
+}
+function makeDateSep(iso) {
+  const sep = document.createElement('div')
+  sep.className = 'chat-date-sep'
+  const s = document.createElement('span'); s.textContent = dateLabel(iso)
+  sep.appendChild(s)
+  return sep
+}
 
 // ── Lifecycle ─────────────────────────────────────────────
 export function init(el) {
@@ -113,7 +134,14 @@ async function loadHistory() {
     listEl.appendChild(loadMoreBtn)
   }
 
-  msgs.forEach(msg => appendBubble(msg.role, msg.content))
+  // Group by day: a date separator before the first message of each day.
+  let prevKey = null
+  msgs.forEach(msg => {
+    const k = dayKey(msg.created_at)
+    if (k !== prevKey) { listEl.appendChild(makeDateSep(msg.created_at)); prevKey = k }
+    appendBubble(msg.role, msg.content, msg.created_at)
+  })
+  lastRenderedDate = prevKey
 
   // Re-attach the processing log to the most recent reply, so it doesn't vanish
   // when you leave the chat and come back (the log lives in memory, not the DB).
@@ -144,8 +172,18 @@ async function loadOlderMessages() {
   oldestCreatedAt = msgs[0].created_at
 
   const anchor = listEl.querySelector('.chat-bubble')
+  // If the older batch ends on the same day as the current first message, drop
+  // that message's leading separator to avoid a duplicate at the seam.
+  const lastOlderKey = dayKey(msgs[msgs.length - 1].created_at)
+  if (anchor && anchor.dataset.daykey === lastOlderKey) {
+    const prev = anchor.previousElementSibling
+    if (prev && prev.classList.contains('chat-date-sep')) prev.remove()
+  }
+  let prevKey = null
   msgs.forEach(msg => {
-    listEl.insertBefore(createBubble(msg.role, msg.content), anchor)
+    const k = dayKey(msg.created_at)
+    if (k !== prevKey) { listEl.insertBefore(makeDateSep(msg.created_at), anchor); prevKey = k }
+    listEl.insertBefore(createBubble(msg.role, msg.content, msg.created_at), anchor)
   })
 
   const { count } = await supabase
@@ -181,7 +219,7 @@ async function showGreeting() {
   } else {
     greeting = `Hi! No plan yet — tap the ✨ on the Plan tab to generate one, then come back and ask me anything.`
   }
-  appendBubble('assistant', greeting)
+  appendLiveBubble('assistant', greeting)
 }
 
 // ── Send ──────────────────────────────────────────────────
@@ -196,7 +234,7 @@ async function sendMessage() {
   // Cross-screen indicator: if the user navigates away, app.js shows a pill.
   setProcessing(true, 'Processing…')
 
-  appendBubble('user', text)
+  appendLiveBubble('user', text)
   const statusEl = showStatus()
   const logEl    = statusEl.querySelector('.chat-status__log')
   const logLines = []                                   // {ts, label} — for the log toggle
@@ -249,7 +287,7 @@ async function sendMessage() {
     if (replyText != null) {
       // Replace the whole status block with the reply, then keep a collapsed log.
       statusEl.remove()
-      appendBubble('assistant', replyText)
+      appendLiveBubble('assistant', replyText)
       if (logLines.length >= 2) listEl.appendChild(buildLogToggle(logLines))
       // Remember it so a reload (after navigating away) can re-attach the log.
       lastLog = { content: replyText, lines: logLines.slice() }
@@ -273,12 +311,20 @@ async function sendMessage() {
 }
 
 // ── Bubble DOM ────────────────────────────────────────────
-function createBubble(role, text) {
+function createBubble(role, text, createdAt) {
   const wrap  = document.createElement('div')
   wrap.className = `chat-bubble chat-bubble--${role}`
+  if (createdAt) wrap.dataset.daykey = dayKey(createdAt)
   const inner = document.createElement('div')
   inner.className = 'chat-bubble__inner'
   inner.innerHTML = renderText(text)
+  // WhatsApp-style time in the corner of the bubble.
+  if (createdAt) {
+    const time = document.createElement('span')
+    time.className = 'chat-bubble__time'
+    time.textContent = timeLabel(createdAt)
+    inner.appendChild(time)
+  }
   wrap.appendChild(inner)
   // Tap the bubble to copy its text (the raw message, so newlines/tables/markdown
   // survive). A manual text selection is left alone — only a plain tap copies.
@@ -308,11 +354,20 @@ async function copyText(text) {
   }
 }
 
-function appendBubble(role, text) {
-  const wrap = createBubble(role, text)
+function appendBubble(role, text, createdAt) {
+  const wrap = createBubble(role, text, createdAt)
   listEl.appendChild(wrap)
   scrollToBottom()
   return wrap
+}
+
+// Append a live message (just sent/received) stamped now, inserting a date
+// separator first if the day rolled over since the last rendered bubble.
+function appendLiveBubble(role, text) {
+  const now = new Date().toISOString()
+  const k = dayKey(now)
+  if (k !== lastRenderedDate) { listEl.appendChild(makeDateSep(now)); lastRenderedDate = k }
+  return appendBubble(role, text, now)
 }
 
 // Live status block: animated dots (persist until done) above a GROWING
