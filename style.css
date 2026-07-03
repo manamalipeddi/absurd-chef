@@ -1890,7 +1890,10 @@ body {
   border-radius: 18px;
   font-size: 14px;
   line-height: 1.5;
+  cursor: pointer;                       /* tap to copy */
+  -webkit-tap-highlight-color: transparent;
 }
+.chat-bubble__inner:active { filter: brightness(0.96); }
 
 .chat-bubble--user .chat-bubble__inner {
   background: linear-gradient(135deg, var(--primary) 0%, var(--primary-light) 100%);

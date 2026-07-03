@@ -267,7 +267,32 @@ function createBubble(role, text) {
   inner.className = 'chat-bubble__inner'
   inner.innerHTML = renderText(text)
   wrap.appendChild(inner)
+  // Tap the bubble to copy its text (the raw message, so newlines/tables/markdown
+  // survive). A manual text selection is left alone — only a plain tap copies.
+  wrap.addEventListener('click', () => {
+    const sel = window.getSelection && window.getSelection().toString()
+    if (sel) return
+    copyText(text)
+  })
   return wrap
+}
+
+// Copy to clipboard with a fallback for webviews without the async Clipboard API.
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'; ta.style.top = '-1000px'; ta.style.opacity = '0'
+      document.body.appendChild(ta); ta.focus(); ta.select()
+      document.execCommand('copy'); ta.remove()
+    }
+    toast('Copied')
+  } catch {
+    toast('Copy failed', { error: true })
+  }
 }
 
 function appendBubble(role, text) {
