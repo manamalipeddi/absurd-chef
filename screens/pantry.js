@@ -46,6 +46,13 @@ function displayStatus(item) {
   return isAtypical(item) ? (item.status || null) : deriveStatus(item.quantity, item.typical_quantity)
 }
 
+// Out of stock: an explicit zero quantity, or a status that resolves to 'out'.
+// Used to hide the (irrelevant) expiry label and sink these to the bottom.
+function isOutOfStock(item) {
+  if (item.quantity != null && Number(item.quantity) === 0) return true
+  return displayStatus(item) === 'out'
+}
+
 function deriveStatus(qty, typical) {
   if (typical == null || Number(typical) <= 0) return null
   if (qty == null || Number(qty) === 0) return 'out'
@@ -229,15 +236,21 @@ function renderInventory() {
     CAT_LIST.forEach(catKey => {
       let items = bycat[catKey]
       if (!items?.length) return
-      // Fridge: soonest-expiring first; items with no expiry keep the regular
-      // order (stable sort preserves the global favourites→checked→alpha tiers).
+      // Fridge: in-stock items first, ordered by soonest expiry (alphabetical
+      // tie-breaker; items with no expiry come after dated ones). Out-of-stock
+      // items are irrelevant, so they sink to the bottom, alphabetically.
       if (catKey === 'fridge') {
+        const alpha = (a, b) => (a.name || '').localeCompare(b.name || '')
         items = [...items].sort((a, b) => {
-          const ea = a.expiry_date || null, eb = b.expiry_date || null
-          if (ea && eb) return ea < eb ? -1 : ea > eb ? 1 : 0
-          if (ea) return -1
-          if (eb) return 1
-          return 0
+          const aOut = isOutOfStock(a), bOut = isOutOfStock(b)
+          if (aOut !== bOut) return aOut ? 1 : -1
+          if (!aOut) {
+            const ea = a.expiry_date || '', eb = b.expiry_date || ''
+            if (ea && eb) { if (ea !== eb) return ea < eb ? -1 : 1 }
+            else if (ea) return -1
+            else if (eb) return 1
+          }
+          return alpha(a, b)
         })
       }
       hasAny = true
@@ -529,7 +542,9 @@ function renderInvItem(wrap, item, ruled) {
   else { upd.textContent = 'updated ' + relTime(item.last_updated_at) }
   addSeg(upd)
 
-  const ei = expiryInfo(item.expiry_date)
+  // Skip the expiry label entirely when the item is out of stock — an expired/
+  // expiry pill on something you don't have is just noise.
+  const ei = isOutOfStock(item) ? null : expiryInfo(item.expiry_date)
   if (ei) {
     const e = document.createElement('span')
     e.textContent = ei.text
