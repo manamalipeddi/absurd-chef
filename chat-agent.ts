@@ -75,7 +75,7 @@ BEHAVIOR:
 - Freezer stash items with source = "store_bought" are bought ready-made (no recipe to open) — refer to them as store-bought (e.g. "🛒 store-bought lasagna"). A store-bought item at portions 0 with typically_restocked = true is one the user normally keeps stocked and can rebuy on a grocery run.
 - Guest days: get_special_days returns known_guests[] (resolved member data) and guest_allergies[] (one-off). Both are hard allergy constraints for that date only — treat them with the same enforcement strength as household allergens when suggesting meals for that specific day.
 - Inventory item names follow the pattern "Category - Variant" (e.g. "Milk - Oat", "Bread - Lingon Grova"). When the user describes what they have in stock, call update_inventory_from_description. The tool handles parsing, matching, and writing; your job is to relay what was done and ask about any ambiguous items it surfaces.
-- GROCERY ORDER IMPORT: when the user pastes a Mathem grocery order confirmation, call import_grocery_order once with the verbatim text. This is a SINGLE-PASS, NO-CONFIRMATION tool — it parses AND writes inventory immediately (net quantity per item, incl. adjustment/negative lines). Do NOT ask the user to confirm first, and do NOT call it a second time for the same paste. When it returns, relay its "summary" field to the user as-is (items updated, any fully-cancelled items, any new rows created, anything flagged for review). Do NOT regenerate the grocery list afterwards — that only happens on the Sunday cron or the manual Regenerate button.
+- GROCERY ORDER IMPORT: when the user pastes a grocery order confirmation (a block with product lines and "kr" prices, e.g. "Beställda varor" / "Vara Antal Moms Pris" from Mathem), you MUST call import_grocery_order once with the verbatim text — do NOT reply "Done", "Processing", or acknowledge it without actually calling the tool. It is a SINGLE-PASS, NO-CONFIRMATION tool: it parses AND writes inventory immediately (net quantity per item, incl. adjustment/negative lines). Do NOT ask the user to confirm first, and do NOT call it a second time for the same paste. When it returns, relay its "summary" field to the user as-is. Do NOT regenerate the grocery list afterwards — that only happens on the Sunday cron or the manual Regenerate button. (Most order pastes are routed to the parser automatically before you even see them; this is your instruction for any that reach you directly.)
 - WHY-NOTES: when you change a plan slot via update_plan_slot and there's a reason ("swap Thursday, Gintas is craving curry"), pass it as the reason argument — one short sentence. It's saved to the slot's notes and shown on the plan card, separate from the audit log. If the user gives no reason, omit it (the card then shows nothing for that slot).
 - ACTUAL vs PLANNED: meal_plans records what was planned AND what was actually eaten. When the user says they made something different on a past day ("we ended up ordering pizza Monday", "I made tacos instead of the curry Tuesday"), call update_actual_outcome with that date — actual_recipe_id if it's a tracked recipe, else actual_notes for an untracked meal (takeout, leftovers). Use made_as_planned: true if they confirm they made the plan. get_plan returns actually_made / actual_recipe / actual_notes so you can report what really happened. The recipe actually eaten is what counts for no-repeat — never claim a planned recipe was eaten if actually_made is false.
 - Today: ${today()}`
@@ -627,8 +627,23 @@ function swedishNum(s: string): number | null {
 
 // Non-food PRODUCTS that must never land in a food inventory. Focused, low
 // false-positive list (Swedish + English); ambiguous words are deliberately out.
-const NON_FOOD_RE = /\b(blöj\w*|diaper\w*|libero|hushållspapper|toapapper|toalettpapper|toilet\s*paper|servett\w*|napkin\w*|aluminiumfolie|plastfilm|gladpack|cling\s*film|diskmedel|disktablett\w*|disktabs|maskindisk\w*|dishwash\w*|tvättmedel|sköljmedel|detergent|rengöring\w*|allrengöring|tvål|soap|schampo|shampoo|balsam|conditioner|tandkräm|toothpaste|deodorant|bindor|tampong\w*|batteri\w*|glödlampa|djurfoder|kattmat|hundmat)\b/i
-function isNonFood(name: string): boolean { return NON_FOOD_RE.test(name) }
+const NON_FOOD_RE = /\b(blöj\w*|diaper\w*|libero|hushållspapper|toapapper|toalettpapper|toilet\s*paper|servett\w*|napkin\w*|aluminiumfolie|plastfilm|gladpack|cling\s*film|vanish|fläckborttag\w*|fläckbort\w*|diskmedel|disktablett\w*|disktabs|maskindisk\w*|dishwash\w*|tvättmedel|sköljmedel|detergent|rengöring\w*|allrengöring|tvål|soap|schampo|shampoo|balsam|conditioner|tandkräm|toothpaste|deodorant|bindor|tampong\w*|batteri\w*|glödlampa|djurfoder|kattmat|hundmat)\b/i
+// Non-food is skipped from inventory. Primary signal: 25% VAT (Mathem food is
+// 6–12%, household/hygiene/cleaning is 25%, and Mathem sells no alcohol) — backed
+// by a keyword list for anything mis-rated or when VAT is missing.
+function isNonFood(name: string, vat?: number | null): boolean {
+  return vat === 25 || NON_FOOD_RE.test(name)
+}
+
+// Does a pasted message look like a Mathem grocery order confirmation? Used to
+// route it DIRECTLY to the parser instead of relying on the model to decide to
+// call the tool (which it was skipping — replying "Done" without writing).
+function isGroceryOrderPaste(text: string): boolean {
+  if (/beställda varor|orderbekräftelse|mathem|vara\s+antal\s+moms\s+pris/i.test(text)) return true
+  // Fallback: several product lines ending in a "<number> kr" price.
+  const krLines = text.split(/\r?\n/).filter(l => /\d[\d.,\s]*\s*kr\b/i.test(l)).length
+  return krLines >= 3
+}
 
 // Best-effort food_category from a product name (else null). Swedish + English.
 const FOOD_CATEGORY_RULES: Array<[RegExp, string]> = [
@@ -649,8 +664,9 @@ function inferStorageCategory(name: string, food: string | null): string {
   return 'pantry'
 }
 
-// Parse one line → { name, qty } or null (header / notification / price / noise).
-function parseOrderLine(rawLine: string): { name: string; qty: number } | null {
+// Parse one line → { name, qty, vat } or null (header / notification / price /
+// noise). vat is captured (not for pricing — it's the reliable non-food signal).
+function parseOrderLine(rawLine: string): { name: string; qty: number; vat: number | null } | null {
   const line = rawLine.replace(/ /g, ' ').trim()   // normalise non-breaking spaces
   if (!line) return null
   if (/ändring i din beställning/i.test(line)) return null   // change-notification metadata
@@ -661,18 +677,21 @@ function parseOrderLine(rawLine: string): { name: string; qty: number } | null {
   const tabs = line.split('\t').map(s => s.trim()).filter(s => s.length)
   if (tabs.length >= 2) {
     const q = swedishNum(tabs[1])
-    if (q != null && tabs[0]) return { name: tabs[0], qty: Math.round(q) }
+    if (q != null && tabs[0]) {
+      const v = tabs[2] ? parseInt(tabs[2], 10) : NaN
+      return { name: tabs[0], qty: Math.round(q), vat: Number.isFinite(v) ? v : null }
+    }
   }
   // Fallback (tabs lost in the paste): trailing "<qty> <vat>% <price> kr".
-  const m = line.match(/^(.*?)[\s\t]+(-?\d+(?:[.,]\d+)?)[\s\t]+\d{1,3}\s*%[\s\t]+[\d.,\s]+kr\.?$/i)
+  const m = line.match(/^(.*?)[\s\t]+(-?\d+(?:[.,]\d+)?)[\s\t]+(\d{1,3})\s*%[\s\t]+[\d.,\s]+kr\.?$/i)
   if (m && m[1].trim()) {
     const q = swedishNum(m[2])
-    if (q != null) return { name: m[1].trim(), qty: Math.round(q) }
+    if (q != null) return { name: m[1].trim(), qty: Math.round(q), vat: parseInt(m[3], 10) }
   }
   return null   // price-summary / delivery-fee / unrecognised
 }
 
-type GroceryGroup = { name: string; norm: string; net: number; hasPositive: boolean }
+type GroceryGroup = { name: string; norm: string; net: number; hasPositive: boolean; vat: number | null }
 
 // Claude pass: map purchased items that missed the deterministic matcher onto an
 // existing inventory row (same product, ignoring brand/size/pack wording), else
@@ -722,16 +741,17 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
     if (!p) continue
     const key = NORM(p.name)
     if (!key) continue
-    const g = groups.get(key) || { name: p.name, norm: key, net: 0, hasPositive: false }
+    const g = groups.get(key) || { name: p.name, norm: key, net: 0, hasPositive: false, vat: p.vat }
     g.net += p.qty
     if (p.qty > 0) { g.hasPositive = true; g.name = p.name }   // prefer an original (positive) line's display name
+    if (p.vat != null) g.vat = p.vat
     groups.set(key, g)
   }
   const all = [...groups.values()]
 
   // Non-food PRODUCTS are recognised and skipped (never written to inventory).
-  const skippedNonFood = all.filter(g => isNonFood(g.name)).map(g => g.name)
-  const food = all.filter(g => !isNonFood(g.name))
+  const skippedNonFood = all.filter(g => isNonFood(g.name, g.vat)).map(g => g.name)
+  const food = all.filter(g => !isNonFood(g.name, g.vat))
 
   const toUpdate    = food.filter(g => g.net > 0)                     // net > 0 → update / create
   const cancelled   = food.filter(g => g.net === 0)                   // net = 0 → skip, list to user
@@ -1352,7 +1372,26 @@ Deno.serve(async (req: Request) => {
         send({ type: 'status', label: lastLabel, ts: fmtTs(tz) })
         try {
           const emit = (label: string) => { lastLabel = label; send({ type: 'status', label, ts: fmtTs(tz) }) }
-          const { reply, toolCalls, toolResults } = await runLoop(message.trim(), history, db, emit)
+
+          // A pasted Mathem order is handled DETERMINISTICALLY: the parser runs
+          // directly on the verbatim paste (no model discretion — the model was
+          // unreliably skipping the tool and replying "Done" without writing, and
+          // a model-built raw_text arg could truncate the paste). Everything else
+          // goes through the normal tool-calling agent loop.
+          const userMsg = message.trim()
+          let reply: string
+          let toolCalls: unknown[]
+          let toolResults: unknown[]
+          if (isGroceryOrderPaste(userMsg)) {
+            const result = await toolImportGroceryOrder({ raw_text: userMsg }, db, emit)
+            const r = result as { summary?: string; error?: string }
+            reply = r.summary || r.error || 'Order processed.'
+            toolCalls = [{ name: 'import_grocery_order', input: { raw_text: '[verbatim order text]' } }]
+            toolResults = [{ tool: 'import_grocery_order', result }]
+          } else {
+            const loop = await runLoop(userMsg, history, db, emit)
+            reply = loop.reply; toolCalls = loop.toolCalls; toolResults = loop.toolResults
+          }
 
           // Distinct timestamps so the user message sorts before its reply.
           const nowMs = Date.now()
