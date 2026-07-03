@@ -727,14 +727,26 @@ Return ONLY JSON, no prose: {"matches":[{"i":0,"inventory_id":"<uuid or null>"}]
   return out
 }
 
-async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, emit: (label: string) => void = () => {}) {
-  const rawText = (input.raw_text as string) || ''
-  if (!rawText.trim()) return { error: 'No order text provided to parse.' }
+// Stable fingerprint of an order's net>0 items (sorted "norm:net"), for the
+// duplicate-paste guard. djb2 hash → hex, plus item count.
+function fingerprintOf(pairs: string[]): string {
+  const s = pairs.slice().sort().join('|')
+  let h = 5381
+  for (let i = 0; i < s.length; i++) h = (Math.imul(h, 33) + s.charCodeAt(i)) >>> 0
+  return h.toString(16) + '.' + pairs.length
+}
 
-  emit('Reading your order confirmation…')
-  emit('Parsing order lines…')
+// "20 minutes ago" / "2 hours ago" for the guard message.
+function agoText(iso: string): string {
+  const mins = Math.max(1, Math.round((Date.now() - new Date(iso).getTime()) / 60000))
+  if (mins < 60) return `${mins} minute${mins === 1 ? '' : 's'} ago`
+  const hrs = Math.round(mins / 60)
+  return `${hrs} hour${hrs === 1 ? '' : 's'} ago`
+}
 
-  // ── Steps 1–3: parse lines, normalise names, net quantity per product. ──
+// Pure parse (Steps 1–3): lines → normalised groups → net quantity per product,
+// classified. No DB, no writes — used both by the writer and the pre-write guard.
+function parseGroceryOrder(rawText: string) {
   const groups = new Map<string, GroceryGroup>()
   for (const rawLine of rawText.split(/\r?\n/)) {
     const p = parseOrderLine(rawLine)
@@ -748,15 +760,24 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
     groups.set(key, g)
   }
   const all = [...groups.values()]
-
-  // Non-food PRODUCTS are recognised and skipped (never written to inventory).
-  const skippedNonFood = all.filter(g => isNonFood(g.name, g.vat)).map(g => g.name)
+  const skippedNonFood = all.filter(g => isNonFood(g.name, g.vat)).map(g => g.name)   // non-food skipped
   const food = all.filter(g => !isNonFood(g.name, g.vat))
-
   const toUpdate    = food.filter(g => g.net > 0)                     // net > 0 → update / create
   const cancelled   = food.filter(g => g.net === 0)                   // net = 0 → skip, list to user
   const parseErrors = food.filter(g => g.net < 0 && g.hasPositive)    // reductions exceeded additions
   const corrections = food.filter(g => g.net < 0 && !g.hasPositive)   // negative-only → decrement existing
+  const fingerprint = fingerprintOf(toUpdate.map(g => `${g.norm}:${g.net}`))
+  return { food, toUpdate, cancelled, parseErrors, corrections, skippedNonFood, fingerprint }
+}
+
+async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, emit: (label: string) => void = () => {}) {
+  const rawText = (input.raw_text as string) || ''
+  if (!rawText.trim()) return { error: 'No order text provided to parse.' }
+
+  emit('Reading your order confirmation…')
+  emit('Parsing order lines…')
+
+  const { food, toUpdate, cancelled, parseErrors, corrections, skippedNonFood, fingerprint } = parseGroceryOrder(rawText)
 
   emit(`Found ${food.length} items. Net: ${toUpdate.length} to update, ${cancelled.length + parseErrors.length + corrections.length} cancelled or adjusted.`)
 
@@ -858,6 +879,14 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
       : `${r.name as string} — reduced by ${dropped} (correction, no original line in this order)`)
   }
   for (const g of parseErrors) flagged.push(`${g.name} — net negative (${g.net}); reductions exceeded additions, not written`)
+
+  // Log the committed import so the 24h large-order re-paste guard can see it
+  // (fingerprint = which order, count = size). Best-effort; never blocks writes.
+  await db.from('grocery_import_batches').insert({
+    status: 'committed', committed_at: nowIso,
+    raw_text: rawText.slice(0, 20000),
+    items: { fingerprint, count: toUpdate.length },
+  }).then(() => {}, () => {})
 
   const parts: string[] = [`Done. Updated inventory for ${updatedNames.length} item${updatedNames.length === 1 ? '' : 's'}.`]
   if (createdNames.length)   parts.push(`${createdNames.length} new item${createdNames.length === 1 ? '' : 's'} added: ${createdNames.join(', ')}.`)
@@ -1379,15 +1408,60 @@ Deno.serve(async (req: Request) => {
           // a model-built raw_text arg could truncate the paste). Everything else
           // goes through the normal tool-calling agent loop.
           const userMsg = message.trim()
-          let reply: string
-          let toolCalls: unknown[]
-          let toolResults: unknown[]
-          if (isGroceryOrderPaste(userMsg)) {
-            const result = await toolImportGroceryOrder({ raw_text: userMsg }, db, emit)
+          let reply = ''
+          let toolCalls: unknown[] = []
+          let toolResults: unknown[] = []
+
+          const runImport = async (rawText: string) => {
+            const result = await toolImportGroceryOrder({ raw_text: rawText }, db, emit)
             const r = result as { summary?: string; error?: string }
             reply = r.summary || r.error || 'Order processed.'
             toolCalls = [{ name: 'import_grocery_order', input: { raw_text: '[verbatim order text]' } }]
             toolResults = [{ tool: 'import_grocery_order', result }]
+          }
+
+          // A short affirmative right after a paused large order = the user
+          // confirming it → process the stashed pending order.
+          const affirmative = userMsg.length <= 40 &&
+            /^(confirm|yes|yep|yeah|ja|ok|okay|go ahead|do it|proceed|process( it)?|add( it)?( anyway)?)\b/i.test(userMsg)
+          const pending = affirmative
+            ? (await db.from('grocery_import_batches')
+                .select('id, raw_text').eq('status', 'pending')
+                .gte('created_at', new Date(Date.now() - 30 * 60000).toISOString())
+                .order('created_at', { ascending: false }).limit(1).maybeSingle()).data as { id: string; raw_text: string } | null
+            : null
+
+          if (pending?.raw_text) {
+            await db.from('grocery_import_batches').update({ status: 'confirmed' }).eq('id', pending.id)
+            await runImport(pending.raw_text)
+          } else if (isGroceryOrderPaste(userMsg)) {
+            const preview = parseGroceryOrder(userMsg)
+            const foodCount = preview.toUpdate.length
+            if (foodCount < 10) {
+              await runImport(userMsg)                       // small order (<10) — free pass
+            } else {
+              // Large order → guard against an accidental re-paste / double-add.
+              emit('Checking your recent orders…')
+              const dayAgo = new Date(Date.now() - 24 * 3600 * 1000).toISOString()
+              const { data: recent } = await db.from('grocery_import_batches')
+                .select('created_at, items').eq('status', 'committed').gte('created_at', dayAgo)
+                .order('created_at', { ascending: false })
+              const rec = (recent || []) as Array<{ created_at: string; items: { fingerprint?: string } | null }>
+              const dup = rec.find(r => r.items && r.items.fingerprint === preview.fingerprint)
+              if (dup || rec.length) {
+                // Pause: stash the pending order, ask the user to confirm.
+                await db.from('grocery_import_batches').update({ status: 'discarded' }).eq('status', 'pending')
+                await db.from('grocery_import_batches').insert({
+                  status: 'pending', raw_text: userMsg.slice(0, 20000),
+                  items: { fingerprint: preview.fingerprint, count: foodCount },
+                })
+                reply = dup
+                  ? `⚠️ This looks like the same order you already processed ${agoText(dup.created_at)} — ${foodCount} items, identical contents. I did NOT add it again (that would double your stock). Reply "confirm" to process it anyway.`
+                  : `⚠️ You processed a grocery order ${agoText(rec[0].created_at)}, and this is another large order (${foodCount} items). I paused before writing so you don't double up by accident. Reply "confirm" to process it — or ignore this if it was a re-paste.`
+              } else {
+                await runImport(userMsg)                     // first large order in 24h — process
+              }
+            }
           } else {
             const loop = await runLoop(userMsg, history, db, emit)
             reply = loop.reply; toolCalls = loop.toolCalls; toolResults = loop.toolResults
