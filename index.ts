@@ -833,6 +833,28 @@ async function writePlan(
     return true;
   });
 
+  // Guard against a hallucinated / mangled recipe_id. The insert below happens
+  // AFTER the window is deleted, so a single bad id that trips the recipes FK
+  // would fail the whole insert and leave those days EMPTY (the exact cause of a
+  // dropped-days replan). Validate ids against recipes; recover a bad one via its
+  // recipe_name; skip only the rare row that resolves to neither.
+  const wantedIds = [...new Set(toWrite.map((p) => p.recipe_id).filter(Boolean))] as string[];
+  if (wantedIds.length > 0) {
+    const { data: validRows } = await supabase.from("recipes").select("id").in("id", wantedIds);
+    const validSet = new Set((validRows || []).map((r: { id: string }) => r.id));
+    if (toWrite.some((p) => p.recipe_id && !validSet.has(p.recipe_id))) {
+      const { data: allActive } = await supabase.from("recipes").select("id, name").eq("active", true);
+      const byName = new Map((allActive || []).map((r: { id: string; name: string }) => [(r.name || "").toLowerCase().trim(), r.id]));
+      toWrite = toWrite.flatMap((p) => {
+        if (!p.recipe_id || validSet.has(p.recipe_id)) return [p];
+        const fixed = byName.get((p.recipe_name || "").toLowerCase().trim());
+        if (fixed) { console.warn(`Recovered bad recipe_id for ${p.date}/${p.meal_type} via name "${p.recipe_name}"`); return [{ ...p, recipe_id: fixed }]; }
+        console.warn(`Dropping ${p.date}/${p.meal_type}: recipe_id + name both unresolved ("${p.recipe_name}")`);
+        return [];   // unrecoverable — skip one slot rather than fail the whole batch
+      });
+    }
+  }
+
   // Delete existing (unlocked) dinner+lunch entries for these dates, then insert.
   if (dates.length > 0) {
     await supabase
