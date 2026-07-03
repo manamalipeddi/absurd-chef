@@ -333,15 +333,19 @@ function buildPrompt(
       guest_allergies: ds.guest_allergies || [],
       gintas_away: ds.gintas_away || false,
     } : null;
-    // 3-tier preschool lookup for this date
+    // 3-tier preschool lookup for this date. Only when the kids are actually AT
+    // preschool: on a kids-home day (school holiday, sick day, weekend) they eat
+    // at home, so the preschool menu is irrelevant and must not constrain dinner
+    // (rules 6 & 11). kidsHome true → no preschool protein for the day.
     const dateWeek = isoWeek(date);
-    const t1 = dow >= 1 && dow <= 5
+    const atPreschool = dow >= 1 && dow <= 5 && !kidsHome;
+    const t1 = atPreschool
       ? (ctx.preschoolMeals as PreschoolMeal[]).find(p => p.iso_week === dateWeek && p.day_of_week === dow)
       : undefined;
-    const t2 = (!t1 && dow >= 1 && dow <= 5)
+    const t2 = (!t1 && atPreschool)
       ? (ctx.preschoolMeals as PreschoolMeal[]).find(p => p.iso_week < dateWeek && p.day_of_week === dow)
       : undefined;
-    const t3 = (!t1 && !t2 && dow >= 1 && dow <= 5)
+    const t3 = (!t1 && !t2 && atPreschool)
       ? (ctx.preschoolTemplate as PreschoolTemplate[]).find(t => t.day_of_week === dow)
       : undefined;
     const preschoolMeal = t1 || t2 || t3;
@@ -543,7 +547,9 @@ PLANNING RULES
       and repeat rather than leave the slot unresolved.
 6. Preschool protein conflict: if dinner protein matches preschool lunch
    protein that day, silently swap to another day in the same week.
-   Log the swap in remap_log.
+   Log the swap in remap_log. ONLY applies on days the kids are AT preschool:
+   when preschool_protein is null (kids_home, holiday, weekend), there is no
+   preschool meal that day — ignore this rule entirely.
 7. On guest days: pick a recipe from template_slot = 'special' or
    a crowd-pleasing recipe. Increase implied portions. If the day has
    guest_allergens, those are HARD constraints for that date only —
@@ -554,7 +560,11 @@ PLANNING RULES
    this builds the freezer stash.
 10. Prefer dump recipes on days adjacent to commute days too
     (less prep the day before helps).
-11. Do not repeat the same protein that the preschool served that day.
+11. Do not repeat the same protein that the preschool served that day — but ONLY
+    on days the kids are actually at preschool. When preschool_protein is null
+    (a kids_home day, school holiday, or weekend, e.g. summer break), the kids
+    eat at home and the preschool menu is irrelevant: do NOT let it constrain the
+    dinner protein at all.
     preschool_source values: "specific" = confirmed this week's menu; "stale:YYYY-WXX" = most recent past menu (different week); "template_default" = generic observed pattern, no specific week data. All tiers apply equally to the protein conflict check. In display/notes, label template_default as "typical pattern" not "confirmed menu".
 12. GUEST ALLERGENS: if a date entry has guest_allergens, those substances
     are forbidden for that specific date only. Filter accordingly when
