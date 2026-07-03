@@ -7,6 +7,9 @@ let sendBtn         = null
 let busy            = false
 let oldestCreatedAt = null
 let loadMoreBtn     = null
+// The most recent completed reply's processing log — re-attached after a
+// DB-driven reload so the log survives navigating away from the chat and back.
+let lastLog         = null   // { content, lines }
 
 // ── Lifecycle ─────────────────────────────────────────────
 export function init(el) {
@@ -111,6 +114,14 @@ async function loadHistory() {
   }
 
   msgs.forEach(msg => appendBubble(msg.role, msg.content))
+
+  // Re-attach the processing log to the most recent reply, so it doesn't vanish
+  // when you leave the chat and come back (the log lives in memory, not the DB).
+  const last = msgs[msgs.length - 1]
+  if (lastLog && last?.role === 'assistant' && last.content === lastLog.content && lastLog.lines.length >= 2) {
+    listEl.appendChild(buildLogToggle(lastLog.lines))
+  }
+
   scrollToBottom()
 }
 
@@ -240,6 +251,8 @@ async function sendMessage() {
       statusEl.remove()
       appendBubble('assistant', replyText)
       if (logLines.length >= 2) listEl.appendChild(buildLogToggle(logLines))
+      // Remember it so a reload (after navigating away) can re-attach the log.
+      lastLog = { content: replyText, lines: logLines.slice() }
       scrollToBottom()
     } else {
       // Errored (or stream ended without done): keep the log visible, stop the

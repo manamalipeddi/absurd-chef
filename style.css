@@ -1926,11 +1926,11 @@ body {
 .chat-status__inner { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 190px; }
 .chat-status__inner .chat-typing { padding: 0; }
 .chat-status__label { font-size: 13.5px; color: var(--text-muted); }   /* legacy */
-.chat-status__log { display: flex; flex-direction: column; gap: 3px; width: 100%; }
-.chat-status__line { display: flex; gap: 8px; font-size: 13px; line-height: 1.45; color: var(--text); }
+.chat-status__log { display: flex; flex-direction: column; gap: 2px; width: 100%; }
+.chat-status__line { display: flex; gap: 7px; font-size: 10.5px; line-height: 1.4; color: var(--text-muted); }
 .chat-status__ts {
-  flex-shrink: 0; min-width: 58px;
-  color: var(--text-muted); opacity: 0.75;
+  flex-shrink: 0; min-width: 48px;
+  color: var(--text-muted); opacity: 0.7;
   font-variant-numeric: tabular-nums; font-feature-settings: "tnum";
 }
 .chat-status__line--error { color: var(--accent-warm); font-weight: 600; }
