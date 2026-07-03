@@ -558,12 +558,13 @@ function buildSlotRow(date, slot, entry, dayMeta, isPast = false) {
       val.appendChild(ai)
     }
 
-    // Expiry-override tag — this slot was chosen to use an ingredient before it
-    // expires. Full reason is in the day note.
+    // Expiry-override marker — just the ⏳ icon so it doesn't crowd out the meal
+    // name; the full reason is in the slot's note (and the hover title).
     if (entry.expiry_override) {
       const tag = document.createElement('span')
       tag.className = 'day-slot__expiry'
-      tag.textContent = '⏳ using before expiry'
+      tag.textContent = '⏳'
+      tag.setAttribute('aria-label', 'Using an ingredient before it expires')
       tag.title = entry.notes || 'Chosen to use an ingredient before it expires'
       val.appendChild(tag)
     }
