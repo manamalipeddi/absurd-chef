@@ -75,7 +75,7 @@ BEHAVIOR:
 - Freezer stash items with source = "store_bought" are bought ready-made (no recipe to open) — refer to them as store-bought (e.g. "🛒 store-bought lasagna"). A store-bought item at portions 0 with typically_restocked = true is one the user normally keeps stocked and can rebuy on a grocery run.
 - Guest days: get_special_days returns known_guests[] (resolved member data) and guest_allergies[] (one-off). Both are hard allergy constraints for that date only — treat them with the same enforcement strength as household allergens when suggesting meals for that specific day.
 - Inventory item names follow the pattern "Category - Variant" (e.g. "Milk - Oat", "Bread - Lingon Grova"). When the user describes what they have in stock, call update_inventory_from_description. The tool handles parsing, matching, and writing; your job is to relay what was done and ask about any ambiguous items it surfaces.
-- GROCERY ORDER IMPORT: when the user pastes a grocery order confirmation (a block with product lines and "kr" prices, e.g. "Beställda varor" / "Vara Antal Moms Pris" from Mathem), you MUST call import_grocery_order once with the verbatim text — do NOT reply "Done", "Processing", or acknowledge it without actually calling the tool. It is a SINGLE-PASS, NO-CONFIRMATION tool: it parses AND writes inventory immediately (net quantity per item, incl. adjustment/negative lines). Do NOT ask the user to confirm first, and do NOT call it a second time for the same paste. When it returns, relay its "summary" field to the user as-is. Do NOT regenerate the grocery list afterwards — that only happens on the Sunday cron or the manual Regenerate button. (Most order pastes are routed to the parser automatically before you even see them; this is your instruction for any that reach you directly.)
+- GROCERY ORDER IMPORT: when the user pastes a grocery order confirmation (a block with product lines and "kr" prices, e.g. "Beställda varor" / "Vara Antal Moms Pris" from Mathem), you MUST call import_grocery_order once with the verbatim text — do NOT reply "Done", "Processing", or acknowledge it without actually calling the tool. It is a SINGLE-PASS, NO-CONFIRMATION tool: it parses AND writes inventory immediately (net quantity per item, incl. adjustment/negative lines), and routes ready-to-heat store-bought freezer meals to Freezer Meals instead of inventory. Do NOT ask the user to confirm first, and do NOT call it a second time for the same paste. When it returns, relay its "summary" field to the user as-is. Do NOT regenerate the grocery list afterwards — that only happens on the Sunday cron or the manual Regenerate button. (Most order pastes are routed to the parser automatically before you even see them; this is your instruction for any that reach you directly.)
 - WHY-NOTES: when you change a plan slot via update_plan_slot and there's a reason ("swap Thursday, Gintas is craving curry"), pass it as the reason argument — one short sentence. It's saved to the slot's notes and shown on the plan card, separate from the audit log. If the user gives no reason, omit it (the card then shows nothing for that slot).
 - ACTUAL vs PLANNED: meal_plans records what was planned AND what was actually eaten. When the user says they made something different on a past day ("we ended up ordering pizza Monday", "I made tacos instead of the curry Tuesday"), call update_actual_outcome with that date — actual_recipe_id if it's a tracked recipe, else actual_notes for an untracked meal (takeout, leftovers). Use made_as_planned: true if they confirm they made the plan. get_plan returns actually_made / actual_recipe / actual_notes so you can report what really happened. The recipe actually eaten is what counts for no-repeat — never claim a planned recipe was eaten if actually_made is false.
 - Today: ${today()}`
@@ -187,7 +187,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'import_grocery_order',
-    description: "Parse a pasted Mathem grocery order confirmation AND write inventory in one shot. This is a single-pass, no-confirmation tool: it discards headers / change-notification / price lines, computes the NET quantity per product (summing adjustment lines incl. negatives), then updates or creates inventory rows directly. It streams progress and returns a plain-English summary — present that summary to the user as-is. Do NOT ask for confirmation before calling it, do NOT call it twice for the same paste, and do NOT regenerate the grocery list afterwards. Use it whenever the user pastes a block of Mathem order text.",
+    description: "Parse a pasted Mathem grocery order confirmation AND write inventory in one shot. This is a single-pass, no-confirmation tool: it discards headers / change-notification / price lines, computes the NET quantity per product (summing adjustment lines incl. negatives), then updates or creates inventory rows directly. Ready-to-heat store-bought freezer meals (e.g. a Dafgårds lasagne) are routed to Freezer Meals instead of inventory; single-ingredient frozen items (e.g. Spenat Fryst) stay in inventory. It streams progress and returns a plain-English summary — present that summary to the user as-is. Do NOT ask for confirmation before calling it, do NOT call it twice for the same paste, and do NOT regenerate the grocery list afterwards. Use it whenever the user pastes a block of Mathem order text.",
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -635,6 +635,45 @@ function isNonFood(name: string, vat?: number | null): boolean {
   return vat === 25 || NON_FOOD_RE.test(name)
 }
 
+// ── Ready-to-heat freezer MEAL vs frozen INGREDIENT (deterministic) ──
+// Default to FREEZER MEAL when in doubt: a frozen product is treated as a
+// ready-to-heat meal (→ freezer_stash) UNLESS it's a clearly-identifiable single
+// ingredient (Spenat Fryst, raw fish/meat portions, frozen fruit/veg), which
+// stays in inventory. A ready-meal-only brand qualifies on the brand alone.
+// Guardrails on the "in doubt → meal" default:
+//   - Only FROZEN items are candidates — a non-frozen grocery item can't be a
+//     freezer meal (milk, eggs, fresh produce, pantry staples stay inventory).
+//   - An explicit chilled/fresh signal (Kyld, Färsk) is never a freezer meal.
+// Dish/ingredient words are matched WITHOUT word boundaries so Swedish compounds
+// hit too (Lyx·lasagne, Fisk·gratäng, Wok·grönsaker).
+const FREEZER_DISH_RE = /(lasagne|gratäng|gratang|gryta|pyttipanna|pytt\s*i\s*panna|wokrätt|wokratt|soppa|pizza|middag|risotto|\bpaj\b|färdigrätt|fardigratt|färdigmat|fardigmat|portionsrätt|portionsratt|pannbiff|köttbullar\s+med|kottbullar\s+med|biff\s+med|pasta\s+med|kyckling\s+med|fisk\s+med)/i
+// Brands that sell ONLY ready meals — classify on the brand alone.
+const FREEZER_READY_BRAND_RE = /\b(dafgårds|dafgards|gordon\s*ramsay|gordonramsay|billys?\s*pan|liva|la\s*cucina)\b/i
+const FROZEN_RE = /\b(fryst|frysta|frozen|djupfryst)\b/i
+const CHILLED_RE = /\b(kyld|kylda|färsk|farsk|fresh|chilled)\b/i
+// Clear single-ingredient frozen products that stay in inventory despite the
+// default-to-meal rule: plain veg, fruit/berries, raw fish/seafood, raw meat,
+// herbs, and frozen staples (ice cream, fries, bread, dough).
+const FROZEN_INGREDIENT_RE = /(spenat|broccoli|blomkål|blomkal|ärtor|artor|ärter|edamame|majs|haricot|sparris|brysselkål|brysselkal|morot|morötter|morotter|\blök\b|purjolök|grönsak|gronsak|bönor|bonor|\bbär\b|blåbär|blabar|hallon|jordgubb|björnbär|bjornbar|lingon|hjortron|mango|ananas|\bfrukt\b|\blax\b|torsk|\bsej\b|kolja|\bfisk\b|räk|scampi|musslor|bläckfisk|blackfisk|kyckling|kalkon|nötkött|notkott|fläskkött|flaskkott|köttfärs|kottfars|\bfärs\b|\bfars\b|filé|\bfile\b|\bdill\b|persilja|basilika|örter|orter|glass|isglass|pommes|klyftpotatis|potatis|\bbröd\b|\bbrod\b|\bdeg\b|bottnar|smördeg|smordeg)/i
+function isFreezerMeal(name: string): boolean {
+  const s = String(name || '')
+  if (CHILLED_RE.test(s)) return false                          // explicitly chilled/fresh
+  if (FREEZER_READY_BRAND_RE.test(s)) return true               // ready-meal-only brand
+  if (FREEZER_DISH_RE.test(s) && FROZEN_RE.test(s)) return true // unambiguous frozen dish
+  if (!FROZEN_RE.test(s)) return false                          // non-frozen → not a freezer meal
+  return !FROZEN_INGREDIENT_RE.test(s)                          // frozen + in doubt → meal
+}
+
+// Pull the pack size / weight token off a raw product name for the stash `notes`
+// field (e.g. "…Lyxlasagne 600 g" → "600 g"), else null.
+function extractSizeNote(raw: string): string | null {
+  const s = String(raw || '')
+  const m = s.match(/\b\d+([.,]\d+)?\s*(kg|g|l|dl|cl|ml)\b/i)
+    || s.match(/\b\d+\s*[xX]\s*\d+\s*\w*/)
+    || s.match(/\b\d+\s*-?\s*p(?:ack)?\b/i)
+  return m ? m[0].replace(/\s+/g, ' ').trim() : null
+}
+
 // Does a pasted message look like a Mathem grocery order confirmation? Used to
 // route it DIRECTLY to the parser instead of relying on the model to decide to
 // call the tool (which it was skipping — replying "Done" without writing).
@@ -793,12 +832,17 @@ function parseGroceryOrder(rawText: string) {
   const all = [...groups.values()]
   const skippedNonFood = all.filter(g => isNonFood(g.name, g.vat)).map(g => g.name)   // non-food skipped
   const food = all.filter(g => !isNonFood(g.name, g.vat))
-  const toUpdate    = food.filter(g => g.net > 0)                     // net > 0 → update / create
+  // Ready-to-heat meals (net > 0) go to freezer_stash, not inventory.
+  const freezerMeals = food.filter(g => g.net > 0 && isFreezerMeal(g.name))
+  const isMeal = new Set(freezerMeals.map(g => g.norm))
+  const toUpdate    = food.filter(g => g.net > 0 && !isMeal.has(g.norm))   // net > 0 → update / create
   const cancelled   = food.filter(g => g.net === 0)                   // net = 0 → skip, list to user
   const parseErrors = food.filter(g => g.net < 0 && g.hasPositive)    // reductions exceeded additions
   const corrections = food.filter(g => g.net < 0 && !g.hasPositive)   // negative-only → decrement existing
-  const fingerprint = fingerprintOf(toUpdate.map(g => `${g.norm}:${g.net}`))
-  return { food, toUpdate, cancelled, parseErrors, corrections, skippedNonFood, fingerprint }
+  // Fingerprint spans inventory writes AND freezer additions so the re-paste
+  // guard catches a duplicate all-freezer order (stash inserts aren't idempotent).
+  const fingerprint = fingerprintOf([...toUpdate, ...freezerMeals].map(g => `${g.norm}:${g.net}`))
+  return { food, toUpdate, freezerMeals, cancelled, parseErrors, corrections, skippedNonFood, fingerprint }
 }
 
 async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, emit: (label: string) => void = () => {}) {
@@ -808,7 +852,7 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
   emit('Reading your order confirmation…')
   emit('Parsing order lines…')
 
-  const { food, toUpdate, cancelled, parseErrors, corrections, skippedNonFood, fingerprint } = parseGroceryOrder(rawText)
+  const { food, toUpdate, freezerMeals, cancelled, parseErrors, corrections, skippedNonFood, fingerprint } = parseGroceryOrder(rawText)
 
   emit(`Found ${food.length} items. Net: ${toUpdate.length} to update, ${cancelled.length + parseErrors.length + corrections.length} cancelled or adjusted.`)
 
@@ -862,8 +906,10 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
   }
 
   const nowIso = new Date().toISOString()
+  const todayDate = nowIso.slice(0, 10)
   const updatedNames: string[] = []
   const createdNames: string[] = []
+  const freezerAdded: string[] = []
   const flagged: string[] = []
 
   // ── Step 5: write net>0 items in batches of 10; progress between batches. ──
@@ -918,16 +964,33 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
   }
   for (const g of parseErrors) flagged.push(`${g.name} — net negative (${g.net}); reductions exceeded additions, not written`)
 
+  // ── Ready-to-heat freezer meals → freezer_stash (store-bought, no recipe). ──
+  if (freezerMeals.length) {
+    emit(`Adding ${freezerMeals.length} ready-made meal${freezerMeals.length === 1 ? '' : 's'} to the freezer…`)
+    for (const g of freezerMeals) {
+      const dish = cleanProductName(g.name)
+      const { error } = await db.from('freezer_stash').insert({
+        recipe_name: dish, recipe_id: null,
+        portions: g.net, source: 'store_bought', typically_restocked: false,
+        frozen_date: todayDate, use_by_date: null,
+        notes: extractSizeNote(g.name),
+      })
+      if (error) flagged.push(`${dish} — freezer add failed (${error.message})`)
+      else freezerAdded.push(`${dish} (${g.net})`)
+    }
+  }
+
   // Log the committed import so the 24h large-order re-paste guard can see it
   // (fingerprint = which order, count = size). Best-effort; never blocks writes.
   await db.from('grocery_import_batches').insert({
     status: 'committed', committed_at: nowIso,
     raw_text: rawText.slice(0, 20000),
-    items: { fingerprint, count: toUpdate.length },
+    items: { fingerprint, count: toUpdate.length + freezerMeals.length },
   }).then(() => {}, () => {})
 
   const parts: string[] = [`Done. Updated inventory for ${updatedNames.length} item${updatedNames.length === 1 ? '' : 's'}.`]
   if (createdNames.length)   parts.push(`${createdNames.length} new item${createdNames.length === 1 ? '' : 's'} added: ${createdNames.join(', ')}.`)
+  if (freezerAdded.length)   parts.push(`Added ${freezerAdded.length} item${freezerAdded.length === 1 ? '' : 's'} to Freezer Meals: ${freezerAdded.join(', ')}. If anything landed in the wrong place, remove it from Freezer Meals or Pantry directly.`)
   if (cancelled.length)      parts.push(`${cancelled.length} fully cancelled and skipped: ${cancelled.map(g => g.name).join(', ')}.`)
   if (skippedNonFood.length) parts.push(`${skippedNonFood.length} non-food item${skippedNonFood.length === 1 ? '' : 's'} skipped: ${skippedNonFood.join(', ')}.`)
   if (flagged.length)        parts.push(`${flagged.length} flagged for review: ${flagged.join('; ')}.`)
@@ -936,11 +999,12 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
     parsed_items: food.length,
     updated: updatedNames.length,
     created: createdNames,
+    freezer_meals_added: freezerAdded,
     cancelled: cancelled.map(g => g.name),
     skipped_non_food: skippedNonFood,
     flagged,
     summary: parts.join(' '),
-    note: 'Inventory has already been written directly (no confirmation step). Present the summary to the user as-is; do NOT regenerate the grocery list.',
+    note: 'Inventory and freezer meals have already been written directly (no confirmation step). Present the summary to the user as-is; do NOT regenerate the grocery list.',
   }
 }
 
@@ -1474,7 +1538,7 @@ Deno.serve(async (req: Request) => {
             await runImport(pending.raw_text)
           } else if (isGroceryOrderPaste(userMsg)) {
             const preview = parseGroceryOrder(userMsg)
-            const foodCount = preview.toUpdate.length
+            const foodCount = preview.toUpdate.length + preview.freezerMeals.length
             if (foodCount < 10) {
               await runImport(userMsg)                       // small order (<10) — free pass
             } else {
