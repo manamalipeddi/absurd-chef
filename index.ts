@@ -924,19 +924,41 @@ async function writePlan(
 
   const dates = [...new Set([...writeDates, ...vacInWindow])];
 
-  // ── HARD RULE: never overwrite a manually-locked slot (dinner OR lunch). ────
-  const { data: lockedRows } = await supabase
+  // ── HARD RULES at write time. One fetch classifies every existing row in
+  //    the window; a row is PROTECTED (never deleted, never overwritten) when:
+  //      - slot_locked                     → the user's deliberate pick
+  //      - plan_date <= today              → the day is already in motion
+  //        (shopped, defrosted, half-cooked). A regeneration may FILL an
+  //        empty slot today, but never REPLACES an existing one.
+  //      - it carries reality (actually_made / actual_recipe_id /
+  //        actual_notes / additional_recipes) → meal_plans is the permanent
+  //        eaten record; a regen once wiped a logged outcome this way.
+  //    Protected rows are excluded from BOTH the delete and the insert. ──
+  const todayISO = new Date().toISOString().slice(0, 10);
+  type ExistingRow = {
+    id: string; plan_date: string; meal_type: string;
+    slot_locked: boolean | null; actually_made: boolean | null;
+    actual_recipe_id: string | null; actual_notes: string | null;
+    additional_recipes: unknown;
+  };
+  const { data: existingData } = await supabase
     .from("meal_plans")
-    .select("plan_date, meal_type")
+    .select("id, plan_date, meal_type, slot_locked, actually_made, actual_recipe_id, actual_notes, additional_recipes")
     .in("plan_date", dates)
-    .in("meal_type", MEALS)
-    .eq("slot_locked", true);
-  const lockedSet = new Set(
-    (lockedRows || []).map((r: { plan_date: string; meal_type: string }) => lockedKey(r.plan_date, r.meal_type))
-  );
-  if (lockedSet.size > 0) console.log(`Skipping ${lockedSet.size} locked slot(s)`);
+    .in("meal_type", MEALS);
+  const existingRows = (existingData || []) as ExistingRow[];
+  const isProtected = (r: ExistingRow) =>
+    r.slot_locked === true ||
+    r.plan_date <= todayISO ||
+    r.actually_made !== null ||
+    r.actual_recipe_id !== null ||
+    r.actual_notes !== null ||
+    (Array.isArray(r.additional_recipes) && r.additional_recipes.length > 0);
+  const protectedKeys = new Set(existingRows.filter(isProtected).map((r) => lockedKey(r.plan_date, r.meal_type)));
+  const deletableIds = existingRows.filter((r) => !isProtected(r)).map((r) => r.id);
+  if (protectedKeys.size > 0) console.log(`Protecting ${protectedKeys.size} slot(s): locked, today/past, or logged`);
 
-  toWrite = toWrite.filter((p) => !lockedSet.has(lockedKey(p.date, p.meal_type)));
+  toWrite = toWrite.filter((p) => !protectedKeys.has(lockedKey(p.date, p.meal_type)));
 
   // Dedup by date+meal_type (model can emit a date twice via remap).
   const seen = new Set<string>();
@@ -969,14 +991,10 @@ async function writePlan(
     }
   }
 
-  // Delete existing (unlocked) dinner+lunch entries for these dates, then insert.
-  if (dates.length > 0) {
-    await supabase
-      .from("meal_plans")
-      .delete()
-      .in("plan_date", dates)
-      .in("meal_type", MEALS)
-      .or("slot_locked.is.null,slot_locked.eq.false");
+  // Delete ONLY the unprotected rows (classified above), then insert. Never a
+  // blanket window delete — that once destroyed today's logged outcomes.
+  if (deletableIds.length > 0) {
+    await supabase.from("meal_plans").delete().in("id", deletableIds);
   }
 
   // Insert new plan — day-context columns come from day_settings, not the model.
