@@ -78,6 +78,7 @@ BEHAVIOR:
 - GROCERY ORDER IMPORT: when the user pastes a grocery order confirmation (a block with product lines and "kr" prices, e.g. "Beställda varor" / "Vara Antal Moms Pris" from Mathem), you MUST call import_grocery_order once with the verbatim text — do NOT reply "Done", "Processing", or acknowledge it without actually calling the tool. It is a SINGLE-PASS, NO-CONFIRMATION tool: it parses AND writes inventory immediately (net quantity per item, incl. adjustment/negative lines), and routes ready-to-heat store-bought freezer meals to Freezer Meals instead of inventory. Do NOT ask the user to confirm first, and do NOT call it a second time for the same paste. When it returns, relay its "summary" field to the user as-is. Do NOT regenerate the grocery list afterwards — that only happens on the Sunday cron or the manual Regenerate button. (Most order pastes are routed to the parser automatically before you even see them; this is your instruction for any that reach you directly.)
 - WHY-NOTES: when you change a plan slot via update_plan_slot and there's a reason ("swap Thursday, Gintas is craving curry"), pass it as the reason argument — one short sentence. It's saved to the slot's notes and shown on the plan card, separate from the audit log. If the user gives no reason, omit it (the card then shows nothing for that slot).
 - ACTUAL vs PLANNED: meal_plans records what was planned AND what was actually eaten. When the user says they made something different on a past day ("we ended up ordering pizza Monday", "I made tacos instead of the curry Tuesday"), call update_actual_outcome with that date — actual_recipe_id if it's a tracked recipe, else actual_notes for an untracked meal (takeout, leftovers). Use made_as_planned: true if they confirm they made the plan. get_plan returns actually_made / actual_recipe / actual_notes so you can report what really happened. The recipe actually eaten is what counts for no-repeat — never claim a planned recipe was eaten if actually_made is false.
+- COOKING LEARNINGS: when a cooking conversation produces a correction or discovery worth keeping (timing, temperature, a substitution that worked), OFFER to save it to the recipe ("want me to note that on the recipe?") and call update_recipe only after she agrees. When she mentions prepped food she has ready ("I have 10 cubes of cooked onion in the freezer"), log it with add_prepped_component.
 - EXPIRING FOOD (recommend-and-approve): get_expiry_recommendations lists inventory expiring in the next ~2 weeks, each with matching existing recipes, plus the upcoming plan slots. Use it when Manasa asks what to cook to use things up, says something is expiring/going off, or replies to an expiry heads-up. Then RECOMMEND ONE concrete action: the nearest suitable upcoming slot + a SINGLE recipe that uses most or all of the expiring items — prefer an existing matching_recipes entry. If none is appealing (or she asks), offer to generate a NEW recipe built around the expiring items via add_recipe. NEVER auto-apply: only after she approves, call update_plan_slot (for a brand-new recipe, add_recipe first, then update_plan_slot with the new id). If she wants a different idea, propose another. If nothing in the catalogue uses an item and she doesn't want a new recipe, say plainly to use it up manually — never invent that it's handled. Items flagged already_auto_planned (critical meat/fish within ~2 days) are already slotted by the planner; don't re-handle them. Don't overwrite a locked slot (see LOCKED SLOTS).
 - Today: ${today()}`
 }
@@ -278,6 +279,43 @@ const TOOLS: Anthropic.Tool[] = [
         serves_base:    { type: 'integer' },
       },
       required: ['name', 'original_instructions', 'ingredients'],
+    },
+  },
+  {
+    name: 'update_recipe',
+    description: "Update an EXISTING recipe: append a dated cooking learning to its notes, replace its instructions, or set metadata fields. Use when a cooking conversation produces a correction or discovery worth keeping (timing, temperature, a substitution that worked) — OFFER first ('want me to note that on the recipe?') and call only after the user agrees. Never use this to create a recipe (that's add_recipe).",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        recipe_id:            { type: 'string', description: 'UUID of the recipe. Preferred.' },
+        recipe_name:          { type: 'string', description: 'Exact recipe name (case-insensitive) if the id is unknown.' },
+        append_note:          { type: 'string', description: 'One concise learning to append to the recipe notes, e.g. "Oven strips: pull at 68°C, not 72 — carryover finishes them." Date prefix is added automatically.' },
+        replace_instructions: { type: 'string', description: 'Full replacement for original_instructions. Only when the user asked to redo the recipe.' },
+        set: {
+          type: 'object',
+          description: 'Optional metadata updates.',
+          properties: {
+            protein:       { type: 'string' },
+            style:         { type: 'string' },
+            prep_time_min: { type: 'integer' },
+            cook_time_min: { type: 'integer' },
+          },
+        },
+      },
+    },
+  },
+  {
+    name: 'add_prepped_component',
+    description: 'Log a prepped component the user has ready (e.g. "cooked frozen onion, ~10 cubes", "boiled potatoes for tomorrow"). Creates a prepped_components row so the planner and chat can see it.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        name:          { type: 'string', description: 'What it is, in the household\'s naming style.' },
+        batches:       { type: 'integer', description: 'How many batches/portions. Default 1.' },
+        storage_notes: { type: 'string', description: 'Where/how it\'s stored, e.g. "freezer, ziplock, 2cm cubes".' },
+        recipe_id:     { type: 'string', description: 'Linked recipe UUID, if it came from one.' },
+      },
+      required: ['name'],
     },
   },
   {
@@ -786,6 +824,13 @@ function inferStorageCategory(name: string, food: string | null): string {
   return 'pantry'
 }
 
+// Inferred shelf life (days from delivery) by food_category — the grocery
+// importer stamps expiry_date automatically so expiry-aware planning has
+// coverage without manual date entry. Conservative defaults; pantry/unknown
+// get none, and frozen storage never gets one. A manually set FUTURE date is
+// never overwritten (only null or already-past dates are re-stamped on restock).
+const SHELF_LIFE_DAYS: Record<string, number> = { meat: 3, seafood: 2, dairy: 10, produce: 7, eggs: 21 }
+
 // Strip a verbose Mathem product name to its descriptor for a NEW inventory row:
 // remove brand, size/weight/percent/pack tokens, and quality/marketing words;
 // keep functional descriptors (Laktosfri, Fryst, flavours). e.g. "Arla® Mild
@@ -942,7 +987,7 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
   // ── Step 4: load inventory (active + inactive) + master vocabulary. ──
   emit('Matching items to inventory…')
   const [{ data: inv }, { data: masters }] = await Promise.all([
-    db.from('inventory').select('id, name, quantity, category, food_category, master_ingredient_id, typical_quantity, active'),
+    db.from('inventory').select('id, name, quantity, category, food_category, master_ingredient_id, typical_quantity, active, expiry_date'),
     db.from('master_ingredients').select('id, canonical_name, aliases').eq('active', true),
   ])
   const invRows = (inv || []) as Record<string, unknown>[]
@@ -1007,17 +1052,27 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
         }
         if (wasInactive) upd.active = true                              // buying it → relevant again
         if (Number(row.typical_quantity) === 0) upd.status = 'some'     // atypical restock has stock again
+        // Inferred shelf life on restock — only when no valid manual date exists.
+        const rowFc = (row.food_category as string) || inferFoodCategory(g.name)
+        const rowLife = rowFc ? SHELF_LIFE_DAYS[rowFc] : undefined
+        if (rowLife && row.category !== 'freezer' && (!row.expiry_date || (row.expiry_date as string) < todayDate)) {
+          upd.expiry_date = addDays(todayDate, rowLife)
+        }
         const { error } = await db.from('inventory').update(upd).eq('id', row.id as string)
         if (error) flagged.push(`${g.name} — write failed (${error.message})`)
         else updatedNames.push(wasInactive ? `${row.name as string} (reactivated)` : (row.name as string))
       } else {
         const fc = inferFoodCategory(g.name)                 // category from the full raw name
+        const storage = inferStorageCategory(g.name, fc)
+        // Inferred shelf life for a NEW perishable row (never for freezer items).
+        const life = fc ? SHELF_LIFE_DAYS[fc] : undefined
         // English name from the AI pass; deterministic Swedish-stripped fallback.
         const cleanName = (newName && newName.trim()) || cleanProductName(g.name)
         const { error } = await db.from('inventory').insert({
           name: cleanName, quantity: g.net, status: 'enough',
-          food_category: fc, category: inferStorageCategory(g.name, fc),
+          food_category: fc, category: storage,
           source: 'grocery_import', active: true, last_updated_at: nowIso,
+          ...(life && storage !== 'freezer' ? { expiry_date: addDays(todayDate, life) } : {}),
         })
         if (error) flagged.push(`${cleanName} — create failed (${error.message})`)
         else createdNames.push(cleanName)
@@ -1089,6 +1144,67 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
     summary: parts.join(' '),
     note: 'Inventory and freezer meals have already been written directly (no confirmation step). Present the summary to the user as-is; do NOT regenerate the grocery list.',
   }
+}
+
+// Persist a cooking learning or correction onto an existing recipe. The model
+// is instructed to OFFER first and call only after the user agrees. append_note
+// is date-prefixed and appended to recipes.notes; replace_instructions swaps
+// original_instructions wholesale; set covers protein/style/times.
+async function toolUpdateRecipe(input: Record<string, unknown>, db: DB) {
+  const { recipe_id, recipe_name, append_note, replace_instructions } = input as
+    { recipe_id?: string; recipe_name?: string; append_note?: string; replace_instructions?: string }
+  const setFields = (input.set || {}) as Record<string, unknown>
+
+  // Resolve by id, else case-insensitive exact name match on active recipes.
+  let recipe: Record<string, unknown> | null = null
+  if (recipe_id) {
+    const { data } = await db.from('recipes').select('id, name, notes').eq('id', recipe_id).maybeSingle()
+    recipe = data
+  } else if (recipe_name) {
+    const { data } = await db.from('recipes').select('id, name, notes').ilike('name', recipe_name).eq('active', true)
+    if (data && data.length === 1) recipe = data[0]
+    else if (data && data.length > 1) return { error: `Multiple recipes match "${recipe_name}" — pass recipe_id.` }
+  }
+  if (!recipe) return { error: 'Recipe not found — check the name or pass recipe_id.' }
+
+  const upd: Record<string, unknown> = {}
+  const changed: string[] = []
+  if (append_note && String(append_note).trim()) {
+    const dated = `[${today()}] ${String(append_note).trim()}`
+    upd.notes = recipe.notes ? `${recipe.notes}\n${dated}` : dated
+    changed.push('notes (appended)')
+  }
+  if (replace_instructions && String(replace_instructions).trim()) {
+    upd.original_instructions = String(replace_instructions).trim()
+    changed.push('original_instructions (replaced)')
+  }
+  for (const k of ['protein', 'style', 'prep_time_min', 'cook_time_min']) {
+    if (setFields[k] !== undefined && setFields[k] !== null) { upd[k] = setFields[k]; changed.push(k) }
+  }
+  if (!changed.length) return { error: 'Nothing to update — provide append_note, replace_instructions, or set fields.' }
+
+  const { error } = await db.from('recipes').update(upd).eq('id', recipe.id as string)
+  if (error) return { success: false, error: error.message }
+  return { success: true, recipe: recipe.name, changed }
+}
+
+// Log a prepped component (e.g. "cooked frozen onion, 10 cubes") conversationally.
+async function toolAddPreppedComponent(input: Record<string, unknown>, db: DB) {
+  const name = ((input.name as string) || '').trim()
+  if (!name) return { error: 'name is required' }
+  const batches = Number(input.batches) > 0 ? Math.round(Number(input.batches)) : 1
+  const row = {
+    name,
+    batches_made: batches,
+    batches_remaining: batches,
+    storage_notes: (input.storage_notes as string) || null,
+    recipe_id: (input.recipe_id as string) || null,
+    made_date: today(),
+    active: true,
+  }
+  const { data, error } = await db.from('prepped_components').insert(row).select('id').single()
+  if (error) return { success: false, error: error.message }
+  return { success: true, id: data?.id, ...row }
 }
 
 async function toolUpdatePlanSlot(input: Record<string, unknown>, db: DB, userMsg: string) {
@@ -1434,6 +1550,8 @@ async function dispatch(name: string, input: Record<string, unknown>, db: DB, us
       case 'update_actual_outcome':              result = await toolUpdateActualOutcome(input, db); break
       case 'use_stash_item':         result = await toolUseStashItem(input, db); break
       case 'add_recipe':             result = await toolAddRecipe(input, db); break
+      case 'update_recipe':          result = await toolUpdateRecipe(input, db); break
+      case 'add_prepped_component':  result = await toolAddPreppedComponent(input, db); break
       case 'log_plan_edit':          result = await toolLogPlanEdit(input, db); break
       case 'trigger_replan':         result = await toolTriggerReplan(input); break
       default:                       result = { error: `Unknown tool: ${name}` }
@@ -1467,6 +1585,8 @@ function statusLabel(name: string, input: Record<string, unknown>): string {
     case 'update_actual_outcome':  return 'Logging what you had…'
     case 'use_stash_item':         return 'Updating the freezer stash…'
     case 'add_recipe':             return `Adding ${(input?.name as string) || 'the recipe'}…`
+    case 'update_recipe':          return 'Saving that to the recipe…'
+    case 'add_prepped_component':  return 'Logging your prepped item…'
     case 'log_plan_edit':          return 'Saving the change…'
     case 'trigger_replan':         return 'Regenerating the plan…'
     default:                       return 'Working on it…'
