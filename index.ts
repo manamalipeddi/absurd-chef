@@ -196,6 +196,7 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
     familyRes,
     invExpiringRes,
     recipeIngRes,
+    planEditsRes,
   ] = await Promise.all([
     supabase
       .from("recipes")
@@ -261,6 +262,13 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
     supabase
       .from("recipe_ingredients")
       .select("recipe_id, name, master_ingredient_id"),
+    // Behavioural preference evidence (rule 2): swaps out of the plan are a
+    // mild negative signal, repeated manual picks a mild positive. No ratings
+    // exist — behaviour is the only preference source.
+    supabase
+      .from("plan_edits")
+      .select("previous_recipe_id, new_recipe_id, edit_source")
+      .gte("plan_date", addDays(startDate, -90)),
   ]);
 
   return {
@@ -275,6 +283,7 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
     family: familyRes.data || [],
     inventoryExpiring: invExpiringRes.data || [],
     recipeIngredients: recipeIngRes.data || [],
+    planEdits: planEditsRes.data || [],
   };
 }
 
@@ -315,6 +324,28 @@ function buildPrompt(
     const rAllergens = r.contains_allergen || [];
     return !allergens.some((a) => rAllergens.includes(a));
   });
+
+  // ── Template feasibility: how many safe recipes match each template slot.
+  //    Mirrors the model's loose matching (pipe alternatives, case-insensitive,
+  //    substring either way). A pool of ≤3 means repetition in that slot is the
+  //    household's normal rotation, not an exception (rule 2 SMALL-POOL
+  //    ROTATION) — the note voice changes accordingly. ──
+  const poolMatch = (cType: string | null, cValue: string | null, r: Recipe): boolean => {
+    if (!cType || !cValue) return true;
+    const field = cType === "protein" ? r.protein : r.style;
+    if (!field) return false;
+    const f = String(field).toLowerCase();
+    return String(cValue).toLowerCase().split("|").some((alt) => {
+      const a = alt.trim();
+      return !!a && (f.includes(a) || a.includes(f));
+    });
+  };
+  const templatePools = (ctx.template as TemplateRule[]).map((t) => ({
+    day_of_week: t.day_of_week,
+    meal_type: t.meal_type,
+    label: t.label,
+    pool_size: safeRecipes.filter((r: Recipe) => poolMatch(t.constraint_type, t.constraint_value, r)).length,
+  }));
 
   // Build date list with metadata
   const dateList = Array.from({ length: days }, (_, i) => {
@@ -465,6 +496,7 @@ function buildPrompt(
       slot: r.template_slot,
       freezable: r.is_freezable,
       wkh_quick,   // true → eligible for weekday kids-home quick tier (rule 15c)
+      never_made: r.last_made == null,   // novelty budget (rule 19)
     };
   });
 
@@ -522,6 +554,24 @@ function buildPrompt(
   // the generator never sees it and plans normally.
   const criticalExpiring = expiringIngredients.filter(e => e.urgency === "critical");
 
+  // ── Passive preference evidence (rule 2): recipes repeatedly swapped OUT of
+  //    the plan vs. repeatedly picked IN by hand. Threshold ≥2 so a one-off
+  //    swap never becomes a "signal"; capped at 10 each to keep the prompt lean. ──
+  const countIds = (ids: (string | null)[]) => {
+    const m = new Map<string, number>();
+    for (const id of ids) if (id) m.set(id, (m.get(id) || 0) + 1);
+    return m;
+  };
+  const editRows = (ctx.planEdits || []) as { previous_recipe_id: string | null; new_recipe_id: string | null; edit_source: string | null }[];
+  const evidenceOf = (m: Map<string, number>) => [...m.entries()]
+    .filter(([id, n]) => n >= 2 && recipeNameById.has(id))
+    .sort((a, b) => b[1] - a[1]).slice(0, 10)
+    .map(([id, n]) => ({ name: recipeNameById.get(id), times: n }));
+  const preferenceEvidence = {
+    swapped_out: evidenceOf(countIds(editRows.map(e => e.previous_recipe_id))),
+    manually_picked: evidenceOf(countIds(editRows.filter(e => e.edit_source === "manual").map(e => e.new_recipe_id))),
+  };
+
   return `You must respond with valid JSON only. No preamble, no explanation, no prose. Your entire response must be parseable by JSON.parse(). If you cannot complete the task, return a JSON error object: {"error": "reason"}. Never return plain text under any circumstances.
 
 You are AbsurdChef, an autonomous meal planning agent for a busy family.
@@ -561,7 +611,18 @@ PLANNING RULES
    TRANSPARENCY: whenever you assign a recipe specifically because no-repeat had
    to be dropped per (3), set "notes" to make that visible, e.g.
    "Repeating sooner than usual — nothing else fit this slot this week".
-   (That replaces the usual why-note for that slot.)${anyHolidayRelaxed ? `
+   (That replaces the usual why-note for that slot.)
+   SMALL-POOL ROTATION: when a slot's template pool_size (see TEMPLATE POOLS)
+   is 3 or fewer, repeating within the window is the household's normal
+   rotation, NOT an exception. Do NOT write the "Repeating sooner than usual"
+   apology for these slots — write a normal note in rotation voice instead,
+   e.g. "Taco Tuesday — the usual" or "Saturday sausage night". Reserve the
+   apology wording for slots with a large pool where repetition is genuinely
+   unusual.
+   PREFERENCE EVIDENCE: treat swapped_out recipes (see PREFERENCE EVIDENCE
+   below) as a mild negative signal for similar slots and manually_picked ones
+   as a mild positive — softer than no-repeat, never overriding any hard
+   constraint.${anyHolidayRelaxed ? `
    HOLIDAY RELAXATION: for any slot whose day has holiday_relaxed = true (an
    extended school-holiday stretch), use a 7-DAY no-repeat window instead of 14 —
    a recipe last used 7 or more days ago may be reused freely. This applies ONLY
@@ -669,12 +730,21 @@ PLANNING RULES
       slot. Add the item to "unresolved": "[item] expires [date] — no matching
       recipe. Ask the Absurd Chef to suggest one."
     - Every slot not filled for a critical-expiry reason keeps "expiry_override": false.
+19. NOVELTY BUDGET: at most ONE recipe with never_made = true may appear per
+    calendar week of the plan, and only on a CALM day: not a commute day, not
+    weekday_kids_home, and no guests. All other slots use proven recipes
+    (never_made = false). Zero new recipes in a week is fine — never force
+    one. When you place one, the note reads like a deliberate choice:
+    "Trying this one — calm Tuesday, good night for an experiment."
 
 WEEKLY TEMPLATE (dinner)
 ${JSON.stringify(ctx.template.filter((t: TemplateRule) => t.meal_type === "dinner"), null, 2)}
 
 WEEKLY TEMPLATE LUNCH
 ${JSON.stringify(ctx.template.filter((t: TemplateRule) => t.meal_type === "lunch"), null, 2)}
+
+TEMPLATE POOLS (recipes matching each template slot — see rule 2 SMALL-POOL ROTATION)
+${JSON.stringify(templatePools)}
 
 DAYS TO PLAN (with context)
 ${JSON.stringify(dateList, null, 2)}
@@ -692,6 +762,9 @@ RECENTLY USED (last 14 days — prefer not to repeat; each entry has its date so
 you can measure age, incl. for the 7-day holiday_relaxed window per rule 2.
 Includes additional meals actually eaten, not just planned recipes.)
 ${JSON.stringify(recentlyUsed, null, 2)}
+
+PREFERENCE EVIDENCE (from real behaviour — swaps/locks only, no ratings; empty = no signal yet; see rule 2)
+${JSON.stringify(preferenceEvidence)}
 
 LOCKED (immovable — keep these exactly; see rule 13)
 ${JSON.stringify(lockedList, null, 2)}
@@ -1303,6 +1376,25 @@ Deno.serve(async (req: Request) => {
         .update({ success: false, completed_at: new Date().toISOString(), error_message: errMsg })
         .eq("id", logId);
     }
+
+    // A failed generation must never be silent — best-effort chat nudge,
+    // deduped to one per 6h so retries don't spam. Never masks the real error.
+    try {
+      const since = new Date(Date.now() - 6 * 3600 * 1000).toISOString();
+      const { data: recentFail } = await supabase
+        .from("chat_history")
+        .select("id")
+        .eq("role", "assistant")
+        .ilike("content", "⚠️ Plan generation just failed%")
+        .gte("created_at", since)
+        .limit(1);
+      if (!recentFail || !recentFail.length) {
+        await supabase.from("chat_history").insert({
+          role: "assistant",
+          content: "⚠️ Plan generation just failed — your existing plan is untouched. Say \"retry the plan\" whenever you want me to try again.",
+        });
+      }
+    } catch (_nudgeErr) { /* never mask the original failure */ }
 
     return new Response(
       JSON.stringify({
