@@ -633,6 +633,12 @@ PLANNING RULES
    notes: "last served 8 days ago, within holiday repeat window."` : ``}
 3. No same protein two days in a row (a preference, secondary to rule 2's hard constraints).
 4. Match each day's template constraint (protein or style).
+   CHEF'S-CHOICE EXCEPTION: if a slot's template constraint is special|dessert
+   (Special Sunday Dinner) and NO library recipe matches it (see TEMPLATE
+   POOLS), do NOT force a substitute and do NOT add it to "unresolved".
+   Output the entry with "recipe_id": null, "recipe_name": "Chef's choice",
+   cook_source "home", and notes: "Special Sunday — chef's choice, decide on
+   the day." The slot stays open on the Plan tab to fill (or not) later.
 5. COMMUTE DAYS — strict priority order:
    a. Use freezer stash item matching template slot if available
    b. Use a dump+slow_cook recipe matching template slot
