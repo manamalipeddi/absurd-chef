@@ -234,7 +234,7 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
     // (actually_made = false) use actual_recipe_id; otherwise the planned recipe.
     supabase
       .from("meal_plans")
-      .select("plan_date, meal_type, recipe_id, actually_made, actual_recipe_id, planned:recipes!meal_plans_recipe_id_fkey(name, protein, style, is_placeholder), actual:recipes!meal_plans_actual_recipe_id_fkey(name, protein, style, is_placeholder)")
+      .select("plan_date, meal_type, recipe_id, actually_made, actual_recipe_id, additional_recipes, planned:recipes!meal_plans_recipe_id_fkey(name, protein, style, is_placeholder), actual:recipes!meal_plans_actual_recipe_id_fkey(name, protein, style, is_placeholder)")
       .gte("plan_date", addDays(startDate, -14))
       .lt("plan_date", startDate),
     // Locked slots WITHIN the planning window — immovable; the planner must keep
@@ -380,6 +380,7 @@ function buildPrompt(
       is_commute: isCommute,
       kids_home: kidsHome,
       weekday_kids_home: kidsHome && dow >= 1 && dow <= 5,   // effort chain (rule 15)
+      holiday_relaxed: false,                    // set below (rule 2 relaxation)
       needs_lunch: !!lunchRule || kidsHome,      // lunch trigger (rule 14)
       lunch_template: lunchRule?.label || lunchRule?.constraint_value || null,
       special_type: special?.type || null,
@@ -395,16 +396,39 @@ function buildPrompt(
     };
   });
 
+  // ── Holiday no-repeat relaxation (rule 2): during an EXTENDED kids-home
+  //    stretch — 7+ CONSECUTIVE kids-home days in this window (a school-holiday
+  //    run, not a one-off day or a weekend) — the no-repeat window relaxes from
+  //    14 to 7 days for the slots INSIDE that stretch. dateList is consecutive
+  //    calendar days, so consecutive indices are consecutive dates. ──
+  const HOLIDAY_STRETCH_MIN = 7;
+  for (let runStart = 0; runStart < dateList.length; ) {
+    if (!dateList[runStart].kids_home) { runStart++; continue; }
+    let runEnd = runStart;
+    while (runEnd + 1 < dateList.length && dateList[runEnd + 1].kids_home) runEnd++;
+    if (runEnd - runStart + 1 >= HOLIDAY_STRETCH_MIN)
+      for (let i = runStart; i <= runEnd; i++) dateList[i].holiday_relaxed = true;
+    runStart = runEnd + 1;
+  }
+  const anyHolidayRelaxed = dateList.some(d => d.holiday_relaxed);
+
   // Reads reality: if a past day was made differently, the actual recipe is
-  // what counts against the no-repeat window — not the original plan.
-  const recentlyUsed = ctx.existingPlan.map((p: {plan_date: string; actually_made: boolean | null; actual_recipe_id: string | null; planned: {name: string; is_placeholder?: boolean} | null; actual: {name: string; is_placeholder?: boolean} | null}) => {
+  // what counts against the no-repeat window — not the original plan. Additional
+  // meals logged for a day (multi-meal TRACKING) also count: each additional
+  // recipe WITH a recipe_id is a real thing eaten that day (free-text-only
+  // entries have no recipe and are ignored, like "Other").
+  const recentlyUsed = ctx.existingPlan.flatMap((p: {plan_date: string; actually_made: boolean | null; actual_recipe_id: string | null; additional_recipes?: {recipe_id?: string | null; recipe_name?: string | null}[] | null; planned: {name: string; is_placeholder?: boolean} | null; actual: {name: string; is_placeholder?: boolean} | null}) => {
     // Whenever an actual recipe was recorded (a manual swap now also sets
     // actually_made = true, the chat "made different" flow uses false), that's
     // what was eaten and what counts against no-repeat — not the original plan.
     const useActual = !!p.actual_recipe_id;
     const r = useActual ? p.actual : p.planned;
     // "Other" is excluded from no-repeat entirely.
-    return { date: p.plan_date, name: (r && !r.is_placeholder) ? r.name : null };
+    const out = [{ date: p.plan_date, name: (r && !r.is_placeholder) ? r.name : null }];
+    for (const a of (p.additional_recipes || [])) {
+      if (a && a.recipe_id && a.recipe_name) out.push({ date: p.plan_date, name: a.recipe_name });
+    }
+    return out;
   });
 
   // Locked slots inside the planning window — immovable. Surface them so the
@@ -492,6 +516,11 @@ function buildPrompt(
         matching_recipes: matchRecipes(it),
       };
     });
+  // Only CRITICAL expiry (meat/fish within 2 days) is acted on during plan
+  // generation — a hard override, like an allergen. Everything else expiring is
+  // handled by the Absurd Chef's recommend-and-approve flow (see chat-agent), so
+  // the generator never sees it and plans normally.
+  const criticalExpiring = expiringIngredients.filter(e => e.urgency === "critical");
 
   return `You must respond with valid JSON only. No preamble, no explanation, no prose. Your entire response must be parseable by JSON.parse(). If you cannot complete the task, return a JSON error object: {"error": "reason"}. Never return plain text under any circumstances.
 
@@ -532,7 +561,15 @@ PLANNING RULES
    TRANSPARENCY: whenever you assign a recipe specifically because no-repeat had
    to be dropped per (3), set "notes" to make that visible, e.g.
    "Repeating sooner than usual — nothing else fit this slot this week".
-   (That replaces the usual why-note for that slot.)
+   (That replaces the usual why-note for that slot.)${anyHolidayRelaxed ? `
+   HOLIDAY RELAXATION: for any slot whose day has holiday_relaxed = true (an
+   extended school-holiday stretch), use a 7-DAY no-repeat window instead of 14 —
+   a recipe last used 7 or more days ago may be reused freely. This applies ONLY
+   to holiday_relaxed slots; every other slot keeps the full 14-day window. Each
+   RECENTLY USED entry carries its date, so compare against the slot's date. When
+   you reuse a recipe on a holiday_relaxed day that the 7-day window allows but
+   the normal 14-day window would not (i.e. it was 7–13 days ago), say so in
+   notes: "last served 8 days ago, within holiday repeat window."` : ``}
 3. No same protein two days in a row (a preference, secondary to rule 2's hard constraints).
 4. Match each day's template constraint (protein or style).
 5. COMMUTE DAYS — strict priority order:
@@ -618,24 +655,20 @@ PLANNING RULES
 17. STORE-BOUGHT stash items (source = "store_bought") need no cooking instructions;
     treat them exactly like homemade stash for assignment. Keep cook_source
     "freezer_stash" and reference stash_item_id.
-18. EXPIRY PRIORITISATION — apply BEFORE normal template filling. The EXPIRING
-    INGREDIENTS list shows inventory expiring within the window, each with an
-    urgency tier and matching_recipes (active recipes that use it). Goal: consume
-    ingredients before they expire as a natural result of good planning.
-    - "critical" (meat/fish expiring within 2 days): HARD override, same
-      non-negotiability as allergens. Slot a matching recipe into the NEAREST
-      available dinner slot regardless of the template. Set "expiry_override":
-      true and write notes: "Critical — [item] expiring [date], template
-      overridden." (Note any preschool/template conflict in the text, but it does
-      NOT block the override.)
-    - "standard": soft preference. Try a COMPATIBLE template day first; if none
-      exists within the urgency window, override the nearest available slot. Set
-      "expiry_override": true with notes like "Using [item] (expires [date]) —
-      template override, [slot] moved to next available day."
-    - If matching_recipes is EMPTY, do NOT invent a recipe. Add the item to
-      "unresolved" with: "[item] expires [date] — no matching recipe found.
-      Consider adding one or swapping via the Absurd Chef."
-    - Any slot filled for a normal (non-expiry) reason keeps "expiry_override": false.
+18. CRITICAL EXPIRY — the ONLY expiry case handled during planning. CRITICAL
+    EXPIRING lists meat/fish expiring within 2 days, each with matching_recipes
+    (active recipes that use it). Everything else that is expiring is handled
+    separately by the Absurd Chef's recommend-and-approve flow — it is NOT in the
+    list below, so plan normally and do not special-case it.
+    - HARD override, same non-negotiability as allergens: slot a matching recipe
+      into the NEAREST available dinner slot regardless of the template. Set
+      "expiry_override": true and write notes: "Critical — [item] expiring [date],
+      template overridden." (Note any preschool/template conflict in the text,
+      but it does NOT block the override.)
+    - If matching_recipes is EMPTY, do NOT invent a recipe and do NOT override a
+      slot. Add the item to "unresolved": "[item] expires [date] — no matching
+      recipe. Ask the Absurd Chef to suggest one."
+    - Every slot not filled for a critical-expiry reason keeps "expiry_override": false.
 
 WEEKLY TEMPLATE (dinner)
 ${JSON.stringify(ctx.template.filter((t: TemplateRule) => t.meal_type === "dinner"), null, 2)}
@@ -649,13 +682,15 @@ ${JSON.stringify(dateList, null, 2)}
 AVAILABLE RECIPES (safe for this household)
 ${JSON.stringify(recipeList, null, 2)}
 
-EXPIRING INGREDIENTS (in-window — see rule 18; empty list = nothing expiring)
-${JSON.stringify(expiringIngredients, null, 2)}
+CRITICAL EXPIRING (meat/fish within 2 days — see rule 18; empty = nothing critical)
+${JSON.stringify(criticalExpiring, null, 2)}
 
 FREEZER STASH (available now)
 ${JSON.stringify(stashList, null, 2)}
 
-RECENTLY USED (last 14 days — do not repeat)
+RECENTLY USED (last 14 days — prefer not to repeat; each entry has its date so
+you can measure age, incl. for the 7-day holiday_relaxed window per rule 2.
+Includes additional meals actually eaten, not just planned recipes.)
 ${JSON.stringify(recentlyUsed, null, 2)}
 
 LOCKED (immovable — keep these exactly; see rule 13)
@@ -903,6 +938,15 @@ async function writePlan(
         .in("id", liveIds);
     }
   }
+
+  // Proactive expiry heads-up: after the plan is written, nudge the user in chat
+  // about non-critical items expiring in-window (critical meat/fish is already
+  // auto-slotted). This is the "app recommends" entry point — the recommend-and-
+  // approve flow then runs in chat (see chat-agent get_expiry_recommendations).
+  if (startDate) {
+    const endDate = dates.length ? dates.slice().sort()[dates.length - 1] : addDays(startDate, 13);
+    await postExpiryNudge(supabase, startDate, endDate);
+  }
 }
 
 // ── Extend day_settings forward ────────────────────────────────────────────
@@ -952,6 +996,53 @@ async function extendDaySettings(supabase: ReturnType<typeof createClient>) {
     const { error } = await supabase.from("day_settings").insert(rows);
     if (error) throw new Error(`day_settings extend failed: ${error.message}`);
     console.log(`Extended day_settings by ${rows.length} day(s) through ${target}`);
+  }
+}
+
+// ── Proactive expiry heads-up (Part 3) ─────────────────────────────────────
+// Best-effort chat nudge about items expiring in the plan window, so nothing
+// rots unnoticed (the polenta failure). Critical meat/fish within 2 days is
+// EXCLUDED — the generator already slotted those (rule 18). Deduped to at most
+// one heads-up per ~20h so repeated regenerations don't spam. Never throws.
+async function postExpiryNudge(
+  supabase: ReturnType<typeof createClient>,
+  startDate: string,
+  endDate: string,
+) {
+  try {
+    const { data: inv } = await supabase
+      .from("inventory")
+      .select("name, food_category, expiry_date, quantity, status")
+      .eq("active", true)
+      .not("expiry_date", "is", null)
+      .gte("expiry_date", startDate)
+      .lte("expiry_date", endDate)
+      .order("expiry_date");
+    const FISH_RE = /\b(fish|salmon|tuna|cod|prawn|shrimp|seafood|haddock|mackerel|sardine)\b/i;
+    const items = ((inv as { name: string; food_category: string | null; expiry_date: string; quantity: number | null; status: string | null }[]) || [])
+      .filter((it) => !(Number(it.quantity) === 0 || it.status === "out"))
+      .filter((it) => {
+        const isMeatFish = it.food_category === "meat" || FISH_RE.test(it.name || "");
+        return !(isMeatFish && daysBetween(startDate, it.expiry_date) <= 2);   // critical → already slotted
+      });
+    if (!items.length) return;
+
+    const since = new Date(Date.now() - 20 * 3600 * 1000).toISOString();
+    const { data: recent } = await supabase
+      .from("chat_history")
+      .select("id")
+      .eq("role", "assistant")
+      .ilike("content", "⏳ Heads-up — %")
+      .gte("created_at", since)
+      .limit(1);
+    if (recent && recent.length) return;   // already nudged recently
+
+    const list = items.slice(0, 8).map((it) => `${it.name} (by ${it.expiry_date})`).join(", ");
+    const more = items.length > 8 ? ` …and ${items.length - 8} more` : "";
+    const content = `⏳ Heads-up — a few things are expiring soon: ${list}${more}. Want me to work one into the plan? I can suggest a recipe that uses them up (or make a new one) and slot it wherever suits — just say the word.`;
+    await supabase.from("chat_history").insert({ role: "assistant", content });
+  } catch (_e) {
+    /* best-effort — a nudge must never block or fail plan generation */
   }
 }
 

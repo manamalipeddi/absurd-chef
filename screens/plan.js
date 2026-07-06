@@ -172,7 +172,7 @@ async function loadAndRender() {
   // planned + actual recipe both reference recipes — disambiguate by FK.
   const planSelect =
     'plan_date, meal_type, recipe_id, slot_locked, is_commute_day, is_holiday, is_preschool_closed, guest_count, ' +
-    'notes, actually_made, actual_recipe_id, actual_notes, expiry_override, ' +
+    'notes, actually_made, actual_recipe_id, actual_notes, expiry_override, additional_recipes, ' +
     'recipes!meal_plans_recipe_id_fkey(id, name, emoji, serves_base, is_placeholder), ' +
     'actual_recipe:recipes!meal_plans_actual_recipe_id_fkey(id, name, emoji, is_placeholder)'
 
@@ -616,7 +616,96 @@ function buildSlotRow(date, slot, entry, dayMeta, isPast = false) {
   }
 
   row.append(icon, label, val)
-  return row
+
+  // Multi-meal TRACKING: additional meals that also happened in this slot render
+  // as subordinate secondary lines beneath the primary meal. A slot marked made
+  // (today or past) also gets a "+ Also served" affordance to log more. Planning
+  // is untouched — this is purely a record of what actually happened.
+  if (!disp) return row
+  const extras = Array.isArray(entry.additional_recipes) ? entry.additional_recipes : []
+  const isMade = entry.actually_made === true && date <= todayStr()
+  if (!extras.length && !isMade) return row
+
+  const frag = document.createDocumentFragment()
+  frag.appendChild(row)
+  extras.forEach((add, i) => frag.appendChild(buildAdditionalLine(date, slot.type, i, add)))
+  if (isMade) {
+    const alsoBtn = document.createElement('button')
+    alsoBtn.className = 'day-slot__also-add'
+    alsoBtn.textContent = '+ Also served'
+    alsoBtn.title = 'Log another meal that also happened in this slot'
+    alsoBtn.addEventListener('click', (e) => { e.stopPropagation(); showPicker(date, slot.type, { additional: true }) })
+    frag.appendChild(alsoBtn)
+  }
+  return frag
+}
+
+// One additional-meal line (subordinate to the primary). Taps through to the
+// recipe when it's a tracked recipe; ✕ removes just this entry.
+function buildAdditionalLine(date, slotType, idx, add) {
+  const line = document.createElement('div')
+  line.className = 'day-slot__also'
+
+  const mark = document.createElement('span')
+  mark.className = 'day-slot__also-mark'
+  mark.setAttribute('aria-hidden', 'true')
+  mark.textContent = '＋'
+
+  const nm = document.createElement('span')
+  nm.className = 'day-slot__also-name'
+  nm.textContent = (add && add.recipe_name) || 'Extra meal'
+
+  line.append(mark, nm)
+
+  if (add && add.recipe_id) {
+    line.classList.add('day-slot--tap')
+    line.addEventListener('click', () => {
+      navState.recipeId = add.recipe_id
+      navState.recipeFrom = 'plan'
+      navState.scrollPlan = screenEl.scrollTop
+      navigateTo('recipe-detail')
+    })
+  }
+
+  const rm = document.createElement('button')
+  rm.className = 'day-slot__also-rm'
+  rm.innerHTML = '✕'
+  rm.title = 'Remove this meal'
+  rm.addEventListener('click', (e) => { e.stopPropagation(); removeAdditionalMeal(date, slotType, idx) })
+  line.appendChild(rm)
+  return line
+}
+
+// Append an additional meal to a slot's additional_recipes. A tracked recipe
+// (recipe_id) also bumps recipes.last_made — it really was eaten that day, so it
+// counts toward the no-repeat window and preschool cross-reference (see the
+// plan-generator). Free-text entries (unlisted meals) carry no recipe_id.
+async function addAdditionalMeal(date, slotType, recipeId, recipeName, notes) {
+  const { data: row } = await supabase.from('meal_plans')
+    .select('additional_recipes').eq('plan_date', date).eq('meal_type', slotType).maybeSingle()
+  const list = Array.isArray(row?.additional_recipes) ? row.additional_recipes.slice() : []
+  list.push({ recipe_id: recipeId || null, recipe_name: recipeName, notes: notes || null })
+  const { error } = await supabase.from('meal_plans')
+    .update({ additional_recipes: list }).eq('plan_date', date).eq('meal_type', slotType)
+  if (error) { toast('Failed to add', { error: true }); return }
+  if (recipeId && recipeId !== otherRecipe?.id) {
+    await supabase.from('recipes').update({ last_made: date }).eq('id', recipeId)
+  }
+  toast('Added')
+  await loadAndRender()
+}
+
+async function removeAdditionalMeal(date, slotType, idx) {
+  const { data: row } = await supabase.from('meal_plans')
+    .select('additional_recipes').eq('plan_date', date).eq('meal_type', slotType).maybeSingle()
+  const list = Array.isArray(row?.additional_recipes) ? row.additional_recipes.slice() : []
+  if (idx < 0 || idx >= list.length) return
+  list.splice(idx, 1)
+  const { error } = await supabase.from('meal_plans')
+    .update({ additional_recipes: list }).eq('plan_date', date).eq('meal_type', slotType)
+  if (error) { toast('Failed to remove', { error: true }); return }
+  toast('Removed')
+  await loadAndRender()
 }
 
 
@@ -641,7 +730,8 @@ function buildEmpty() {
 // Future date → change the PLAN (recipe_id + slot_locked). Today/past → LOG
 // what actually happened (actual_recipe_id + actually_made = false). "Other"
 // is always pinned and leads to a free-text entry.
-function showPicker(date, slotType) {
+function showPicker(date, slotType, opts = {}) {
+  const additional = !!opts.additional   // logging an EXTRA meal, not the primary
   const isActual = date <= todayStr()   // today or past = logging reality
   // Show ALL recipes, the slot's own category first (see buildPickerPool).
   const pool     = buildPickerPool(slotType)
@@ -650,8 +740,9 @@ function showPicker(date, slotType) {
   const overlay = document.createElement('div'); overlay.className = 'picker-overlay'
   const sheet = document.createElement('div'); sheet.className = 'picker-sheet'
   const head = document.createElement('div'); head.className = 'picker-header'
+  const title = additional ? 'Also served' : (isActual ? 'What did you have' : 'Choose')
   head.innerHTML = `
-    <span class="picker-title">${isActual ? 'What did you have' : 'Choose'} — ${label}</span>
+    <span class="picker-title">${title} — ${label}</span>
     <button class="picker-close" aria-label="Close">✕</button>`
   head.querySelector('.picker-close').addEventListener('click', () => closeModal(overlay))
   overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(overlay) })
@@ -678,7 +769,9 @@ function showPicker(date, slotType) {
       // the stored value is the recipe id, so the prefix never enters the slot.
       const display = `<span class="picker-row__cat">${mealTypeLabel(r.meal_type)}</span>${r.name}`
       list.appendChild(pickRow(r.emoji || slotEmoji(slotType), display, async () => {
-        closeModal(overlay); await applyPick(date, slotType, r.id, isActual, null)
+        closeModal(overlay)
+        if (additional) await addAdditionalMeal(date, slotType, r.id, r.name, null)
+        else await applyPick(date, slotType, r.id, isActual, null)
       }))
     }
     // While searching, surface matching INACTIVE recipes so the user can see the
@@ -706,13 +799,16 @@ function showPicker(date, slotType) {
     search.style.display = 'none'
     const wrap = document.createElement('div'); wrap.className = 'picker-other'
     const lbl = document.createElement('div'); lbl.className = 'su-label'
-    lbl.textContent = isActual ? 'What did you actually have?' : 'What are you planning?'
+    lbl.textContent = additional ? 'What else did you have?' : (isActual ? 'What did you actually have?' : 'What are you planning?')
     const lblEl = document.createElement('div'); lblEl.className = 'picker-other__label'; lblEl.textContent = lbl.textContent
     const ta = document.createElement('input'); ta.type = 'text'; ta.className = 'picker-search'
-    ta.placeholder = 'e.g. Picnic lunch in the park'
+    ta.placeholder = additional ? 'e.g. leftover dumplings' : 'e.g. Picnic lunch in the park'
     const save = document.createElement('button'); save.className = 'su-btn-primary picker-other__save'; save.textContent = 'Save'
     save.addEventListener('click', async () => {
-      closeModal(overlay); await applyPick(date, slotType, otherRecipe.id, isActual, ta.value.trim() || null)
+      const text = ta.value.trim()
+      closeModal(overlay)
+      if (additional) { if (text) await addAdditionalMeal(date, slotType, null, text, null) }
+      else await applyPick(date, slotType, otherRecipe.id, isActual, text || null)
     })
     wrap.append(lblEl, ta, save)
     list.appendChild(wrap)
@@ -722,13 +818,16 @@ function showPicker(date, slotType) {
   search.addEventListener('input', () => renderList(search.value))
   renderList('')
 
-  // Distinct action: clear the slot entirely (delete the row → empty slot).
-  const clearBtn = document.createElement('button')
-  clearBtn.className = 'picker-clear'
-  clearBtn.textContent = '✕ Clear this slot (no meal planned)'
-  clearBtn.addEventListener('click', async () => { closeModal(overlay); await clearSlot(date, slotType) })
-
-  sheet.append(head, search, list, clearBtn)
+  // Distinct action: clear the slot entirely (delete the row → empty slot). Not
+  // offered in "Also served" mode — that only appends extras, never clears.
+  sheet.append(head, search, list)
+  if (!additional) {
+    const clearBtn = document.createElement('button')
+    clearBtn.className = 'picker-clear'
+    clearBtn.textContent = '✕ Clear this slot (no meal planned)'
+    clearBtn.addEventListener('click', async () => { closeModal(overlay); await clearSlot(date, slotType) })
+    sheet.appendChild(clearBtn)
+  }
   overlay.appendChild(sheet)
   document.body.appendChild(overlay)
   openModal(overlay, () => overlay.remove())

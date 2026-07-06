@@ -78,6 +78,7 @@ BEHAVIOR:
 - GROCERY ORDER IMPORT: when the user pastes a grocery order confirmation (a block with product lines and "kr" prices, e.g. "Beställda varor" / "Vara Antal Moms Pris" from Mathem), you MUST call import_grocery_order once with the verbatim text — do NOT reply "Done", "Processing", or acknowledge it without actually calling the tool. It is a SINGLE-PASS, NO-CONFIRMATION tool: it parses AND writes inventory immediately (net quantity per item, incl. adjustment/negative lines), and routes ready-to-heat store-bought freezer meals to Freezer Meals instead of inventory. Do NOT ask the user to confirm first, and do NOT call it a second time for the same paste. When it returns, relay its "summary" field to the user as-is. Do NOT regenerate the grocery list afterwards — that only happens on the Sunday cron or the manual Regenerate button. (Most order pastes are routed to the parser automatically before you even see them; this is your instruction for any that reach you directly.)
 - WHY-NOTES: when you change a plan slot via update_plan_slot and there's a reason ("swap Thursday, Gintas is craving curry"), pass it as the reason argument — one short sentence. It's saved to the slot's notes and shown on the plan card, separate from the audit log. If the user gives no reason, omit it (the card then shows nothing for that slot).
 - ACTUAL vs PLANNED: meal_plans records what was planned AND what was actually eaten. When the user says they made something different on a past day ("we ended up ordering pizza Monday", "I made tacos instead of the curry Tuesday"), call update_actual_outcome with that date — actual_recipe_id if it's a tracked recipe, else actual_notes for an untracked meal (takeout, leftovers). Use made_as_planned: true if they confirm they made the plan. get_plan returns actually_made / actual_recipe / actual_notes so you can report what really happened. The recipe actually eaten is what counts for no-repeat — never claim a planned recipe was eaten if actually_made is false.
+- EXPIRING FOOD (recommend-and-approve): get_expiry_recommendations lists inventory expiring in the next ~2 weeks, each with matching existing recipes, plus the upcoming plan slots. Use it when Manasa asks what to cook to use things up, says something is expiring/going off, or replies to an expiry heads-up. Then RECOMMEND ONE concrete action: the nearest suitable upcoming slot + a SINGLE recipe that uses most or all of the expiring items — prefer an existing matching_recipes entry. If none is appealing (or she asks), offer to generate a NEW recipe built around the expiring items via add_recipe. NEVER auto-apply: only after she approves, call update_plan_slot (for a brand-new recipe, add_recipe first, then update_plan_slot with the new id). If she wants a different idea, propose another. If nothing in the catalogue uses an item and she doesn't want a new recipe, say plainly to use it up manually — never invent that it's handled. Items flagged already_auto_planned (critical meat/fish within ~2 days) are already slotted by the planner; don't re-handle them. Don't overwrite a locked slot (see LOCKED SLOTS).
 - Today: ${today()}`
 }
 
@@ -130,6 +131,16 @@ const TOOLS: Anthropic.Tool[] = [
     name: 'get_freezer_stash',
     description: 'Get active unused freezer stash entries with portions remaining.',
     input_schema: { type: 'object' as const, properties: {} },
+  },
+  {
+    name: 'get_expiry_recommendations',
+    description: "Get inventory items expiring within the plan window (default ~14 days), each annotated with matching existing recipes, PLUS the upcoming dinner/lunch slots — everything needed to recommend a use-it-up meal. Use when the user asks what to cook to use things up, mentions something is expiring/going off, or replies to an expiry heads-up. Recommend ONE slot + ONE recipe covering most/all expiring items; only apply via update_plan_slot after the user approves. Items flagged already_auto_planned (critical meat/fish within ~2 days) are already slotted by the planner — don't re-handle them.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        days: { type: 'integer', description: 'Window size in days from today. Defaults to 14.' },
+      },
+    },
   },
   {
     name: 'get_prepped_components',
@@ -396,6 +407,78 @@ async function toolGetInventory(input: Record<string, unknown>, db: DB) {
   if (input.category) q = q.eq('category', input.category as string)
   const { data } = await q
   return { items: data || [], note: 'Inventory may not be fully current — hedge accordingly.' }
+}
+
+// Expiry recommendation data (Part 3): in-window expiring inventory, each with
+// the active recipes that could use it, plus the upcoming dinner/lunch slots so
+// the agent can recommend WHERE to slot a use-it-up meal. Recommend-and-approve:
+// the agent proposes, the user approves, then update_plan_slot applies it. It
+// does NOT auto-assign. Critical meat/fish within 2 days is already auto-slotted
+// by the plan-generator (flagged here so the agent doesn't double-handle it).
+async function toolGetExpiryRecommendations(input: Record<string, unknown>, db: DB) {
+  const start = today()
+  const windowDays = Number(input.days) || 14
+  const end = addDays(start, windowDays - 1)
+  const dayDiff = (iso: string) => Math.round((new Date(iso + 'T00:00:00Z').getTime() - new Date(start + 'T00:00:00Z').getTime()) / 86400000)
+
+  const { data: inv } = await db.from('inventory')
+    .select('name, food_category, expiry_date, quantity, status, master_ingredient_id')
+    .eq('active', true).not('expiry_date', 'is', null)
+    .gte('expiry_date', start).lte('expiry_date', end)
+    .order('expiry_date')
+  const items = (inv || []).filter((it: Record<string, unknown>) => !(Number(it.quantity) === 0 || it.status === 'out'))
+  if (!items.length) return { expiring: [], note: 'Nothing is expiring in the window — no recommendation needed.' }
+
+  const [{ data: recipes }, { data: ings }, { data: slots }] = await Promise.all([
+    db.from('recipes').select('id, name, protein, style').eq('active', true).eq('is_placeholder', false),
+    db.from('recipe_ingredients').select('recipe_id, name, master_ingredient_id'),
+    db.from('meal_plans')
+      .select('plan_date, meal_type, slot_locked, recipes!meal_plans_recipe_id_fkey(name)')
+      .gte('plan_date', start).lte('plan_date', end).in('meal_type', ['dinner', 'lunch'])
+      .order('plan_date').order('meal_type'),
+  ])
+  const nameById = new Map((recipes || []).map((r: Record<string, unknown>) => [r.id as string, r.name as string]))
+  const byMaster = new Map<string, Set<string>>()
+  const ingRows: { n: string; recipe_id: string }[] = []
+  for (const ri of (ings || []) as Record<string, unknown>[]) {
+    if (!nameById.has(ri.recipe_id as string)) continue
+    if (ri.master_ingredient_id) {
+      const k = ri.master_ingredient_id as string
+      if (!byMaster.has(k)) byMaster.set(k, new Set())
+      byMaster.get(k)!.add(ri.recipe_id as string)
+    }
+    ingRows.push({ n: (ri.name as string || '').toLowerCase(), recipe_id: ri.recipe_id as string })
+  }
+  const matchRecipes = (it: Record<string, unknown>) => {
+    const ids = new Set<string>()
+    const mid = it.master_ingredient_id as string | null
+    if (mid && byMaster.has(mid)) for (const id of byMaster.get(mid)!) ids.add(id)
+    const n = (it.name as string || '').toLowerCase()
+    const words = n.split(/[\s,-]+/).filter(w => w.length >= 4)
+    for (const ri of ingRows) {
+      if (ri.n === n || ri.n.includes(n) || n.includes(ri.n) || words.some(w => ri.n.includes(w))) ids.add(ri.recipe_id)
+    }
+    return [...ids].map(id => nameById.get(id)).filter(Boolean).slice(0, 6)
+  }
+  const FISH_RE = /\b(fish|salmon|tuna|cod|prawn|shrimp|seafood|haddock|mackerel|sardine)\b/i
+  const expiring = items.map((it: Record<string, unknown>) => {
+    const daysUntil = dayDiff(it.expiry_date as string)
+    const isMeatFish = it.food_category === 'meat' || FISH_RE.test(it.name as string || '')
+    return {
+      name: it.name, expires: it.expiry_date, days_until: daysUntil,
+      already_auto_planned: isMeatFish && daysUntil <= 2,   // critical → planner slotted it
+      matching_recipes: matchRecipes(it),
+    }
+  })
+  const upcoming_slots = (slots || []).map((s: Record<string, unknown>) => ({
+    date: s.plan_date, meal_type: s.meal_type,
+    current_recipe: (s.recipes as { name?: string } | null)?.name || null,
+    locked: s.slot_locked === true,
+  }))
+  return {
+    expiring, upcoming_slots,
+    note: 'Recommend ONE slot + ONE recipe that uses most/all of these (prefer a matching_recipes entry; offer a NEW recipe via add_recipe if none fits or on request). Do NOT call update_plan_slot until the user approves. Skip items where already_auto_planned is true.',
+  }
 }
 
 async function toolGetFreezerStash(db: DB) {
@@ -1338,6 +1421,7 @@ async function dispatch(name: string, input: Record<string, unknown>, db: DB, us
       case 'search_recipes':         result = await toolSearchRecipes(input, db); break
       case 'get_inventory':          result = await toolGetInventory(input, db); break
       case 'get_freezer_stash':      result = await toolGetFreezerStash(db); break
+      case 'get_expiry_recommendations': result = await toolGetExpiryRecommendations(input, db); break
       case 'get_prepped_components': result = await toolGetPreppedComponents(db); break
       case 'check_substitutes':      result = await toolCheckSubstitutes(input, db); break
       case 'get_family_context':     result = await toolGetFamilyContext(db); break
@@ -1370,6 +1454,7 @@ function statusLabel(name: string, input: Record<string, unknown>): string {
     case 'search_recipes':         return 'Searching recipes…'
     case 'get_inventory':          return 'Checking your inventory…'
     case 'get_freezer_stash':      return 'Checking the freezer stash…'
+    case 'get_expiry_recommendations': return 'Checking what needs using up…'
     case 'get_prepped_components': return 'Checking prepped components…'
     case 'check_substitutes':      return 'Finding substitutes…'
     case 'get_family_context':     return 'Checking family details…'
