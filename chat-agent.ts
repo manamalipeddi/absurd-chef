@@ -77,7 +77,9 @@ BEHAVIOR:
 - Inventory item names follow the pattern "Category - Variant" (e.g. "Milk - Oat", "Bread - Lingon Grova"). When the user describes what they have in stock, call update_inventory_from_description. The tool handles parsing, matching, and writing; your job is to relay what was done and ask about any ambiguous items it surfaces.
 - GROCERY ORDER IMPORT: when the user pastes a grocery order confirmation (a block with product lines and "kr" prices, e.g. "Beställda varor" / "Vara Antal Moms Pris" from Mathem), you MUST call import_grocery_order once with the verbatim text — do NOT reply "Done", "Processing", or acknowledge it without actually calling the tool. It is a SINGLE-PASS, NO-CONFIRMATION tool: it parses AND writes inventory immediately (net quantity per item, incl. adjustment/negative lines), and routes ready-to-heat store-bought freezer meals to Freezer Meals instead of inventory. Do NOT ask the user to confirm first, and do NOT call it a second time for the same paste. When it returns, relay its "summary" field to the user as-is. Do NOT regenerate the grocery list afterwards — that only happens on the Sunday cron or the manual Regenerate button. (Most order pastes are routed to the parser automatically before you even see them; this is your instruction for any that reach you directly.)
 - WHY-NOTES: when you change a plan slot via update_plan_slot and there's a reason ("swap Thursday, Gintas is craving curry"), pass it as the reason argument — one short sentence. It's saved to the slot's notes and shown on the plan card, separate from the audit log. If the user gives no reason, omit it (the card then shows nothing for that slot).
-- ACTUAL vs PLANNED: meal_plans records what was planned AND what was actually eaten. When the user says they made something different on a past day ("we ended up ordering pizza Monday", "I made tacos instead of the curry Tuesday"), call update_actual_outcome with that date — actual_recipe_id if it's a tracked recipe, else actual_notes for an untracked meal (takeout, leftovers). Use made_as_planned: true if they confirm they made the plan. get_plan returns actually_made / actual_recipe / actual_notes so you can report what really happened. The recipe actually eaten is what counts for no-repeat — never claim a planned recipe was eaten if actually_made is false.
+- FINDING A NAMED RECIPE: when the user names a specific dish and you need its id (to slot it, update it, or just confirm it exists), call search_recipes with the "name" argument — do NOT guess protein/style facets and hope they match. A short distinctive word is enough ("tikka", "channa"). Only fall back to category filters when browsing rather than looking up one dish.
+- ACTUAL vs PLANNED: meal_plans records what was planned AND what was actually eaten. When the user says they made something different on a past day ("we ended up ordering pizza Monday", "I made tacos instead of the curry Tuesday"), call update_actual_outcome with that date — actual_recipe_id if it's a tracked recipe, else actual_notes for an untracked meal (takeout, leftovers). Use made_as_planned: true if they confirm they made the plan. This also covers BREAKFAST and SNACK, which are never pre-planned: to log or correct a past breakfast ("we had pancakes yesterday", "fix Tuesday's breakfast to porridge") call update_actual_outcome with meal_type breakfast (or snack) and actual_recipe_id/actual_notes — it creates the history record. get_plan returns actually_made / actual_recipe / actual_notes so you can report what really happened. The recipe actually eaten is what counts for no-repeat — never claim a planned recipe was eaten if actually_made is false.
+- WEEKLY OUTCOME CHECK-IN: on Sundays the planner posts a "🗓️ Quick check on last week" message listing last week's unconfirmed meals. When Manasa replies to it ("all as planned", "all as planned except Wednesday — we ordered pizza", "Tuesday we had the leftover dal instead"), log the WHOLE week in this one turn: call get_plan with start_date 7 days ago and days 7 to see each past slot's confirmation state (actually_made / actual_recipe_id / actual_notes all null = unconfirmed), then call update_actual_outcome once per unconfirmed slot — made_as_planned: true for the confirmed ones, actual_recipe_id (tracked recipe) or actual_notes (free text like takeout) for the exceptions. A slot with no planned recipe (open slot / chef's choice) can't be "made as planned" — log what she says was eaten, or skip it if she doesn't say. Never ask her to confirm day by day; one short summary of what you logged at the end is enough.
 - COOKING LEARNINGS: when a cooking conversation produces a correction or discovery worth keeping (timing, temperature, a substitution that worked), OFFER to save it to the recipe ("want me to note that on the recipe?") and call update_recipe only after she agrees. When she mentions prepped food she has ready ("I have 10 cubes of cooked onion in the freezer"), log it with add_prepped_component.
 - EXPIRING FOOD (recommend-and-approve): get_expiry_recommendations lists inventory expiring in the next ~2 weeks, each with matching existing recipes, plus the upcoming plan slots. Use it when Manasa asks what to cook to use things up, says something is expiring/going off, or replies to an expiry heads-up. Then RECOMMEND ONE concrete action: the nearest suitable upcoming slot + a SINGLE recipe that uses most or all of the expiring items — prefer an existing matching_recipes entry. If none is appealing (or she asks), offer to generate a NEW recipe built around the expiring items via add_recipe. NEVER auto-apply: only after she approves, call update_plan_slot (for a brand-new recipe, add_recipe first, then update_plan_slot with the new id). If she wants a different idea, propose another. If nothing in the catalogue uses an item and she doesn't want a new recipe, say plainly to use it up manually — never invent that it's handled. Items flagged already_auto_planned (critical meat/fish within ~2 days) are already slotted by the planner; don't re-handle them. Don't overwrite a locked slot (see LOCKED SLOTS).
 - Today: ${today()}`
@@ -104,10 +106,11 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'search_recipes',
-    description: 'Search the recipe catalogue by protein, style, cooking method, template slot, or tags.',
+    description: 'Search the recipe catalogue. To find a SPECIFIC recipe the user names ("do we have channa masala?", "pull up the tikka recipe"), pass its name via `name` — this is the reliable way to locate one recipe and get its id (e.g. to then update_plan_slot or update_recipe). The other fields (protein/style/method/slot/tags) are for browsing by category. `name` matches on a partial, case-insensitive substring, so a short distinctive word works.',
     input_schema: {
       type: 'object' as const,
       properties: {
+        name:           { type: 'string', description: 'Free-text partial match on the recipe name (case-insensitive). Use when the user names a dish.' },
         meal_type:      { type: 'string' },
         protein:        { type: 'string' },
         style:          { type: 'string' },
@@ -226,12 +229,12 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'update_actual_outcome',
-    description: "Record what was ACTUALLY eaten on a PAST date (distinct from what was planned). Use when the user says they made something different, or confirms they made the plan. e.g. \"I made tacos instead of the curry on Tuesday\". Past dates only.",
+    description: "Record or change what was ACTUALLY eaten on a PAST date (distinct from what was planned). Use when the user says they made something different, confirms they made the plan, or wants to log/correct a meal — including BREAKFAST and SNACK, which are never pre-planned. e.g. \"I made tacos instead of the curry Tuesday\", \"we had pancakes for breakfast yesterday\". For breakfast/snack (and any slot with no planned meal) this creates the record from scratch; pass actual_recipe_id (tracked recipe) or actual_notes (free text). Past dates only.",
     input_schema: {
       type: 'object' as const,
       properties: {
         plan_date:        { type: 'string', description: 'YYYY-MM-DD (must be in the past).' },
-        meal_type:        { type: 'string', description: 'dinner|lunch. Default: dinner.' },
+        meal_type:        { type: 'string', description: 'dinner|lunch|breakfast|snack. Default: dinner. breakfast/snack are never planned, so logging one creates a new history record.' },
         made_as_planned:  { type: 'boolean', description: 'true if they made exactly what was planned. When true, omit actual_recipe_id/actual_notes.' },
         actual_recipe_id: { type: 'string', description: 'UUID of the recipe actually made, if it differs from the plan and is a tracked recipe.' },
         actual_notes:     { type: 'string', description: 'Free text for an untracked meal actually eaten, e.g. "ordered takeout", "leftovers". Use instead of actual_recipe_id.' },
@@ -418,6 +421,7 @@ async function toolSearchRecipes(input: Record<string, unknown>, db: DB) {
   let q = db.from('recipes')
     .select('id, name, emoji, meal_type, protein, style, cooking_method, template_slot, tags, last_made, serves_base, is_freezable, ease_descriptor')
     .eq('active', true)
+  if (input.name)           q = q.ilike('name', `%${String(input.name).trim()}%`)
   if (input.meal_type)      q = q.eq('meal_type', input.meal_type as string)
   if (input.protein)        q = q.ilike('protein', `%${input.protein}%`)
   if (input.style)          q = q.ilike('style', `%${input.style}%`)
@@ -1161,9 +1165,17 @@ async function toolUpdateRecipe(input: Record<string, unknown>, db: DB) {
     const { data } = await db.from('recipes').select('id, name, notes').eq('id', recipe_id).maybeSingle()
     recipe = data
   } else if (recipe_name) {
-    const { data } = await db.from('recipes').select('id, name, notes').ilike('name', recipe_name).eq('active', true)
+    // Exact (case-insensitive) match first; fall back to a partial substring
+    // match so a slightly-off name ("tikka" for "Chicken Tikka Masala") still
+    // resolves instead of failing outright.
+    const nm = String(recipe_name).trim()
+    let { data } = await db.from('recipes').select('id, name, notes').ilike('name', nm).eq('active', true)
+    if (!data || !data.length) {
+      ;({ data } = await db.from('recipes').select('id, name, notes').ilike('name', `%${nm}%`).eq('active', true))
+    }
     if (data && data.length === 1) recipe = data[0]
-    else if (data && data.length > 1) return { error: `Multiple recipes match "${recipe_name}" — pass recipe_id.` }
+    else if (data && data.length > 1)
+      return { error: `Multiple recipes match "${recipe_name}" (${data.map(r => r.name).join(', ')}) — pass recipe_id.` }
   }
   if (!recipe) return { error: 'Recipe not found — check the name or pass recipe_id.' }
 
@@ -1243,12 +1255,14 @@ async function toolUpdateActualOutcome(input: Record<string, unknown>, db: DB) {
   if (plan_date >= today()) return { success: false, error: 'Actual outcomes can only be logged for past dates.' }
 
   const { data: row } = await db.from('meal_plans')
-    .select('recipe_id').eq('plan_date', plan_date).eq('meal_type', meal_type).single()
-  if (!row) return { success: false, error: `No ${meal_type} planned on ${plan_date} to confirm.` }
+    .select('recipe_id').eq('plan_date', plan_date).eq('meal_type', meal_type).maybeSingle()
 
   let update: Record<string, unknown>
   let recipeToMark: string | null = null
   if (madeAsPlanned) {
+    // "Made as planned" needs something that WAS planned. Breakfast/snack are
+    // never planned, so there's nothing to confirm — ask what was eaten instead.
+    if (!row) return { success: false, error: `Nothing was planned for ${meal_type} on ${plan_date}, so there's nothing to confirm as made-as-planned. Pass actual_recipe_id or actual_notes for what was eaten.` }
     update = { actually_made: true, actual_recipe_id: null, actual_notes: null }
     recipeToMark = row.recipe_id || null
   } else if (actualRecipeId) {
@@ -1260,8 +1274,16 @@ async function toolUpdateActualOutcome(input: Record<string, unknown>, db: DB) {
     return { success: false, error: 'Provide made_as_planned, actual_recipe_id, or actual_notes.' }
   }
 
-  const { error } = await db.from('meal_plans').update(update)
-    .eq('plan_date', plan_date).eq('meal_type', meal_type)
+  // If a slot row exists (dinner/lunch usually), update it in place. If none
+  // exists (the normal case for breakfast/snack, which the planner never writes),
+  // create the row carrying just the actual outcome — recipe_id stays null since
+  // nothing was ever planned. This is what makes historical breakfasts editable.
+  const { error } = row
+    ? await db.from('meal_plans').update(update)
+        .eq('plan_date', plan_date).eq('meal_type', meal_type)
+    : await db.from('meal_plans').upsert(
+        { plan_date, meal_type, recipe_id: null, ...update },
+        { onConflict: 'plan_date,meal_type' })
   if (error) return { success: false, error: error.message }
 
   // Keep recipe-level recency truthful: what was actually eaten counts for

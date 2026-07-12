@@ -197,6 +197,8 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
     invExpiringRes,
     recipeIngRes,
     planEditsRes,
+    mealHistoryRes,
+    historyDaysRes,
   ] = await Promise.all([
     supabase
       .from("recipes")
@@ -269,6 +271,22 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
       .from("plan_edits")
       .select("previous_recipe_id, new_recipe_id, edit_source")
       .gte("plan_date", addDays(startDate, -90)),
+    // Habit evidence (rule 20): ~16 weeks of history with each day's context
+    // flags, to learn what the family ACTUALLY eats per circumstance. Only
+    // confirmed outcomes carry weight — see buildHabitEvidence.
+    supabase
+      .from("meal_plans")
+      .select("plan_date, meal_type, recipe_id, actually_made, actual_recipe_id, is_commute_day, is_holiday, is_preschool_closed, guest_count")
+      .gte("plan_date", addDays(startDate, -112))
+      .lt("plan_date", startDate)
+      .in("meal_type", ["dinner", "lunch"]),
+    // gintas_away isn't denormalized onto meal_plans — join via day_settings.
+    supabase
+      .from("day_settings")
+      .select("day, gintas_away")
+      .gte("day", addDays(startDate, -112))
+      .lt("day", startDate)
+      .eq("gintas_away", true),
   ]);
 
   return {
@@ -284,6 +302,8 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
     inventoryExpiring: invExpiringRes.data || [],
     recipeIngredients: recipeIngRes.data || [],
     planEdits: planEditsRes.data || [],
+    mealHistory: mealHistoryRes.data || [],
+    historyGintasAwayDays: historyDaysRes.data || [],
   };
 }
 
@@ -572,6 +592,64 @@ function buildPrompt(
     manually_picked: evidenceOf(countIds(editRows.filter(e => e.edit_source === "manual").map(e => e.new_recipe_id))),
   };
 
+  // ── Habit evidence (rule 20): what the family ACTUALLY eats, per circumstance.
+  //    Only CONFIRMED outcomes count — actual_recipe_id set, or actually_made =
+  //    true. Unconfirmed planned meals are ZERO weight, so the planner can never
+  //    learn from its own unchallenged suggestions (self-reinforcement loop).
+  //    The weekly Sunday check-in nudge exists precisely to grow this record.
+  //    Each meal lands in ONE context bucket (priority: guests > commute >
+  //    weekday kids-home > gintas-away > plain day-of-week). A habit is emitted
+  //    only with ≥3 confirmed occurrences AND ≥50% share of its bucket's
+  //    confirmed meals in the last 16 weeks — below that, nothing is emitted
+  //    and the template rules decide alone (habits refine rules, never replace
+  //    them). Names resolve via safeRecipes, so an allergen-unsafe or retired
+  //    recipe can never surface as a habit.
+  const safeNameById = new Map(safeRecipes.map((r: Recipe) => [r.id, r.name]));
+  const gintasAwayDays = new Set(
+    ((ctx.historyGintasAwayDays || []) as { day: string }[]).map((d) => d.day)
+  );
+  const DOW_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const habitBucketOf = (r: {
+    plan_date: string; meal_type: string; is_commute_day: boolean | null;
+    is_holiday: boolean | null; is_preschool_closed: boolean | null; guest_count: number | null;
+  }): string => {
+    const dow = dayOfWeek(r.plan_date);
+    if ((r.guest_count || 0) > 0) return `guest-day ${r.meal_type}`;
+    if (r.is_commute_day) return `commute-day ${r.meal_type}`;
+    // Same historical kids-home read the Plan tab uses: holiday or preschool
+    // closed, on a weekday (weekends fold into plain day-of-week buckets).
+    if ((r.is_holiday || r.is_preschool_closed) && dow >= 1 && dow <= 5)
+      return `weekday-kids-home ${r.meal_type}`;
+    if (gintasAwayDays.has(r.plan_date)) return `gintas-away ${r.meal_type}`;
+    return `${DOW_NAMES[dow]} ${r.meal_type}`;
+  };
+  const habitCounts = new Map<string, Map<string, number>>();   // bucket → recipeId → n
+  const habitTotals = new Map<string, number>();                // bucket → confirmed meals
+  for (const r of (ctx.mealHistory || []) as {
+    plan_date: string; meal_type: string; recipe_id: string | null;
+    actually_made: boolean | null; actual_recipe_id: string | null;
+    is_commute_day: boolean | null; is_holiday: boolean | null;
+    is_preschool_closed: boolean | null; guest_count: number | null;
+  }[]) {
+    const eatenId = r.actual_recipe_id || (r.actually_made === true ? r.recipe_id : null);
+    if (!eatenId || !safeNameById.has(eatenId)) continue;   // unconfirmed / unsafe / retired → no signal
+    const bucket = habitBucketOf(r);
+    habitTotals.set(bucket, (habitTotals.get(bucket) || 0) + 1);
+    if (!habitCounts.has(bucket)) habitCounts.set(bucket, new Map());
+    const m = habitCounts.get(bucket)!;
+    m.set(eatenId, (m.get(eatenId) || 0) + 1);
+  }
+  const habitEvidence: { context: string; recipe: string; made: number; of: number }[] = [];
+  for (const [bucket, counts] of habitCounts) {
+    const total = habitTotals.get(bucket) || 0;
+    for (const [id, n] of counts) {
+      if (n >= 3 && n / total >= 0.5)
+        habitEvidence.push({ context: bucket, recipe: safeNameById.get(id)!, made: n, of: total });
+    }
+  }
+  habitEvidence.sort((a, b) => b.made - a.made);
+  const habits = habitEvidence.slice(0, 12);
+
   return `You must respond with valid JSON only. No preamble, no explanation, no prose. Your entire response must be parseable by JSON.parse(). If you cannot complete the task, return a JSON error object: {"error": "reason"}. Never return plain text under any circumstances.
 
 You are AbsurdChef, an autonomous meal planning agent for a busy family.
@@ -742,6 +820,28 @@ PLANNING RULES
     (never_made = false). Zero new recipes in a week is fine — never force
     one. When you place one, the note reads like a deliberate choice:
     "Trying this one — calm Tuesday, good night for an experiment."
+20. HABITS (see HABITS below — confirmed real behaviour, never plans): each
+    entry means "in this context the family actually ate this recipe made-of-of
+    confirmed times over ~16 weeks". Match a slot to a context by checking the
+    day's fields IN THIS ORDER (a day has exactly one habit context):
+    guest_count > 0 → "guest-day"; is_commute → "commute-day";
+    weekday_kids_home → "weekday-kids-home"; special_type = "gintas_away" →
+    "gintas-away"; otherwise the day_name ("Fri dinner" matches a Friday's
+    dinner slot). When a slot's context matches a HABITS entry:
+    - PREFER the habitual recipe over the template constraint for that slot —
+      confirmed behaviour outranks configuration. It never outranks hard
+      constraints: allergens, guest allergens, locked slots, critical expiry,
+      vacation.
+    - On commute / weekday kids-home days the effort chain (rules 5/15) still
+      applies; use the habit to choose among options the chain allows (the
+      habitual recipe usually qualifies — it was genuinely made on such days).
+    - A habitual repeat is the household's rotation, NOT an exception: exempt
+      it from the no-repeat preference (rule 2) exactly like SMALL-POOL
+      ROTATION, and write the note in rotation voice grounded in the evidence,
+      e.g. "Friday pizza — it's what you actually make (6 of the last 8)."
+    - An empty HABITS list, or no entry matching a slot's context, means NO
+      signal: follow the normal rules exactly as written. Never infer a habit
+      yourself from RECENTLY USED — only the HABITS list counts.
 
 WEEKLY TEMPLATE (dinner)
 ${JSON.stringify(ctx.template.filter((t: TemplateRule) => t.meal_type === "dinner"), null, 2)}
@@ -771,6 +871,9 @@ ${JSON.stringify(recentlyUsed, null, 2)}
 
 PREFERENCE EVIDENCE (from real behaviour — swaps/locks only, no ratings; empty = no signal yet; see rule 2)
 ${JSON.stringify(preferenceEvidence)}
+
+HABITS (confirmed actual outcomes per context — see rule 20; empty = no habit signal yet, follow normal rules)
+${JSON.stringify(habits)}
 
 LOCKED (immovable — keep these exactly; see rule 13)
 ${JSON.stringify(lockedList, null, 2)}
@@ -1143,6 +1246,62 @@ async function postExpiryNudge(
   }
 }
 
+// ── Weekly outcome check-in ─────────────────────────────────────────────────
+// Habit learning (context-conditioned suggestions from real behaviour) is only
+// as good as the actual-outcome record, and outcomes are logged only when
+// Manasa volunteers them in chat — so most past meals sit unconfirmed. After
+// the Sunday scheduled run, post ONE chat message listing the past week's
+// unconfirmed meals; a single reply ("all as planned except Wednesday — pizza")
+// lets the chat agent batch-confirm the week via update_actual_outcome.
+// Fires only on the scheduled Sunday run (see call site) + deduped to one per
+// ~6 days as a belt-and-suspenders guard. Never throws.
+async function postWeeklyConfirmNudge(supabase: ReturnType<typeof createClient>) {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const weekAgo = addDays(today, -7);
+    const { data } = await supabase
+      .from("meal_plans")
+      .select("plan_date, meal_type, actually_made, actual_recipe_id, actual_notes, planned:recipes!meal_plans_recipe_id_fkey(name, is_placeholder)")
+      .gte("plan_date", weekAgo)
+      .lt("plan_date", today)
+      .in("meal_type", ["dinner", "lunch"])
+      .order("plan_date");
+    // Unconfirmed = no outcome signal of any kind on the row.
+    const unconfirmed = ((data as {
+      plan_date: string; meal_type: string;
+      actually_made: boolean | null; actual_recipe_id: string | null; actual_notes: string | null;
+      planned: { name: string; is_placeholder: boolean | null } | null;
+    }[]) || []).filter((r) =>
+      r.actually_made === null && r.actual_recipe_id === null && r.actual_notes === null
+    );
+    if (!unconfirmed.length) return;
+
+    const since = new Date(Date.now() - 6 * 24 * 3600 * 1000).toISOString();
+    const { data: recent } = await supabase
+      .from("chat_history")
+      .select("id")
+      .eq("role", "assistant")
+      .ilike("content", "🗓️ Quick check%")
+      .gte("created_at", since)
+      .limit(1);
+    if (recent && recent.length) return;   // already asked this week
+
+    const dayName = (d: string) =>
+      ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][new Date(d + "T00:00:00Z").getUTCDay()];
+    const list = unconfirmed.map((r) => {
+      // "Open slot" covers chef's-choice (recipe_id null) and Other-placeholder
+      // rows — the reply telling us what was eaten is the whole point there.
+      const nm = (r.planned && !r.planned.is_placeholder) ? r.planned.name : "open slot";
+      const slot = r.meal_type === "lunch" ? " lunch" : "";
+      return `${dayName(r.plan_date)}${slot}: ${nm}`;
+    }).join(" · ");
+    const content = `🗓️ Quick check on last week — did these go as planned? ${list}. Reply "all as planned", or tell me what changed (e.g. "all as planned except Wednesday — we ordered pizza") and I'll log it. Knowing what you really ate is how I learn your habits.`;
+    await supabase.from("chat_history").insert({ role: "assistant", content });
+  } catch (_e) {
+    /* best-effort — a nudge must never block or fail plan generation */
+  }
+}
+
 // ── Main handler ───────────────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
@@ -1354,6 +1513,9 @@ Deno.serve(async (req: Request) => {
       } catch (e) {
         console.error("grocery-snapshot trigger failed (non-fatal):", e);
       }
+      // Weekly outcome check-in: ask about last week's unconfirmed meals so
+      // habit evidence stays grounded in what was actually eaten (non-fatal).
+      await postWeeklyConfirmNudge(supabase);
     }
 
     // dinner rows are the only ones written; report that count. Batched rolling_7
