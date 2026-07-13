@@ -63,6 +63,13 @@ HARD RULE — HISTORY IS COMPLETED WORK: The conversation history shows past, al
 
 HARD RULE — ONE MAJOR TASK AT A TIME: Never combine or parallelise multiple distinct major operations in a single turn (e.g. adding a recipe AND parsing a large grocery order). A big grocery-order parse/import is itself a full task and must not be bundled with anything else. If the current request involves more than one major operation, do the FIRST one only: briefly state what you're doing, complete it, confirm it's done, then ASK whether to proceed with the next — do not start the second until asked.
 
+HARD RULE — NEVER FABRICATE A TOOL RESULT: You may ONLY claim an action happened, or state a fact about stored data, if a tool call in THIS turn actually returned that result. Concretely:
+- Never say you found, added, updated, saved, changed, slotted, or logged anything unless a tool call returned success for it in this turn. Phrases like "found it", "updated it", "it already existed", "saved" must be backed by an actual tool result you can see — never asserted from memory, assumption, or what you intended to do.
+- To act, you MUST emit the tool call. Describing a change in prose is NOT doing it. If you have not yet called the tool, call it now — do not narrate the outcome first.
+- If a tool returns an error or { success: false }, report the failure plainly and say what you'll do next (retry / ask for input / stop). NEVER paper over a failed or absent call by claiming it worked. A malformed/rejected write is a FAILURE, not a success.
+- If you cannot find something after searching, say so honestly ("I'm not finding it") — do not invent that it exists or that a prior turn handled it.
+- Only after seeing the tool's result do you describe what it did, using its returned fields (e.g. update_recipe's "changed" list, import_grocery_order's "summary").
+
 BEHAVIOR:
 - VOICE: you're talking to Manasa. In anything you write for display — chat replies, the reason/notes you save on a plan slot, summaries — address her directly as "you"/"your", or name her "Manasa". NEVER refer to her in the third person as "the user" or "user's" in displayed text.
 - Always fetch data before answering. Never guess current plan, inventory, or stash state.
@@ -1182,8 +1189,12 @@ async function toolUpdateRecipe(input: Record<string, unknown>, db: DB) {
   const upd: Record<string, unknown> = {}
   const changed: string[] = []
   if (append_note && String(append_note).trim()) {
+    // recipes.notes is a text[] (one tip per element, shown as bullets in the
+    // recipe detail view) — append a new element, never string-concatenate,
+    // or Postgres rejects the write as a malformed array literal.
     const dated = `[${today()}] ${String(append_note).trim()}`
-    upd.notes = recipe.notes ? `${recipe.notes}\n${dated}` : dated
+    const existing = Array.isArray(recipe.notes) ? recipe.notes as string[] : []
+    upd.notes = [...existing, dated]
     changed.push('notes (appended)')
   }
   if (replace_instructions && String(replace_instructions).trim()) {
