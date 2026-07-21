@@ -945,12 +945,54 @@ function fingerprintOf(pairs: string[]): string {
   return h.toString(16) + '.' + pairs.length
 }
 
-// "20 minutes ago" / "2 hours ago" for the guard message.
+// "20 minutes ago" / "2 hours ago" / "5 days ago" for guard/dedupe messages.
 function agoText(iso: string): string {
   const mins = Math.max(1, Math.round((Date.now() - new Date(iso).getTime()) / 60000))
   if (mins < 60) return `${mins} minute${mins === 1 ? '' : 's'} ago`
   const hrs = Math.round(mins / 60)
-  return `${hrs} hour${hrs === 1 ? '' : 's'} ago`
+  if (hrs < 48) return `${hrs} hour${hrs === 1 ? '' : 's'} ago`
+  const days = Math.round(hrs / 24)
+  return `${days} days ago`
+}
+
+// ── Processed-order ledger (order_id dedupe) ──────────────
+// One retailer order generates multiple confirmation emails (orders get
+// edited) and can arrive via TWO paths: an automated AbsurdAssistant ("Allie")
+// hand-off, and a manual paste in the PWA. Both paths share ONE ledger —
+// processed_orders, UNIQUE on order_id — so the same order can never be
+// written to inventory twice. The claim is a plain INSERT: a unique violation
+// (Postgres 23505) means "already processed", which is atomic and race-safe.
+// Unlike grocery_import_batches (a per-paste log purged after 30 days), ledger
+// rows are permanent.
+
+function normalizeOrderId(raw: unknown): string | null {
+  const s = String(raw ?? '').trim().replace(/^#/, '').toUpperCase()
+  return s.length >= 4 ? s : null
+}
+
+// Pull the retailer order number out of pasted/emailed order text, so a MANUAL
+// paste dedupes against the same ledger as Allie's hand-offs. Keyword-anchored
+// (ordernummer / beställningsnummer / order no…) and digits-first (Mathem and
+// ICA order numbers are numeric) to avoid matching arbitrary text.
+function extractOrderId(text: string): string | null {
+  const m = String(text || '').match(
+    /(?:best[äa]llningsnummer|best[äa]llningsnr|order(?:nummer|nr|[-\s]*(?:number|no|id))?)\s*[.:#]*\s*(\d[\d-]{4,})/i
+  )
+  return m ? normalizeOrderId(m[1]) : null
+}
+
+function detectRetailer(text: string): string | null {
+  if (/mathem/i.test(text)) return 'mathem'
+  if (/\bica\b/i.test(text)) return 'ica'
+  return null
+}
+
+// Chat reply when a pasted order's id is already in the ledger.
+function duplicateReplyText(orderId: string, prior: { created_at?: string; source?: string; items_added?: number | null } | null): string {
+  const when = prior?.created_at ? ` ${agoText(prior.created_at)}` : ''
+  const via = prior?.source === 'absurdassistant' ? 'automatically via Allie' : 'from a paste here'
+  const n = prior?.items_added != null ? ` (${prior.items_added} items)` : ''
+  return `⚠️ Order ${orderId} was already processed${when} ${via}${n}. I did NOT add it again — that would double your stock. If something from it is genuinely missing, tell me what and I'll update inventory directly.`
 }
 
 // Pure parse (Steps 1–3): lines → normalised groups → net quantity per product,
@@ -1697,13 +1739,119 @@ async function runLoop(
   }
 }
 
+// ── Automated order hand-off (AbsurdAssistant / "Allie") ──
+// Payload: { source: 'absurdassistant', order_id, retailer, email_body, delivered_at }
+// Machine-to-machine: Allie mails the delivered order's confirmation email
+// body here so inventory updates without a manual paste. Same parse + write
+// pipeline as a paste (toolImportGroceryOrder), with three differences:
+//   1. Dedupe is decided by the order_id ledger, not the interactive 24h
+//      fingerprint guard — nobody is in the PWA to answer "confirm".
+//   2. A clean parse auto-accepts; ambiguity/partial failure comes back as
+//      needs_review so Allie asks Manasa in WhatsApp instead of guessing.
+//   3. The response is one JSON object { status: added|duplicate|needs_review
+//      |error, items_added, message } — never SSE, never a silent failure.
+// A short synthetic exchange is written to chat_history so the PWA log shows
+// the hand-off and the agent treats it as completed work.
+async function handleAutomatedOrder(body: Record<string, unknown>, db: DB): Promise<Response> {
+  const json = (obj: Record<string, unknown>) =>
+    new Response(JSON.stringify(obj), { headers: { ...CORS, 'Content-Type': 'application/json' } })
+  try {
+    const emailBody = String(body.email_body || '')
+    if (!emailBody.trim()) {
+      return json({ status: 'error', items_added: 0, message: 'No email_body in the hand-off — nothing to parse.' })
+    }
+    const orderId = normalizeOrderId(body.order_id) ?? extractOrderId(emailBody)
+    if (!orderId) {
+      return json({ status: 'needs_review', items_added: 0, message: 'No order_id in the hand-off and none found in the email — not processed (dedupe needs an order number). Paste the order in AbsurdChef instead.' })
+    }
+    const retailer = String(body.retailer || '').toLowerCase().trim() || detectRetailer(emailBody)
+    const deliveredAt = /^\d{4}-\d{2}-\d{2}/.test(String(body.delivered_at || ''))
+      ? String(body.delivered_at).slice(0, 10) : null
+
+    // Parse preview BEFORE claiming the ledger: an email the parser can't read
+    // at all must stay unclaimed, so a later manual paste isn't refused as a
+    // duplicate of an order that never actually landed in inventory.
+    const preview = parseGroceryOrder(emailBody)
+    if (preview.toUpdate.length + preview.freezerMeals.length + preview.corrections.length === 0) {
+      return json({ status: 'needs_review', items_added: 0, message: `Order ${orderId}: couldn't parse any product lines from the email — nothing written. Paste the order in AbsurdChef to review it.` })
+    }
+
+    // Atomic dedupe claim (unique order_id; 23505 = already processed).
+    const claim = await db.from('processed_orders')
+      .insert({ order_id: orderId, retailer, source: 'absurdassistant', status: 'processing', delivered_at: deliveredAt })
+      .select('id').single()
+    if (claim.error) {
+      if ((claim.error as { code?: string }).code === '23505') {
+        const { data: prior } = await db.from('processed_orders')
+          .select('created_at, source, items_added').eq('order_id', orderId).maybeSingle()
+        const p = prior as { created_at: string; source: string; items_added: number | null } | null
+        const via = p?.source === 'absurdassistant' ? 'from an earlier hand-off' : 'from a manual paste in AbsurdChef'
+        return json({ status: 'duplicate', items_added: 0, message: `Order ${orderId} was already processed${p ? ' ' + agoText(p.created_at) : ''} ${via} — ignored, nothing added twice.` })
+      }
+      // Ledger unavailable → refuse to write. Auto-adding without dedupe is
+      // exactly the double-inventory risk this path must never take.
+      return json({ status: 'error', items_added: 0, message: `Order ${orderId}: couldn't record it in the dedupe ledger (${claim.error.message}) — nothing written, a retry is safe.` })
+    }
+    const claimId = (claim.data as { id: string }).id
+
+    try {
+      const result = await toolImportGroceryOrder({ raw_text: emailBody }, db) as {
+        error?: string; updated?: number; created?: string[]; freezer_meals_added?: string[]; flagged?: string[]; summary?: string
+      }
+      if (result.error) {
+        // Nothing was written (the tool only errors before writing) — release
+        // the claim so a manual paste or retry isn't blocked.
+        await db.from('processed_orders').delete().eq('id', claimId)
+        return json({ status: 'error', items_added: 0, message: `Order ${orderId}: ${result.error}` })
+      }
+      const itemsAdded = (result.updated || 0) + (result.created?.length || 0) + (result.freezer_meals_added?.length || 0)
+      const flagged = result.flagged || []
+      const status = flagged.length ? 'needs_review' : 'added'
+      const message = flagged.length
+        ? `Order ${orderId}: added ${itemsAdded} item${itemsAdded === 1 ? '' : 's'}, but ${flagged.length} need${flagged.length === 1 ? 's' : ''} review: ${flagged.join('; ').slice(0, 400)}`
+        : `Order ${orderId}: added ${itemsAdded} item${itemsAdded === 1 ? '' : 's'} to AbsurdChef.`
+      await db.from('processed_orders')
+        .update({ status, items_added: itemsAdded, summary: (result.summary || '').slice(0, 2000) })
+        .eq('id', claimId)
+
+      // Mirror the hand-off into the PWA chat log — a short synthetic user
+      // line (never the full email) plus the import summary as the reply.
+      const nowMs = Date.now()
+      await db.from('chat_history').insert([
+        { role: 'user', content: `📦 [Allie] ${retailer ? retailer + ' ' : ''}order ${orderId} delivered — confirmation handed off automatically.`, created_at: new Date(nowMs).toISOString() },
+        { role: 'assistant', content: result.summary || message, created_at: new Date(nowMs + 1).toISOString() },
+      ]).then(() => {}, () => {})
+
+      return json({ status, items_added: itemsAdded, message })
+    } catch (e) {
+      // Import threw MID-WRITE: some items may already be in inventory, so the
+      // claim stays (marked error) — a blind retry would double those items.
+      await db.from('processed_orders')
+        .update({ status: 'error', summary: String(e).slice(0, 2000) }).eq('id', claimId)
+        .then(() => {}, () => {})
+      return json({ status: 'error', items_added: 0, message: `Order ${orderId}: import failed partway (${String(e)}). I kept it marked as processed so a retry can't double-add — check the Pantry tab in AbsurdChef and fix up manually.` })
+    }
+  } catch (err) {
+    console.error('handleAutomatedOrder:', err)
+    return json({ status: 'error', items_added: 0, message: `Hand-off failed: ${String(err)}` })
+  }
+}
+
 // ── Handler ───────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS })
 
   try {
-    const { message, tz_offset } = await req.json()
+    const body = await req.json()
+
+    // Automated grocery-order hand-off from AbsurdAssistant — plain JSON in,
+    // plain JSON out; everything else is the normal PWA chat (SSE) below.
+    if (body?.source === 'absurdassistant') {
+      return await handleAutomatedOrder(body as Record<string, unknown>, createClient(SUPABASE_URL, SUPABASE_KEY))
+    }
+
+    const { message, tz_offset } = body
     // Client's Date.getTimezoneOffset() (minutes, UTC−local) so status timestamps
     // render in the user's local wall-clock time. Falls back to UTC.
     const tz = Number.isFinite(Number(tz_offset)) ? Number(tz_offset) : 0
@@ -1753,11 +1901,37 @@ Deno.serve(async (req: Request) => {
           let toolResults: unknown[] = []
 
           const runImport = async (rawText: string) => {
+            // Claim the order id in the shared ledger BEFORE writing (see
+            // "Processed-order ledger" above). If Allie already handed this
+            // order off — or it was pasted before — the unique index rejects
+            // the claim and we stop without touching inventory. A ledger
+            // failure that ISN'T a duplicate never blocks a manual import.
+            const oid = extractOrderId(rawText)
+            let claimId: string | null = null
+            if (oid) {
+              const claim = await db.from('processed_orders')
+                .insert({ order_id: oid, retailer: detectRetailer(rawText), source: 'manual_paste', status: 'processing' })
+                .select('id').single()
+              if (claim.error && (claim.error as { code?: string }).code === '23505') {
+                const { data: prior } = await db.from('processed_orders')
+                  .select('created_at, source, items_added').eq('order_id', oid).maybeSingle()
+                reply = duplicateReplyText(oid, prior as { created_at?: string; source?: string; items_added?: number | null } | null)
+                return
+              }
+              if (!claim.error) claimId = (claim.data as { id: string }).id
+            }
             const result = await toolImportGroceryOrder({ raw_text: rawText }, db, emit)
-            const r = result as { summary?: string; error?: string }
+            const r = result as { summary?: string; error?: string; updated?: number; created?: string[]; freezer_meals_added?: string[]; flagged?: string[] }
             reply = r.summary || r.error || 'Order processed.'
             toolCalls = [{ name: 'import_grocery_order', input: { raw_text: '[verbatim order text]' } }]
             toolResults = [{ tool: 'import_grocery_order', result }]
+            if (claimId) {
+              await db.from('processed_orders').update({
+                status: r.error ? 'error' : (r.flagged?.length ? 'needs_review' : 'added'),
+                items_added: (r.updated || 0) + (r.created?.length || 0) + (r.freezer_meals_added?.length || 0),
+                summary: (r.summary || r.error || '').slice(0, 2000),
+              }).eq('id', claimId)
+            }
           }
 
           // A short affirmative right after a paused large order = the user
@@ -1775,31 +1949,45 @@ Deno.serve(async (req: Request) => {
             await db.from('grocery_import_batches').update({ status: 'confirmed' }).eq('id', pending.id)
             await runImport(pending.raw_text)
           } else if (isGroceryOrderPaste(userMsg)) {
-            const preview = parseGroceryOrder(userMsg)
-            const foodCount = preview.toUpdate.length + preview.freezerMeals.length
-            if (foodCount < 10) {
-              await runImport(userMsg)                       // small order (<10) — free pass
+            // Order-id dedupe FIRST (shared ledger with Allie's automated
+            // hand-offs): a paste whose order number is already in
+            // processed_orders is refused outright, before the fingerprint
+            // guard runs. runImport re-checks atomically at write time — this
+            // early read just gives a fast, clear reply.
+            const pastedId = extractOrderId(userMsg)
+            const priorOrder = pastedId
+              ? (await db.from('processed_orders').select('created_at, source, items_added')
+                  .eq('order_id', pastedId).maybeSingle()).data as { created_at: string; source: string; items_added: number | null } | null
+              : null
+            if (priorOrder) {
+              reply = duplicateReplyText(pastedId!, priorOrder)
             } else {
-              // Large order → guard against an accidental re-paste / double-add.
-              emit('Checking your recent orders…')
-              const dayAgo = new Date(Date.now() - 24 * 3600 * 1000).toISOString()
-              const { data: recent } = await db.from('grocery_import_batches')
-                .select('created_at, items').eq('status', 'committed').gte('created_at', dayAgo)
-                .order('created_at', { ascending: false })
-              const rec = (recent || []) as Array<{ created_at: string; items: { fingerprint?: string } | null }>
-              const dup = rec.find(r => r.items && r.items.fingerprint === preview.fingerprint)
-              if (dup || rec.length) {
-                // Pause: stash the pending order, ask the user to confirm.
-                await db.from('grocery_import_batches').update({ status: 'discarded' }).eq('status', 'pending')
-                await db.from('grocery_import_batches').insert({
-                  status: 'pending', raw_text: userMsg.slice(0, 20000),
-                  items: { fingerprint: preview.fingerprint, count: foodCount },
-                })
-                reply = dup
-                  ? `⚠️ This looks like the same order you already processed ${agoText(dup.created_at)} — ${foodCount} items, identical contents. I did NOT add it again (that would double your stock). Reply "confirm" to process it anyway.`
-                  : `⚠️ You processed a grocery order ${agoText(rec[0].created_at)}, and this is another large order (${foodCount} items). I paused before writing so you don't double up by accident. Reply "confirm" to process it — or ignore this if it was a re-paste.`
+              const preview = parseGroceryOrder(userMsg)
+              const foodCount = preview.toUpdate.length + preview.freezerMeals.length
+              if (foodCount < 10) {
+                await runImport(userMsg)                     // small order (<10) — free pass
               } else {
-                await runImport(userMsg)                     // first large order in 24h — process
+                // Large order → guard against an accidental re-paste / double-add.
+                emit('Checking your recent orders…')
+                const dayAgo = new Date(Date.now() - 24 * 3600 * 1000).toISOString()
+                const { data: recent } = await db.from('grocery_import_batches')
+                  .select('created_at, items').eq('status', 'committed').gte('created_at', dayAgo)
+                  .order('created_at', { ascending: false })
+                const rec = (recent || []) as Array<{ created_at: string; items: { fingerprint?: string } | null }>
+                const dup = rec.find(r => r.items && r.items.fingerprint === preview.fingerprint)
+                if (dup || rec.length) {
+                  // Pause: stash the pending order, ask the user to confirm.
+                  await db.from('grocery_import_batches').update({ status: 'discarded' }).eq('status', 'pending')
+                  await db.from('grocery_import_batches').insert({
+                    status: 'pending', raw_text: userMsg.slice(0, 20000),
+                    items: { fingerprint: preview.fingerprint, count: foodCount },
+                  })
+                  reply = dup
+                    ? `⚠️ This looks like the same order you already processed ${agoText(dup.created_at)} — ${foodCount} items, identical contents. I did NOT add it again (that would double your stock). Reply "confirm" to process it anyway.`
+                    : `⚠️ You processed a grocery order ${agoText(rec[0].created_at)}, and this is another large order (${foodCount} items). I paused before writing so you don't double up by accident. Reply "confirm" to process it — or ignore this if it was a re-paste.`
+                } else {
+                  await runImport(userMsg)                   // first large order in 24h — process
+                }
               }
             }
           } else {
