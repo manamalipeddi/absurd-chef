@@ -1739,6 +1739,25 @@ async function runLoop(
   }
 }
 
+// Shared-secret auth for the automated hand-off path. Constant-time: both
+// sides are SHA-256 hashed first (fixed length, so length differences can't
+// short-circuit), then XOR-accumulated byte-by-byte — never === on the raw
+// key. An unset ALLIE_HANDOFF_KEY fails CLOSED (every hand-off rejected).
+// The key value itself is never logged.
+async function allieKeyValid(header: string | null): Promise<boolean> {
+  const secret = Deno.env.get('ALLIE_HANDOFF_KEY')
+  if (!secret || !header) return false
+  const enc = new TextEncoder()
+  const [a, b] = await Promise.all([
+    crypto.subtle.digest('SHA-256', enc.encode(header)),
+    crypto.subtle.digest('SHA-256', enc.encode(secret)),
+  ])
+  const av = new Uint8Array(a), bv = new Uint8Array(b)
+  let diff = 0
+  for (let i = 0; i < av.length; i++) diff |= av[i] ^ bv[i]
+  return diff === 0
+}
+
 // ── Automated order hand-off (AbsurdAssistant / "Allie") ──
 // Payload: { source: 'absurdassistant', order_id, retailer, email_body, delivered_at }
 // Machine-to-machine: Allie mails the delivered order's confirmation email
@@ -1847,7 +1866,16 @@ Deno.serve(async (req: Request) => {
 
     // Automated grocery-order hand-off from AbsurdAssistant — plain JSON in,
     // plain JSON out; everything else is the normal PWA chat (SSE) below.
+    // This branch (and only this branch) requires the X-Allie-Key shared
+    // secret; a missing/wrong key is rejected before anything is parsed or
+    // written. PWA chat traffic is not key-checked.
     if (body?.source === 'absurdassistant') {
+      if (!(await allieKeyValid(req.headers.get('x-allie-key')))) {
+        return new Response(
+          JSON.stringify({ status: 'error', items_added: 0, message: 'Unauthorized — missing or invalid X-Allie-Key.' }),
+          { status: 401, headers: { ...CORS, 'Content-Type': 'application/json' } }
+        )
+      }
       return await handleAutomatedOrder(body as Record<string, unknown>, createClient(SUPABASE_URL, SUPABASE_KEY))
     }
 
