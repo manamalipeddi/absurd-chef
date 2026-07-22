@@ -891,6 +891,16 @@ function parseOrderLine(rawLine: string): { name: string; qty: number; vat: numb
     const q = swedishNum(m[2])
     if (q != null) return { name: m[1].trim(), qty: Math.round(q), vat: parseInt(m[3], 10) }
   }
+  // Mathem EMAIL line: "<qty> stycken <name> Moms <vat>% <price> SEK". The
+  // automated hand-off from Allie sends the email body, which — unlike a pasted
+  // table — prefixes the quantity ("2 stycken …"), puts "Moms" before the VAT,
+  // and prices in "SEK". The leading "<n> stycken" also excludes the VAT-summary
+  // rows ("Moms 6% 69,90 SEK"), which have no quantity.
+  const em = line.match(/^(-?\d+(?:[.,]\d+)?)\s+st(?:ycken|k|\.)?\s+(.+?)\s+moms\s+(\d{1,3})\s*%\s+[\d.,\s]+(?:sek|kr)\.?$/i)
+  if (em && em[2].trim()) {
+    const q = swedishNum(em[1])
+    if (q != null) return { name: em[2].trim(), qty: Math.round(q), vat: parseInt(em[3], 10) }
+  }
   return null   // price-summary / delivery-fee / unrecognised
 }
 
