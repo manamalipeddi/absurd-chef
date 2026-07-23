@@ -236,7 +236,7 @@ function updateTabBar() {
 async function loadAndShow(tab) {
   updateTabBar()
   contentEl.innerHTML = `<div class="loading-row"><div class="spinner"></div>Loading…</div>`
-  if (tab === 'inventory') { await loadInventory(); renderInventory() }
+  if (tab === 'inventory') { await loadInventory(); await autoSortFreezerMeals(); renderInventory() }
   else if (tab === 'freezer') { await loadFreezer(); renderFreezer() }
   else if (tab === 'nonfood') { await loadInventory(); renderNonFood() }
   else if (tab === 'grocery') { await loadGrocery(); renderGrocery() }
@@ -329,26 +329,10 @@ async function loadInventory() {
   const signalFor = (it) =>
     byMaster.get(it.master_ingredient_id) || byName.get((it.name || '').toLowerCase().trim()) || null
 
-  // Auto-sort freezer meals: any frozen item that reads as a ready-to-heat meal
-  // (heuristic, or a learned override) is moved into the Freezer Meals tab so it
-  // shows up where it belongs. One tap in that tab moves it back (and teaches an
-  // override so it is never re-moved). Runs on Inventory load; after the first
-  // pass the items are gone from inventory, so it is a no-op thereafter.
-  await loadFreezerOverrides()
-  let rows = data || []
-  const movedIds = new Set()
-  for (const it of rows.filter(isFreezerMealItem)) {
-    if (await moveToFreezerMeals(it)) movedIds.add(it.id)
-  }
-  if (movedIds.size) {
-    rows = rows.filter(r => !movedIds.has(r.id))
-    toast(`Sorted ${movedIds.size} freezer meal${movedIds.size === 1 ? '' : 's'} into Freezer Meals`)
-  }
-
   // Sort: favourites pinned (alpha), then most-likely-depleted first — grouping
   // in renderInventory preserves this order, so items sort by depletion WITHIN
   // each category. (never-checked items float up now, via a high restock score.)
-  inventoryData = rows
+  inventoryData = (data || [])
     .map(it => ({ it, dep: depletionScore(it, signalFor(it), nowMs) }))
     .sort((a, b) => {
       const fa = !!a.it.is_favourite, fb = !!b.it.is_favourite
@@ -359,6 +343,24 @@ async function loadInventory() {
     })
     .map(s => s.it)
   preppedData = prepped || []
+}
+
+// Move any frozen inventory item that reads as a ready-to-heat meal (heuristic,
+// or a learned override) into the Freezer Meals tab, so it shows up where it
+// belongs. One tap in that tab moves it back (and teaches an override so it is
+// never re-moved). Runs only when the Inventory tab is shown — NOT on the
+// Non-food tab, which shares loadInventory but has nothing to sort here.
+// Mutates inventoryData in place; call after loadInventory, before rendering.
+async function autoSortFreezerMeals() {
+  await loadFreezerOverrides()
+  const meals = inventoryData.filter(isFreezerMealItem)
+  if (!meals.length) return
+  const movedIds = new Set()
+  for (const it of meals) if (await moveToFreezerMeals(it)) movedIds.add(it.id)
+  if (movedIds.size) {
+    inventoryData = inventoryData.filter(r => !movedIds.has(r.id))
+    toast(`Sorted ${movedIds.size} freezer meal${movedIds.size === 1 ? '' : 's'} into Freezer Meals`)
+  }
 }
 
 function renderInventory() {
@@ -1012,12 +1014,17 @@ function renderNonFood() {
 
 // ── Inventory form ─────────────────────────────────────────
 let invFormView = null
-async function showInventoryList() { await loadInventory(); renderInventory() }
+async function showInventoryList() { await loadInventory(); await autoSortFreezerMeals(); renderInventory() }
 // Inventory and Non-food share the same rows, form and gestures (non-food items
 // are inventory rows with food_category='non_food'); re-render whichever tab the
 // action was taken from so an edit/deactivate on the Non-food tab stays there.
 function renderActiveTab() { activeTab === 'nonfood' ? renderNonFood() : renderInventory() }
-async function showListForActiveTab() { await loadInventory(); renderActiveTab() }
+async function showListForActiveTab() {
+  await loadInventory()
+  if (activeTab === 'nonfood') { renderNonFood(); return }
+  await autoSortFreezerMeals()
+  renderInventory()
+}
 // Dismiss the edit form from its own UI (Cancel/Save/Hide): balance the pushed
 // history entry, then restore the list. Back-swipe takes the pushView onBack path.
 function closeInventoryForm() {

@@ -288,10 +288,14 @@ function render(days, startDate, genWarning, history, noteMap = {}) {
   const today = todayStr()
   const upcoming = days.filter(d => d.date >= today)
   const hasPlan = days.some(d => Object.keys(d.slots).length > 0)
+  // Show History for past meal rows OR a past day that only carries a note (all
+  // its meals were cleared) — otherwise that note-only day would be invisible.
+  const hasPastNote = Object.keys(noteMap).some(d => d < today)
+  const showHistory = (history && history.length) || hasPastNote
 
   if (!hasPlan) {
     screenEl.appendChild(buildEmpty())
-    if (history && history.length) screenEl.appendChild(buildHistorySection(history, noteMap))
+    if (showHistory) screenEl.appendChild(buildHistorySection(history, noteMap))
     screenEl.appendChild(buildActionBar())
     return
   }
@@ -357,10 +361,26 @@ function buildHistorySection(historyRows, noteMap = {}) {
     byDate.get(row.plan_date).slots[row.meal_type] = row
   }
 
+  // Past days whose meals were all cleared but that still carry a day note
+  // (e.g. "day out — ate at a restaurant") would otherwise vanish entirely.
+  // Surface them as note-only cards so the note stays visible (and the slots
+  // remain there to log what was actually eaten).
+  const today = todayStr()
+  for (const [date, note] of Object.entries(noteMap)) {
+    if (date < today && !byDate.has(date)) {
+      byDate.set(date, {
+        date, slots: {},
+        meta: { isKidsHome: false, isCommute: false, guestCount: 0, isGintasAway: false, note },
+      })
+    }
+  }
+
   const cards = document.createElement('div')
   cards.className = 'plan-cards'
-  for (const day of byDate.values()) {
-    cards.appendChild(buildDayCard(day, { history: true, note: noteMap[day.date] }))
+  // Newest-first (meal rows arrived sorted, but injected note-only days aren't).
+  const orderedDates = [...byDate.keys()].sort((a, b) => (a < b ? 1 : a > b ? -1 : 0))
+  for (const date of orderedDates) {
+    cards.appendChild(buildDayCard(byDate.get(date), { history: true, note: noteMap[date] }))
   }
   section.appendChild(cards)
   return section
