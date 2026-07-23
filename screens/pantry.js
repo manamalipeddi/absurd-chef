@@ -44,8 +44,7 @@ const FREEZER_MEAL_RE = /\b(lasagn|pizza|calzone|gratin|gratäng|casserole|stew|
 const FREEZER_INGREDIENT_RE = /\b(peas?|ärtor|broccoli|spinach|spenat|cauliflower|blomkål|corn\b|majs|edamame|beans?|bönor|berr(y|ies)|bär|blueberr|raspberr|hallon|strawberr|jordgubb|mango|pineapple|fruit|frukt|salmon|lax\b|cod\b|torsk|fish fillet|prawns?|räk|shrimp|scampi|mussels?|chicken (breast|thigh|fillet)|mince|färs|beef\b|pork\b|fillet|filé|fries|pommes|potato|potatis|bread|bröd|dough|deg\b|pastry|smördeg|ice ?cream|glass\b|herbs?|dill|parsley|persilja|basil|butter|smör)\b/i
 
 let freezerOverrides = new Map()   // norm(name) → is_meal (bool)
-
-const normName = (s) => String(s || '').toLowerCase().trim()
+// (normName — lower+trim — is defined once below and hoisted; reused here.)
 
 async function loadFreezerOverrides() {
   freezerOverrides = new Map()
