@@ -185,15 +185,9 @@ function depletionScore(item, signal, nowMs) {
 async function loadCookSignal() {
   const nowMs = Date.now()
   const byMaster = new Map(), byName = new Map()
-  // Reference point: the last grocery import (durable order ledger). If that
-  // table isn't readable here, fall back to a 14-day window rather than losing
-  // the whole cooking signal.
-  let refMs = nowMs - 14 * DAY_MS
-  try {
-    const { data: last } = await supabase.from('processed_orders')
-      .select('created_at').order('created_at', { ascending: false }).limit(1)
-    if (last?.[0]?.created_at) refMs = Date.parse(last[0].created_at)
-  } catch (_e) { /* keep the 14-day fallback */ }
+  // Reference window: meals cooked in the last 14 days — a rough grocery cadence,
+  // with no dependency on the order ledger being readable from the app.
+  const refMs = nowMs - 14 * DAY_MS
   try {
     const refDate = new Date(refMs).toISOString().slice(0, 10)
 
