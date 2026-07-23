@@ -158,27 +158,106 @@ async function loadAndShow(tab) {
 // INVENTORY
 // ═══════════════════════════════════════════════════════════
 
+// ── Consumption-depletion sort (S2/S3) ────────────────────
+// Floats likely-depleted items to the top WITHIN each category, so a pre-Sunday
+// inventory check surfaces the right items first. Fully dynamic — no stored
+// signal — derived at load from what's actually been cooked since the last
+// grocery import. Three signals: cooking recency+frequency (recipe-linked items),
+// turnover (perishability by food_category), and time since last restock/check.
+const TURNOVER_BY_FOODCAT = { seafood: 5, meat: 4, produce: 4, dairy: 3, eggs: 2 }
+const DAY_MS = 86400000
+
+// higher = burns faster (more likely depleted for the same use); staples = 1
+function turnoverScore(item) { return TURNOVER_BY_FOODCAT[item.food_category] || 1 }
+
+// signal = { count, lastMs } — how often/recently this item was cooked with (or null)
+function depletionScore(item, signal, nowMs) {
+  const cook = signal ? (Math.min(signal.count, 5) + (nowMs - signal.lastMs < 3 * DAY_MS ? 2 : 0)) : 0
+  const restockDays = item.last_updated_at ? (nowMs - Date.parse(item.last_updated_at)) / DAY_MS : 30
+  const restock = Math.min(restockDays, 30) / 7   // weeks since restock (null = surface it)
+  return 1.5 * cook + turnoverScore(item) + restock
+}
+
+// Cooking signal: meals actually made since the last grocery import, mapped
+// through recipe ingredients to per-ingredient counts (keyed by
+// master_ingredient_id, name fallback for unlinked). Best-effort: any failure
+// degrades the sort to turnover + restock only, never breaks the screen.
+async function loadCookSignal() {
+  const nowMs = Date.now()
+  const byMaster = new Map(), byName = new Map()
+  // Reference point: the last grocery import (durable order ledger). If that
+  // table isn't readable here, fall back to a 14-day window rather than losing
+  // the whole cooking signal.
+  let refMs = nowMs - 14 * DAY_MS
+  try {
+    const { data: last } = await supabase.from('processed_orders')
+      .select('created_at').order('created_at', { ascending: false }).limit(1)
+    if (last?.[0]?.created_at) refMs = Date.parse(last[0].created_at)
+  } catch (_e) { /* keep the 14-day fallback */ }
+  try {
+    const refDate = new Date(refMs).toISOString().slice(0, 10)
+
+    const { data: cooked } = await supabase.from('meal_plans')
+      .select('plan_date, actual_recipe_id, recipe_id, actually_made')
+      .gte('plan_date', refDate)
+      .or('actual_recipe_id.not.is.null,actually_made.eq.true')
+    const events = []   // { rid, dateMs } for each meal actually cooked
+    for (const r of cooked || []) {
+      const rid = r.actual_recipe_id || (r.actually_made ? r.recipe_id : null)
+      if (rid) events.push({ rid, dateMs: Date.parse(r.plan_date) })
+    }
+    if (!events.length) return { byMaster, byName, nowMs }
+
+    const rids = [...new Set(events.map(e => e.rid))]
+    const { data: ings } = await supabase.from('recipe_ingredients')
+      .select('recipe_id, master_ingredient_id, name').in('recipe_id', rids)
+    const byRecipe = new Map()
+    for (const ig of ings || []) {
+      if (!byRecipe.has(ig.recipe_id)) byRecipe.set(ig.recipe_id, [])
+      byRecipe.get(ig.recipe_id).push(ig)
+    }
+    const bump = (map, key, dateMs) => {
+      const e = map.get(key) || { count: 0, lastMs: 0 }
+      e.count += 1; e.lastMs = Math.max(e.lastMs, dateMs); map.set(key, e)
+    }
+    for (const ev of events) {
+      for (const ig of byRecipe.get(ev.rid) || []) {
+        if (ig.master_ingredient_id) bump(byMaster, ig.master_ingredient_id, ev.dateMs)
+        else if (ig.name) bump(byName, ig.name.toLowerCase().trim(), ev.dateMs)
+      }
+    }
+  } catch (_e) { /* best-effort — fall back to turnover + restock */ }
+  return { byMaster, byName, nowMs }
+}
+
 async function loadInventory() {
   // Inventory + prepped components (the latter shown read-only within Inventory
-  // for a single "everything available to cook with" view).
-  const [{ data }, { data: prepped }, { data: masters }] = await Promise.all([
+  // for a single "everything available to cook with" view) + the cook signal.
+  const [{ data }, { data: prepped }, { data: masters }, cookSignal] = await Promise.all([
     supabase.from('inventory').select('*').order('name'),
     supabase.from('prepped_components').select('*, recipes(id, name, emoji)')
       .eq('active', true).gt('batches_remaining', 0).order('made_date', { ascending: false }),
     supabase.from('master_ingredients').select('id, canonical_name, aliases, default_category')
       .eq('active', true).order('canonical_name'),
+    loadCookSignal(),
   ])
   masterList = masters || []
-  // Sort tiers: favourites (alpha) → actively-checked (last_updated_at set, alpha)
-  // → never-checked (null, alpha).
-  inventoryData = (data || []).sort((a, b) => {
-    const fa = !!a.is_favourite, fb = !!b.is_favourite
-    if (fa !== fb) return fa ? -1 : 1
-    if (fa) return (a.name || '').localeCompare(b.name || '')
-    const an = a.last_updated_at == null, bn = b.last_updated_at == null
-    if (an !== bn) return an ? 1 : -1
-    return (a.name || '').localeCompare(b.name || '')
-  })
+  const { byMaster, byName, nowMs } = cookSignal
+  const signalFor = (it) =>
+    byMaster.get(it.master_ingredient_id) || byName.get((it.name || '').toLowerCase().trim()) || null
+  // Sort: favourites pinned (alpha), then most-likely-depleted first — grouping
+  // in renderInventory preserves this order, so items sort by depletion WITHIN
+  // each category. (never-checked items float up now, via a high restock score.)
+  inventoryData = (data || [])
+    .map(it => ({ it, dep: depletionScore(it, signalFor(it), nowMs) }))
+    .sort((a, b) => {
+      const fa = !!a.it.is_favourite, fb = !!b.it.is_favourite
+      if (fa !== fb) return fa ? -1 : 1
+      if (fa) return (a.it.name || '').localeCompare(b.it.name || '')
+      if (b.dep !== a.dep) return b.dep - a.dep
+      return (a.it.name || '').localeCompare(b.it.name || '')
+    })
+    .map(s => s.it)
   preppedData = prepped || []
 }
 
