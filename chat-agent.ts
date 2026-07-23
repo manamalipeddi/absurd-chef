@@ -769,6 +769,19 @@ function isNonFood(name: string, vat?: number | null): boolean {
   return vat === 25 || NON_FOOD_RE.test(name)
 }
 
+// Best-guess non-food sub-category for the Non-food tab's grouping (mirrors the
+// app's nonFoodGroupFor). Only a default — the item's edit form lets the user
+// override. Matches Swedish product names and English clean names.
+function nonFoodGroup(name: string): string {
+  const s = String(name || '').toLowerCase()
+  if (/detergent|tvättmedel|sköljmedel|stain|fläck|vanish|\bsoap\b|såpa|tvål|rengöring|cleaner|\bclean|disk|dish|wettex|wipe|servett|napkin|bin ?bag|avfallspåse|garbage|trash|sponge|svamp|colou?r.?catch/.test(s)) return 'cleaning'
+  if (/foil|folie|baking ?paper|bakplåt|parchment|\btape\b|tejp|cling|plastfilm|gladpack|batter|batteri|bulb|glödlampa/.test(s)) return 'kitchen'
+  if (/plaster|plåster|band.?aid|bandage|compress|kompress|first ?aid|gauze|antisept/.test(s)) return 'firstaid'
+  if (/shampoo|schampo|conditioner|balsam|toothpaste|tandkräm|toothbrush|tandborste|deodorant|lotion|diaper|blöj|nappy|tampon|\bpad\b|bind|razor|rakhyvel|\bcotton\b|bomull/.test(s)) return 'toiletries'
+  if (/\bcat |\bdog |\bpet |kattmat|hundmat|djurfoder|litter|kattsand/.test(s)) return 'pet'
+  return 'misc'
+}
+
 // ── Ready-to-heat freezer MEAL vs frozen INGREDIENT (deterministic) ──
 // Default to FREEZER MEAL when in doubt: a frozen product is treated as a
 // ready-to-heat meal (→ freezer_stash) UNLESS it's a clearly-identifiable single
@@ -1233,8 +1246,8 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
       } else {
         const cleanName = cleanProductName(g.name)
         const { error } = await db.from('inventory').insert({
-          name: cleanName, quantity: g.net, status: 'enough',
-          food_category: 'non_food', category: 'pantry',
+          name: cleanName, quantity: g.net, typical_quantity: 1, status: 'enough',
+          food_category: 'non_food', category: 'pantry', nonfood_group: nonFoodGroup(cleanName),
           source: 'grocery_import', active: true, last_updated_at: nowIso,
         })
         if (error) flagged.push(`${cleanName} — non-food create failed (${error.message})`)

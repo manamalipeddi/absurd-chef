@@ -32,6 +32,31 @@ const FOOD_CATS = [
   ['non_food','Non-food'],
 ]
 
+// Non-food sub-categories — how the household groups non-food on its own tab.
+// The keys double as section keys for buildInventorySection, so their labels are
+// merged into CAT_LABELS below (they never collide with fridge/freezer/pantry).
+const NONFOOD_GROUPS = [
+  ['cleaning',   '🧽 Cleaning & laundry'],
+  ['kitchen',    '🍳 Kitchen & household'],
+  ['firstaid',   '🩹 First aid'],
+  ['toiletries', '🧴 Toiletries'],
+  ['pet',        '🐾 Pet'],
+  ['misc',       '📦 Misc'],
+]
+for (const [k, label] of NONFOOD_GROUPS) CAT_LABELS[k] = label
+
+// Best-guess non-food group from a name (English + Swedish). Only a default —
+// the item's edit form lets the user override. Mirrors the import's heuristic.
+function nonFoodGroupFor(name) {
+  const s = (name || '').toLowerCase()
+  if (/detergent|tvättmedel|sköljmedel|stain|fläck|vanish|\bsoap\b|såpa|tvål|rengöring|cleaner|\bclean|disk|dish|wettex|wipe|servett|napkin|bin ?bag|avfallspåse|garbage|trash|sponge|svamp|colou?r.?catch/.test(s)) return 'cleaning'
+  if (/foil|folie|baking ?paper|bakplåt|parchment|\btape\b|tejp|cling|plastfilm|gladpack|batter|batteri|bulb|glödlampa/.test(s)) return 'kitchen'
+  if (/plaster|plåster|band.?aid|bandage|compress|kompress|first ?aid|gauze|antisept/.test(s)) return 'firstaid'
+  if (/shampoo|schampo|conditioner|balsam|toothpaste|tandkräm|toothbrush|tandborste|deodorant|lotion|diaper|blöj|nappy|tampon|\bpad\b|bind|razor|rakhyvel|\bcotton\b|bomull/.test(s)) return 'toiletries'
+  if (/\bcat |\bdog |\bpet |kattmat|hundmat|djurfoder|litter|kattsand/.test(s)) return 'pet'
+  return 'misc'
+}
+
 // ── Freezer-meal classification + learned overrides (Slice B) ──
 // A frozen inventory item is either a ready-to-heat MEAL (belongs in the Freezer
 // Meals tab / freezer_stash) or a frozen COMPONENT that stays in the Freezer
@@ -987,10 +1012,14 @@ function renderNonFood() {
   }
 
   if (active.length) {
-    const card = document.createElement('div')
-    card.className = 'card su-card'
-    active.forEach((item, i) => card.appendChild(buildInventoryRow(item, i < active.length - 1)))
-    listEl.appendChild(card)
+    // Group by non-food sub-category, in the canonical order, then any strays.
+    const byGroup = {}
+    active.forEach(it => { const g = it.nonfood_group || 'misc'; (byGroup[g] = byGroup[g] || []).push(it) })
+    const order = NONFOOD_GROUPS.map(([k]) => k)
+    Object.keys(byGroup).filter(k => !order.includes(k)).forEach(k => order.push(k))
+    order.forEach(gk => {
+      if (byGroup[gk]?.length) listEl.appendChild(buildInventorySection(gk, byGroup[gk]))
+    })
   } else {
     listEl.appendChild(mkEmpty('Everything non-food is out of stock or hidden.'))
   }
@@ -1122,6 +1151,7 @@ function openInventoryForm(id, defaultCat = 'pantry', defaultFood = 'other') {
   typicalInp.min = 0; typicalInp.step = 'any'
   const catSel   = mkSelect([['fridge','Fridge'],['freezer','Freezer'],['pantry','Pantry']], item?.category || defaultCat)
   const foodSel  = mkSelect(FOOD_CATS, item?.food_category || defaultFood)
+  const groupSel = mkSelect(NONFOOD_GROUPS, item?.nonfood_group || nonFoodGroupFor(item?.name || ''))
   const expInp   = mkDateInput(item?.expiry_date || '')
   const notesInp = mkInput('text',   item?.notes        || '', 'Optional notes')
 
@@ -1133,6 +1163,13 @@ function openInventoryForm(id, defaultCat = 'pantry', defaultFood = 'other') {
   catRow.className = 'pn-form-row'
   catRow.append(mkField('Stored in', catSel, 'pn-form-col'), mkField('Food type', foodSel, 'pn-form-col'))
 
+  // Non-food group selector — only relevant (and only shown) when Food type is
+  // Non-food; it drives which section the item appears under on the Non-food tab.
+  const groupField = mkField('Group', groupSel)
+  const syncGroupVis = () => { groupField.style.display = foodSel.value === 'non_food' ? '' : 'none' }
+  syncGroupVis()
+  foodSel.addEventListener('change', syncGroupVis)
+
   // Linked master ingredient: show the current link, the best-guess suggestion,
   // or "Not linked" — all editable. The chosen id is written on Save (payload).
   const linkState = { id: item?.master_ingredient_id || null }
@@ -1142,6 +1179,7 @@ function openInventoryForm(id, defaultCat = 'pantry', defaultFood = 'other') {
     mkField('Name *', nameInp),
     qtyRow,
     catRow,
+    groupField,
     linkField,
     mkField('Typical amount (baseline for status — optional)', typicalInp),
     mkField('Expiry date (optional)', expInp),
@@ -1164,6 +1202,7 @@ function openInventoryForm(id, defaultCat = 'pantry', defaultFood = 'other') {
       typical_quantity:   typicalInp.value !== '' ? parseFloat(typicalInp.value) : null,
       category:           catSel.value,
       food_category:      foodSel.value,
+      nonfood_group:      foodSel.value === 'non_food' ? groupSel.value : null,
       master_ingredient_id: linkState.id,   // the user-confirmed / corrected link
       expiry_date:        expInp.value || null,
       notes:              notesInp.value.trim() || null,
