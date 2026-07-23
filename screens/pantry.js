@@ -31,6 +31,94 @@ const FOOD_CATS = [
   ['dairy','Dairy'], ['eggs','Eggs'], ['pantry','Pantry'], ['other','Other'],
 ]
 
+// ── Freezer-meal classification + learned overrides (Slice B) ──
+// A frozen inventory item is either a ready-to-heat MEAL (belongs in the Freezer
+// Meals tab / freezer_stash) or a frozen COMPONENT that stays in the Freezer
+// section of Inventory. Inventory names are English here (the grocery import
+// translates them), so this is an English-leaning heuristic; the
+// freezer_meal_overrides table records the user's move / move-back corrections
+// and always wins over the heuristic. The heuristic is deliberately CONSERVATIVE
+// — it only auto-moves items that clearly read as a cooked dish, so ambiguous
+// frozen items stay put and are moved by hand (which teaches an override).
+const FREEZER_MEAL_RE = /\b(lasagn|pizza|calzone|gratin|gratäng|casserole|stew|gryta|curry|risotto|paella|soup|soppa|\bpie\b|pyttipanna|hash|ready[- ]?meal|meatballs? with|chicken with|fish with|beef with|pasta with|dinner|middag|wok\b|nugget|fish ?finger|fishcake|fish ?cake|pancake|dumpling|spring ?roll|samosa|quiche|burrito|enchilada|meal\b|rätt\b|ratt\b)/i
+const FREEZER_INGREDIENT_RE = /\b(peas?|ärtor|broccoli|spinach|spenat|cauliflower|blomkål|corn\b|majs|edamame|beans?|bönor|berr(y|ies)|bär|blueberr|raspberr|hallon|strawberr|jordgubb|mango|pineapple|fruit|frukt|salmon|lax\b|cod\b|torsk|fish fillet|prawns?|räk|shrimp|scampi|mussels?|chicken (breast|thigh|fillet)|mince|färs|beef\b|pork\b|fillet|filé|fries|pommes|potato|potatis|bread|bröd|dough|deg\b|pastry|smördeg|ice ?cream|glass\b|herbs?|dill|parsley|persilja|basil|butter|smör)\b/i
+
+let freezerOverrides = new Map()   // norm(name) → is_meal (bool)
+
+const normName = (s) => String(s || '').toLowerCase().trim()
+
+async function loadFreezerOverrides() {
+  freezerOverrides = new Map()
+  try {
+    const { data } = await supabase.from('freezer_meal_overrides').select('norm_name, is_meal')
+    for (const o of data || []) freezerOverrides.set(o.norm_name, o.is_meal)
+  } catch (_e) { /* best-effort — classification still works from the heuristic */ }
+}
+
+// Does this frozen inventory item belong in Freezer Meals? Learned override wins;
+// otherwise the conservative heuristic (a clear cooked dish, and not a plain
+// ingredient) decides. Only frozen-category items are ever candidates.
+function isFreezerMealItem(item) {
+  if ((item.category || '') !== 'freezer') return false
+  const k = normName(item.name)
+  if (freezerOverrides.has(k)) return freezerOverrides.get(k)
+  const n = item.name || ''
+  if (FREEZER_INGREDIENT_RE.test(n)) return false
+  return FREEZER_MEAL_RE.test(n)
+}
+
+async function recordFreezerOverride(name, isMeal) {
+  const key = normName(name)
+  try {
+    await supabase.from('freezer_meal_overrides')
+      .upsert({ norm_name: key, is_meal: isMeal, updated_at: new Date().toISOString() },
+              { onConflict: 'norm_name' })
+  } catch (_e) { /* non-fatal — the move still happened */ }
+  freezerOverrides.set(key, isMeal)
+}
+
+// Reclassify a frozen inventory item as a Freezer Meal: create the freezer_stash
+// row FIRST, and only delete the inventory row once that succeeds, so the item
+// can never be lost. Records the learned override. Returns true on success.
+async function moveToFreezerMeals(item) {
+  const today = new Date().toISOString().slice(0, 10)
+  const { error: insErr } = await supabase.from('freezer_stash').insert({
+    recipe_name: item.name,
+    recipe_id: null,
+    portions: Math.max(1, Math.round(Number(item.quantity) || 1)),
+    source: 'store_bought',
+    typically_restocked: !!item.typically_restocked,
+    frozen_date: today,
+    notes: item.notes || null,
+    active: true,
+  })
+  if (insErr) return false
+  await supabase.from('inventory').delete().eq('id', item.id)
+  await recordFreezerOverride(item.name, true)
+  return true
+}
+
+// Reverse: a freezer_stash meal back to a frozen inventory component. Same
+// insert-before-delete safety. Records "not a meal" so it is never auto-moved
+// again. Returns true on success.
+async function moveToInventory(entry) {
+  const name = entry.recipe_name || 'Frozen item'
+  const { error: insErr } = await supabase.from('inventory').insert({
+    name,
+    quantity: Math.max(1, Math.round(Number(entry.portions) || 1)),
+    status: 'enough',
+    food_category: 'other',
+    category: 'freezer',
+    source: 'freezer_move',
+    active: true,
+    last_updated_at: new Date().toISOString(),
+  })
+  if (insErr) return false
+  await supabase.from('freezer_stash').delete().eq('id', entry.id)
+  await recordFreezerOverride(name, false)
+  return true
+}
+
 // Loose status ↔ quantity: status is an input convenience that resolves to a
 // real quantity against the item's typical_quantity baseline.
 const STATUS_ORDER = ['out', 'very_low', 'some', 'enough', 'plenty', 'overstock']
@@ -239,10 +327,27 @@ async function loadInventory() {
   const { byMaster, byName, nowMs } = cookSignal
   const signalFor = (it) =>
     byMaster.get(it.master_ingredient_id) || byName.get((it.name || '').toLowerCase().trim()) || null
+
+  // Auto-sort freezer meals: any frozen item that reads as a ready-to-heat meal
+  // (heuristic, or a learned override) is moved into the Freezer Meals tab so it
+  // shows up where it belongs. One tap in that tab moves it back (and teaches an
+  // override so it is never re-moved). Runs on Inventory load; after the first
+  // pass the items are gone from inventory, so it is a no-op thereafter.
+  await loadFreezerOverrides()
+  let rows = data || []
+  const movedIds = new Set()
+  for (const it of rows.filter(isFreezerMealItem)) {
+    if (await moveToFreezerMeals(it)) movedIds.add(it.id)
+  }
+  if (movedIds.size) {
+    rows = rows.filter(r => !movedIds.has(r.id))
+    toast(`Sorted ${movedIds.size} freezer meal${movedIds.size === 1 ? '' : 's'} into Freezer Meals`)
+  }
+
   // Sort: favourites pinned (alpha), then most-likely-depleted first — grouping
   // in renderInventory preserves this order, so items sort by depletion WITHIN
   // each category. (never-checked items float up now, via a high restock score.)
-  inventoryData = (data || [])
+  inventoryData = rows
     .map(it => ({ it, dep: depletionScore(it, signalFor(it), nowMs) }))
     .sort((a, b) => {
       const fa = !!a.it.is_favourite, fb = !!b.it.is_favourite
@@ -559,6 +664,21 @@ function openDeactivateSheet(item) {
   cancelBtn.className = 'act-sheet__btn act-sheet__btn--cancel'
   cancelBtn.textContent = 'Cancel'
   cancelBtn.addEventListener('click', () => { if (!pressInside) return; close() })
+
+  // Frozen items can be reclassified as a ready-to-heat Freezer Meal by hand
+  // (teaches an override, so the auto-sort learns this item is a meal).
+  if ((item.category || '') === 'freezer') {
+    const toMeal = document.createElement('button')
+    toMeal.className = 'act-sheet__btn'
+    toMeal.textContent = 'Move to Freezer Meals'
+    toMeal.addEventListener('click', async () => {
+      if (!pressInside) return
+      close()
+      if (await moveToFreezerMeals(item)) { toast(`Moved “${item.name}” to Freezer Meals`); showInventoryList() }
+      else toast('Move failed', { error: true })
+    })
+    sheet.append(toMeal)
+  }
 
   sheet.append(deact, cancelBtn)
   overlay.appendChild(sheet)
@@ -1363,7 +1483,19 @@ function openFreezerForm(id) {
       closeFreezerForm()
     })
 
-    danger.append(usedBtn, hideBtn)
+    // Not a meal after all — send it back to the Freezer section of Inventory as
+    // a frozen component. Records an override so the auto-sort never moves it
+    // here again.
+    const backBtn = document.createElement('button')
+    backBtn.className = 'pn-danger-btn'
+    backBtn.textContent = 'Move back to Inventory'
+    backBtn.addEventListener('click', async () => {
+      backBtn.disabled = true
+      if (await moveToInventory(entry)) { toast('Moved back to Inventory'); closeFreezerForm() }
+      else { backBtn.disabled = false; toast('Move failed', { error: true }) }
+    })
+
+    danger.append(usedBtn, hideBtn, backBtn)
     form.appendChild(danger)
   }
 
