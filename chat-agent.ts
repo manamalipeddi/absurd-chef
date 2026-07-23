@@ -1943,6 +1943,53 @@ async function handleAutomatedOrder(body: Record<string, unknown>, db: DB): Prom
 
 // ── Handler ───────────────────────────────────────────────
 
+// ── Hold-list hand-off (AbsurdAssistant / "Allie") ──
+// Payload: { source:'absurdassistant', kind:'hold_list', items: string[] }
+// Allie hands over scratch "remember this" items to be tracked as non-food. Each
+// is de-duplicated against inventory by normalized name; a NEW item is added to
+// the Non-food list as OUT (quantity 0) so it lands on the grocery list, grouped
+// by the same heuristic as the grocery import. Echoes back the INPUT names split
+// into added vs already-tracked, so Allie can prune its Hold List accordingly.
+async function handleHoldListHandoff(body: Record<string, unknown>, db: DB): Promise<Response> {
+  const json = (obj: Record<string, unknown>) =>
+    new Response(JSON.stringify(obj), { headers: { ...CORS, 'Content-Type': 'application/json' } })
+  try {
+    const rawItems = Array.isArray(body.items) ? body.items : []
+    const items = rawItems.map(x => String(x || '').trim()).filter(Boolean)
+    if (!items.length) return json({ status: 'error', message: 'No items in the hold-list hand-off.', added: [], existing: [] })
+
+    const { data: inv } = await db.from('inventory').select('name')
+    const have = new Set(((inv || []) as Record<string, unknown>[]).map(r => NORM(r.name as string)))
+
+    const nowIso = new Date().toISOString()
+    const added: string[] = []
+    const existing: string[] = []
+    const flagged: string[] = []
+    const seen = new Set<string>()   // collapse duplicates within the payload itself
+    for (const item of items) {
+      const key = NORM(item)
+      if (!key || seen.has(key)) continue
+      seen.add(key)
+      if (have.has(key)) { existing.push(item); continue }
+      const { error } = await db.from('inventory').insert({
+        name: item, quantity: 0, typical_quantity: 1, status: 'out',
+        food_category: 'non_food', category: 'pantry', nonfood_group: nonFoodGroup(item),
+        source: 'hold_list', active: true, last_updated_at: nowIso,
+      })
+      if (error) flagged.push(item)
+      else { added.push(item); have.add(key) }
+    }
+    const parts: string[] = []
+    if (added.length)    parts.push(`Added ${added.length} to the Non-food list (as out — they'll show on the grocery list): ${added.join(', ')}.`)
+    if (existing.length) parts.push(`${existing.length} already tracked, skipped: ${existing.join(', ')}.`)
+    if (flagged.length)  parts.push(`${flagged.length} could not be added: ${flagged.join(', ')}.`)
+    return json({ status: 'success', added, existing, flagged, message: parts.join(' ') || 'Nothing to add.' })
+  } catch (err) {
+    console.error('handleHoldListHandoff:', err)
+    return json({ status: 'error', message: 'Hold-list hand-off failed unexpectedly.', added: [], existing: [] })
+  }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS })
 
@@ -1961,7 +2008,9 @@ Deno.serve(async (req: Request) => {
           { status: 401, headers: { ...CORS, 'Content-Type': 'application/json' } }
         )
       }
-      return await handleAutomatedOrder(body as Record<string, unknown>, createClient(SUPABASE_URL, SUPABASE_KEY))
+      const adb = createClient(SUPABASE_URL, SUPABASE_KEY)
+      if (body?.kind === 'hold_list') return await handleHoldListHandoff(body as Record<string, unknown>, adb)
+      return await handleAutomatedOrder(body as Record<string, unknown>, adb)
     }
 
     const { message, tz_offset } = body
