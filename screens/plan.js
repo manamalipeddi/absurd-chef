@@ -608,11 +608,13 @@ function buildSlotRow(date, slot, entry, dayMeta, isPast = false) {
     empty.textContent = ''
     val.appendChild(empty)
 
-    // Empty slots are tappable today/future (plan or log); past empties stay read-only.
-    if (date >= todayStr()) {
-      row.classList.add('day-slot--tap')
-      row.addEventListener('click', () => showPicker(date, slot.type))
-    }
+    // Empty slots are tappable — today/future to plan, PAST to log what was
+    // actually eaten. This matters for breakfast especially: it's never
+    // auto-planned, so its past slots are always empty and were previously
+    // read-only, leaving no way to log a past breakfast. showPicker logs it as
+    // actually-made for past dates (isActual = date <= today).
+    row.classList.add('day-slot--tap')
+    row.addEventListener('click', () => showPicker(date, slot.type))
   }
 
   row.append(icon, label, val)
