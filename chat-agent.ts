@@ -1005,9 +1005,24 @@ function duplicateReplyText(orderId: string, prior: { created_at?: string; sourc
   return `⚠️ Order ${orderId} was already processed${when} ${via}${n}. I did NOT add it again — that would double your stock. If something from it is genuinely missing, tell me what and I'll update inventory directly.`
 }
 
+// Learned freezer-meal corrections from the app, keyed EXACTLY as the frontend
+// writes them: lower(trim(display name)). For an import-created freezer meal the
+// display name is cleanProductName(raw), so the same key resolves here — that's
+// how a "moved back to Inventory" store-bought item stops getting re-filed as a
+// meal on the next order. Best-effort: an empty map just falls back to the
+// heuristic.
+const fzKey = (s: string) => String(s || '').toLowerCase().trim()
+async function loadFreezerOverrides(db: DB): Promise<Map<string, boolean>> {
+  try {
+    const { data } = await db.from('freezer_meal_overrides').select('norm_name, is_meal')
+    return new Map(((data || []) as Record<string, unknown>[]).map(o => [o.norm_name as string, o.is_meal as boolean] as [string, boolean]))
+  } catch (_e) { return new Map() }
+}
+
 // Pure parse (Steps 1–3): lines → normalised groups → net quantity per product,
 // classified. No DB, no writes — used both by the writer and the pre-write guard.
-function parseGroceryOrder(rawText: string) {
+// `overrides` (learned meal/not-meal corrections) wins over the heuristic.
+function parseGroceryOrder(rawText: string, overrides: Map<string, boolean> = new Map()) {
   const groups = new Map<string, GroceryGroup>()
   for (const rawLine of rawText.split(/\r?\n/)) {
     const p = parseOrderLine(rawLine)
@@ -1023,8 +1038,14 @@ function parseGroceryOrder(rawText: string) {
   const all = [...groups.values()]
   const skippedNonFood = all.filter(g => isNonFood(g.name, g.vat)).map(g => g.name)   // non-food skipped
   const food = all.filter(g => !isNonFood(g.name, g.vat))
-  // Ready-to-heat meals (net > 0) go to freezer_stash, not inventory.
-  const freezerMeals = food.filter(g => g.net > 0 && isFreezerMeal(g.name))
+  // Ready-to-heat meals (net > 0) go to freezer_stash, not inventory. A learned
+  // override (from the app's Move to / Move back actions) beats the heuristic.
+  const freezerMeals = food.filter(g => {
+    if (g.net <= 0) return false
+    const ov = overrides.get(fzKey(cleanProductName(g.name)))
+    if (ov !== undefined) return ov
+    return isFreezerMeal(g.name)
+  })
   const isMeal = new Set(freezerMeals.map(g => g.norm))
   const toUpdate    = food.filter(g => g.net > 0 && !isMeal.has(g.norm))   // net > 0 → update / create
   const cancelled   = food.filter(g => g.net === 0)                   // net = 0 → skip, list to user
@@ -1043,7 +1064,8 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
   emit('Reading your order confirmation…')
   emit('Parsing order lines…')
 
-  const { food, toUpdate, freezerMeals, cancelled, parseErrors, corrections, skippedNonFood, fingerprint } = parseGroceryOrder(rawText)
+  const freezerOverrides = await loadFreezerOverrides(db)
+  const { food, toUpdate, freezerMeals, cancelled, parseErrors, corrections, skippedNonFood, fingerprint } = parseGroceryOrder(rawText, freezerOverrides)
 
   emit(`Found ${food.length} items. Net: ${toUpdate.length} to update, ${cancelled.length + parseErrors.length + corrections.length} cancelled or adjusted.`)
 
@@ -1800,7 +1822,7 @@ async function handleAutomatedOrder(body: Record<string, unknown>, db: DB): Prom
     // Parse preview BEFORE claiming the ledger: an email the parser can't read
     // at all must stay unclaimed, so a later manual paste isn't refused as a
     // duplicate of an order that never actually landed in inventory.
-    const preview = parseGroceryOrder(emailBody)
+    const preview = parseGroceryOrder(emailBody, await loadFreezerOverrides(db))
     if (preview.toUpdate.length + preview.freezerMeals.length + preview.corrections.length === 0) {
       return json({ status: 'needs_review', items_added: 0, message: `Order ${orderId}: couldn't parse any product lines from the email — nothing written. Paste the order in AbsurdChef to review it.` })
     }
@@ -2000,7 +2022,7 @@ Deno.serve(async (req: Request) => {
             if (priorOrder) {
               reply = duplicateReplyText(pastedId!, priorOrder)
             } else {
-              const preview = parseGroceryOrder(userMsg)
+              const preview = parseGroceryOrder(userMsg, await loadFreezerOverrides(db))
               const foodCount = preview.toUpdate.length + preview.freezerMeals.length
               if (foodCount < 10) {
                 await runImport(userMsg)                     // small order (<10) — free pass
