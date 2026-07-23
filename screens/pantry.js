@@ -29,6 +29,7 @@ const CAT_LIST   = ['fridge', 'freezer', 'pantry']
 const FOOD_CATS = [
   ['meat','Meat'], ['seafood','Seafood'], ['produce','Produce'],
   ['dairy','Dairy'], ['eggs','Eggs'], ['pantry','Pantry'], ['other','Other'],
+  ['non_food','Non-food'],
 ]
 
 // ── Freezer-meal classification + learned overrides (Slice B) ──
@@ -186,7 +187,7 @@ export function init(el) {
 
   tabBarEl = document.createElement('div')
   tabBarEl.className = 'pn-tabbar'
-  ;[['inventory','Inventory'],['freezer','Freezer Meals'],['prepped','Prepped'],['grocery','Grocery']].forEach(([id, label]) => {
+  ;[['inventory','Inventory'],['freezer','Freezer Meals'],['prepped','Prepped'],['nonfood','Non-food'],['grocery','Grocery']].forEach(([id, label]) => {
     const btn = document.createElement('button')
     btn.className = 'pn-tab'
     btn.dataset.tab = id
@@ -237,6 +238,7 @@ async function loadAndShow(tab) {
   contentEl.innerHTML = `<div class="loading-row"><div class="spinner"></div>Loading…</div>`
   if (tab === 'inventory') { await loadInventory(); renderInventory() }
   else if (tab === 'freezer') { await loadFreezer(); renderFreezer() }
+  else if (tab === 'nonfood') { await loadInventory(); renderNonFood() }
   else if (tab === 'grocery') { await loadGrocery(); renderGrocery() }
   else { await loadPrepped(); renderPrepped() }
 }
@@ -384,8 +386,10 @@ function renderInventory() {
   function renderBody() {
     listEl.innerHTML = ''
     const q = inventorySearch.trim().toLowerCase()
-    const active = inventoryData.filter(i => i.active !== false)
-    const hidden = inventoryData.filter(i => i.active === false)
+    // Non-food items live in inventory too, but have their own tab — keep them
+    // out of the food-focused Inventory view entirely.
+    const active = inventoryData.filter(i => i.active !== false && i.food_category !== 'non_food')
+    const hidden = inventoryData.filter(i => i.active === false && i.food_category !== 'non_food')
 
     // Filtered: flat list across all storage categories, normal sort preserved.
     // Search also surfaces INACTIVE matches (dimmed, below the active ones) so an
@@ -673,7 +677,7 @@ function openDeactivateSheet(item) {
     toMeal.addEventListener('click', async () => {
       if (!pressInside) return
       close()
-      if (await moveToFreezerMeals(item)) { toast(`Moved “${item.name}” to Freezer Meals`); showInventoryList() }
+      if (await moveToFreezerMeals(item)) { toast(`Moved “${item.name}” to Freezer Meals`); showListForActiveTab() }
       else toast('Move failed', { error: true })
     })
     sheet.append(toMeal)
@@ -693,7 +697,7 @@ async function deactivateInventoryItem(item) {
   if (error) { toast('Deactivate failed', { error: true }); return }
   const idx = inventoryData.findIndex(x => x.id === item.id)
   if (idx >= 0) inventoryData[idx].active = false
-  renderInventory()
+  renderActiveTab()
   toast(`${item.name} deactivated`, {
     duration: 5000,
     action: { label: 'Undo', onClick: () => reactivateInventoryItem(item) },
@@ -705,7 +709,7 @@ async function reactivateInventoryItem(item) {
   if (error) { toast('Undo failed', { error: true }); return }
   const idx = inventoryData.findIndex(x => x.id === item.id)
   if (idx >= 0) inventoryData[idx].active = true
-  renderInventory()
+  renderActiveTab()
 }
 
 function renderInvItem(wrap, item, ruled) {
@@ -957,15 +961,69 @@ function buildPreppedInventoryGroup(items) {
   return wrap
 }
 
+// ═══════════════════════════════════════════════════════════
+// NON-FOOD  (inventory rows with food_category='non_food')
+// ═══════════════════════════════════════════════════════════
+// Non-food groceries (cleaning, paper, toiletries, pet) that the import used to
+// reject now land here as ordinary inventory rows — same stock pills, edit form,
+// long-press deactivate and grocery-list treatment as food. They share
+// inventoryData (loaded by loadInventory) and are simply the food_category
+// ='non_food' slice of it, kept out of the Inventory tab's food view.
+function renderNonFood() {
+  contentEl.innerHTML = ''
+  const all    = inventoryData.filter(i => i.food_category === 'non_food')
+  const active = all.filter(i => i.active !== false)
+  const hidden = all.filter(i => i.active === false)
+
+  const listEl = document.createElement('div')
+  contentEl.append(listEl)
+  contentEl.appendChild(mkFab(() => openInventoryForm(null, 'pantry', 'non_food'), 'Add non-food item'))
+
+  if (!all.length) {
+    listEl.appendChild(mkEmpty('No non-food items yet. They\'re captured from grocery orders (cleaning, paper, toiletries…), or add one with +.'))
+    return
+  }
+
+  if (active.length) {
+    const card = document.createElement('div')
+    card.className = 'card su-card'
+    active.forEach((item, i) => card.appendChild(buildInventoryRow(item, i < active.length - 1)))
+    listEl.appendChild(card)
+  } else {
+    listEl.appendChild(mkEmpty('Everything non-food is out of stock or hidden.'))
+  }
+
+  if (hidden.length) {
+    const toggle = document.createElement('button')
+    toggle.className = 'pn-hidden-toggle'
+    toggle.textContent = showHiddenInventory
+      ? `Hide ${hidden.length} hidden item${hidden.length !== 1 ? 's' : ''}`
+      : `Show ${hidden.length} hidden item${hidden.length !== 1 ? 's' : ''}`
+    toggle.addEventListener('click', () => { showHiddenInventory = !showHiddenInventory; renderNonFood() })
+    listEl.appendChild(toggle)
+    if (showHiddenInventory) {
+      const card = document.createElement('div')
+      card.className = 'card pn-hidden-card'
+      hidden.forEach((item, i) => card.appendChild(buildInactiveInventoryRow(item, i < hidden.length - 1)))
+      listEl.appendChild(card)
+    }
+  }
+}
+
 // ── Inventory form ─────────────────────────────────────────
 let invFormView = null
 async function showInventoryList() { await loadInventory(); renderInventory() }
+// Inventory and Non-food share the same rows, form and gestures (non-food items
+// are inventory rows with food_category='non_food'); re-render whichever tab the
+// action was taken from so an edit/deactivate on the Non-food tab stays there.
+function renderActiveTab() { activeTab === 'nonfood' ? renderNonFood() : renderInventory() }
+async function showListForActiveTab() { await loadInventory(); renderActiveTab() }
 // Dismiss the edit form from its own UI (Cancel/Save/Hide): balance the pushed
 // history entry, then restore the list. Back-swipe takes the pushView onBack path.
 function closeInventoryForm() {
   const h = invFormView; invFormView = null
   if (h) h.done()
-  showInventoryList()
+  showListForActiveTab()
 }
 
 // ── Linked master ingredient (edit form) ──────────────────
@@ -1032,11 +1090,11 @@ function buildLinkField(linkState, nameInp, catSel, item) {
   return wrap
 }
 
-function openInventoryForm(id, defaultCat = 'pantry') {
+function openInventoryForm(id, defaultCat = 'pantry', defaultFood = 'other') {
   const item = id ? inventoryData.find(x => x.id === id) : null
   contentEl.innerHTML = ''
   // Real history entry so Back/▷-swipe returns to the inventory list, not out of the tab.
-  invFormView = pushView(() => { invFormView = null; showInventoryList() })
+  invFormView = pushView(() => { invFormView = null; showListForActiveTab() })
 
   const form = document.createElement('div')
   form.className = 'pn-form'
@@ -1056,7 +1114,7 @@ function openInventoryForm(id, defaultCat = 'pantry') {
   const typicalInp = mkInput('number', item?.typical_quantity ?? '', 'e.g. 2')
   typicalInp.min = 0; typicalInp.step = 'any'
   const catSel   = mkSelect([['fridge','Fridge'],['freezer','Freezer'],['pantry','Pantry']], item?.category || defaultCat)
-  const foodSel  = mkSelect(FOOD_CATS, item?.food_category || 'other')
+  const foodSel  = mkSelect(FOOD_CATS, item?.food_category || defaultFood)
   const expInp   = mkDateInput(item?.expiry_date || '')
   const notesInp = mkInput('text',   item?.notes        || '', 'Optional notes')
 

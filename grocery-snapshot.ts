@@ -122,6 +122,18 @@ ${listText}`
       }
     }
 
+    // Non-food restock: low/out-of-stock non-food items (cleaning, paper,
+    // toiletries, pet) belong on the shopping list too — same stock treatment as
+    // food (quantity 0 or a low status), but independent of any recipe. Appended
+    // directly; their names are already clean, so no AI dedup pass is needed.
+    const { data: nf } = await db.from('inventory')
+      .select('name, quantity, status')
+      .eq('active', true).eq('food_category', 'non_food')
+    const nfNeeded = ((nf || []) as Record<string, unknown>[])
+      .filter(it => it.quantity == null || Number(it.quantity) <= 0 || LOW.has(it.status as string))
+      .map(it => ({ name: it.name, quantity: 'as needed', category: 'other', note: 'Restock (non-food)' }))
+    if (nfNeeded.length) items = [...(items as unknown[]), ...nfNeeded]
+
     const { data: snap, error } = await db.from('grocery_list_snapshot').insert({
       triggered_by: triggeredBy,
       plan_date_range_start: today,

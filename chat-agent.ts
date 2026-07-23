@@ -743,7 +743,8 @@ Return ONLY valid JSON, no other text:
 // Steps mirror the grocery spec: discard headers / "Ändring i din beställning" /
 // price lines; Swedish decimals; net>0 update-or-create, net=0 cancelled,
 // net<0 parse-error or (negative-only) correction to existing stock. Non-food
-// PRODUCTS (diapers, cleaning, hygiene…) are recognised and skipped, not written.
+// PRODUCTS (diapers, cleaning, hygiene…) are recognised and routed to their own
+// Non-food list (food_category='non_food'), not the food inventory.
 // Matching is deterministic first (normalised name / master-ingredient alias);
 // items with no deterministic match go through a Claude pass that maps Mathem's
 // verbose names onto existing inventory rows before falling back to create-new.
@@ -757,12 +758,13 @@ function swedishNum(s: string): number | null {
   return Number.isFinite(n) ? n : null
 }
 
-// Non-food PRODUCTS that must never land in a food inventory. Focused, low
-// false-positive list (Swedish + English); ambiguous words are deliberately out.
+// Non-food PRODUCTS that must never land in the food inventory — they go to the
+// Non-food list instead. Focused, low false-positive list (Swedish + English);
+// ambiguous words are deliberately out.
 const NON_FOOD_RE = /\b(blöj\w*|diaper\w*|libero|hushållspapper|toapapper|toalettpapper|toilet\s*paper|servett\w*|napkin\w*|aluminiumfolie|plastfilm|gladpack|cling\s*film|vanish|fläckborttag\w*|fläckbort\w*|diskmedel|disktablett\w*|disktabs|maskindisk\w*|dishwash\w*|tvättmedel|sköljmedel|detergent|rengöring\w*|allrengöring|tvål|soap|schampo|shampoo|balsam|conditioner|tandkräm|toothpaste|deodorant|bindor|tampong\w*|batteri\w*|glödlampa|djurfoder|kattmat|hundmat)\b/i
-// Non-food is skipped from inventory. Primary signal: 25% VAT (Mathem food is
-// 6–12%, household/hygiene/cleaning is 25%, and Mathem sells no alcohol) — backed
-// by a keyword list for anything mis-rated or when VAT is missing.
+// Detects non-food so it routes to the Non-food list. Primary signal: 25% VAT
+// (Mathem food is 6–12%, household/hygiene/cleaning is 25%, and Mathem sells no
+// alcohol) — backed by a keyword list for anything mis-rated or when VAT is missing.
 function isNonFood(name: string, vat?: number | null): boolean {
   return vat === 25 || NON_FOOD_RE.test(name)
 }
@@ -1036,8 +1038,12 @@ function parseGroceryOrder(rawText: string, overrides: Map<string, boolean> = ne
     groups.set(key, g)
   }
   const all = [...groups.values()]
-  const skippedNonFood = all.filter(g => isNonFood(g.name, g.vat)).map(g => g.name)   // non-food skipped
-  const food = all.filter(g => !isNonFood(g.name, g.vat))
+  const isNF = (g: GroceryGroup) => isNonFood(g.name, g.vat)
+  const food = all.filter(g => !isNF(g))
+  // Non-food (cleaning, paper, toiletries…) is no longer rejected: net>0 groups
+  // are imported into inventory as food_category='non_food' (their own tab in the
+  // app), and feed grocery-list generation like everything else.
+  const nonFood = all.filter(g => isNF(g) && g.net > 0)
   // Ready-to-heat meals (net > 0) go to freezer_stash, not inventory. A learned
   // override (from the app's Move to / Move back actions) beats the heuristic.
   const freezerMeals = food.filter(g => {
@@ -1053,8 +1059,8 @@ function parseGroceryOrder(rawText: string, overrides: Map<string, boolean> = ne
   const corrections = food.filter(g => g.net < 0 && !g.hasPositive)   // negative-only → decrement existing
   // Fingerprint spans inventory writes AND freezer additions so the re-paste
   // guard catches a duplicate all-freezer order (stash inserts aren't idempotent).
-  const fingerprint = fingerprintOf([...toUpdate, ...freezerMeals].map(g => `${g.norm}:${g.net}`))
-  return { food, toUpdate, freezerMeals, cancelled, parseErrors, corrections, skippedNonFood, fingerprint }
+  const fingerprint = fingerprintOf([...toUpdate, ...freezerMeals, ...nonFood].map(g => `${g.norm}:${g.net}`))
+  return { food, toUpdate, freezerMeals, cancelled, parseErrors, corrections, nonFood, fingerprint }
 }
 
 async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, emit: (label: string) => void = () => {}) {
@@ -1065,7 +1071,7 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
   emit('Parsing order lines…')
 
   const freezerOverrides = await loadFreezerOverrides(db)
-  const { food, toUpdate, freezerMeals, cancelled, parseErrors, corrections, skippedNonFood, fingerprint } = parseGroceryOrder(rawText, freezerOverrides)
+  const { food, toUpdate, freezerMeals, cancelled, parseErrors, corrections, nonFood, fingerprint } = parseGroceryOrder(rawText, freezerOverrides)
 
   emit(`Found ${food.length} items. Net: ${toUpdate.length} to update, ${cancelled.length + parseErrors.length + corrections.length} cancelled or adjusted.`)
 
@@ -1123,6 +1129,7 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
   const updatedNames: string[] = []
   const createdNames: string[] = []
   const freezerAdded: string[] = []
+  const nonFoodAdded: string[] = []
   const flagged: string[] = []
 
   // ── Step 5: write net>0 items in batches of 10; progress between batches. ──
@@ -1203,19 +1210,52 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
     }
   }
 
+  // ── Non-food items → inventory as food_category='non_food'. Same net-quantity
+  // treatment as food (match an existing row to add to it on reorder, else
+  // create) but never expiring and never a freezer meal. Shown in the app's
+  // Non-food tab and pulled into grocery-list generation. ──
+  if (nonFood.length) {
+    emit(`Logging ${nonFood.length} non-food item${nonFood.length === 1 ? '' : 's'}…`)
+    for (const g of nonFood) {
+      const m = detMatch(g)
+      // Only merge into an existing NON-food row; a name collision with a food
+      // item must not add non-food quantity onto that food row.
+      if (m && m.row.food_category === 'non_food') {
+        const upd: Record<string, unknown> = {
+          quantity: (Number(m.row.quantity) || 0) + g.net,
+          last_updated_at: nowIso,
+        }
+        if (m.wasInactive) upd.active = true
+        if (Number(m.row.typical_quantity) === 0) upd.status = 'some'
+        const { error } = await db.from('inventory').update(upd).eq('id', m.row.id as string)
+        if (error) flagged.push(`${g.name} — non-food write failed (${error.message})`)
+        else nonFoodAdded.push(m.wasInactive ? `${m.row.name as string} (reactivated)` : (m.row.name as string))
+      } else {
+        const cleanName = cleanProductName(g.name)
+        const { error } = await db.from('inventory').insert({
+          name: cleanName, quantity: g.net, status: 'enough',
+          food_category: 'non_food', category: 'pantry',
+          source: 'grocery_import', active: true, last_updated_at: nowIso,
+        })
+        if (error) flagged.push(`${cleanName} — non-food create failed (${error.message})`)
+        else nonFoodAdded.push(cleanName)
+      }
+    }
+  }
+
   // Log the committed import so the 24h large-order re-paste guard can see it
   // (fingerprint = which order, count = size). Best-effort; never blocks writes.
   await db.from('grocery_import_batches').insert({
     status: 'committed', committed_at: nowIso,
     raw_text: rawText.slice(0, 20000),
-    items: { fingerprint, count: toUpdate.length + freezerMeals.length },
+    items: { fingerprint, count: toUpdate.length + freezerMeals.length + nonFood.length },
   }).then(() => {}, () => {})
 
   const parts: string[] = [`Done. Updated inventory for ${updatedNames.length} item${updatedNames.length === 1 ? '' : 's'}.`]
   if (createdNames.length)   parts.push(`${createdNames.length} new item${createdNames.length === 1 ? '' : 's'} added: ${createdNames.join(', ')}.`)
   if (freezerAdded.length)   parts.push(`Added ${freezerAdded.length} item${freezerAdded.length === 1 ? '' : 's'} to Freezer Meals: ${freezerAdded.join(', ')}. If anything landed in the wrong place, remove it from Freezer Meals or Pantry directly.`)
   if (cancelled.length)      parts.push(`${cancelled.length} fully cancelled and skipped: ${cancelled.map(g => g.name).join(', ')}.`)
-  if (skippedNonFood.length) parts.push(`${skippedNonFood.length} non-food item${skippedNonFood.length === 1 ? '' : 's'} skipped: ${skippedNonFood.join(', ')}.`)
+  if (nonFoodAdded.length)   parts.push(`${nonFoodAdded.length} non-food item${nonFoodAdded.length === 1 ? '' : 's'} added to the Non-food list: ${nonFoodAdded.join(', ')}.`)
   if (flagged.length)        parts.push(`${flagged.length} flagged for review: ${flagged.join('; ')}.`)
 
   return {
@@ -1224,10 +1264,10 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
     created: createdNames,
     freezer_meals_added: freezerAdded,
     cancelled: cancelled.map(g => g.name),
-    skipped_non_food: skippedNonFood,
+    non_food_added: nonFoodAdded,
     flagged,
     summary: parts.join(' '),
-    note: 'Inventory and freezer meals have already been written directly (no confirmation step). Present the summary to the user as-is; do NOT regenerate the grocery list.',
+    note: 'Inventory, freezer meals and non-food items have already been written directly (no confirmation step). Present the summary to the user as-is; do NOT regenerate the grocery list.',
   }
 }
 
