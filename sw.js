@@ -1,10 +1,10 @@
-const CACHE = 'absurdchef-v124'
+const CACHE = 'absurdchef-v125'
 
 // Local-dev guard: the SW never serves from cache when the page is loaded from a
 // dev host, so edited files always load fresh (no version bump / unregister
 // dance) — including a phone hitting the Mac over the LAN. Covers localhost,
 // loopback, private LAN ranges (10/8, 172.16–31/12, 192.168/16) and *.local.
-// Anything else (e.g. the Vercel domain) keeps the cache-first behaviour below.
+// Anything else (e.g. the Vercel domain) uses the network-first behaviour below.
 const H = self.location.hostname
 const DEV =
   H === 'localhost' ||
@@ -48,9 +48,23 @@ self.addEventListener('fetch', e => {
   const url = e.request.url
   // always network for API calls
   if (url.includes('supabase.co')) return
+  if (e.request.method !== 'GET') return
 
-  // cache-first for shell assets
+  // Network-first for shell assets: always fetch the latest deploy when online,
+  // and only fall back to the cache when the network fails (offline). The cache
+  // is refreshed on every successful load, so it's just an offline safety net.
+  // This is the fix for "the installed PWA is stuck on an old version" — a
+  // frontend change now reaches the phone on the next load with NO cache-version
+  // bump required (bump CACHE only to force-evict after a breaking SW change).
   e.respondWith(
-    caches.match(e.request).then(cached => cached || fetch(e.request))
+    fetch(e.request)
+      .then(resp => {
+        if (resp && resp.ok) {
+          const copy = resp.clone()
+          caches.open(CACHE).then(c => c.put(e.request, copy))
+        }
+        return resp
+      })
+      .catch(() => caches.match(e.request))
   )
 })
