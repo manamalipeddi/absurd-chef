@@ -1,4 +1,4 @@
-const CACHE = 'absurdchef-v125'
+const CACHE = 'absurdchef-v126'
 
 // Local-dev guard: the SW never serves from cache when the page is loaded from a
 // dev host, so edited files always load fresh (no version bump / unregister
@@ -23,6 +23,7 @@ const SHELL = [
   './screens/setup-day-settings.js', './screens/setup-preschool-menu.js',
   './screens/setup-ingredients.js', './screens/convert.js',
   './screens/master-search.js', './screens/setup-reference.js',
+  './icons/icon-192.png', './icons/icon-512.png',
 ]
 
 self.addEventListener('install', e => {
