@@ -286,7 +286,18 @@ function render(days, startDate, genWarning, history, noteMap = {}) {
   if (genWarning) screenEl.appendChild(buildGenBanner(genWarning))
 
   const today = todayStr()
-  const upcoming = days.filter(d => d.date >= today)
+  // The window spans 2 weeks, but the auto-planner only keeps ~1 week filled
+  // ahead (the Sunday rolling job extends the plan by one week at a time). So
+  // the tail of the window is empty cards for a week that hasn't been generated
+  // yet. Show only through the last REAL day: trim trailing days that carry
+  // nothing (no meal, no note, not a vacation marker). Today is always kept so
+  // it stays tappable even when empty. Gaps BEFORE the last real day are
+  // preserved — a mid-week missing slot still shows as an empty card.
+  const isReal = d => d.date === today || Object.keys(d.slots).length > 0 || d.meta.note || d.meta.isVacation
+  let upcoming = days.filter(d => d.date >= today)
+  let lastReal = -1
+  upcoming.forEach((d, i) => { if (isReal(d)) lastReal = i })
+  upcoming = upcoming.slice(0, lastReal + 1)
   const hasPlan = days.some(d => Object.keys(d.slots).length > 0)
   // Show History for past meal rows OR a past day that only carries a note (all
   // its meals were cleared) — otherwise that note-only day would be invisible.

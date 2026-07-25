@@ -9,11 +9,19 @@ const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY")!;
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-// rolling_7 is written in small batches to stay well under the 150s Edge limit.
-// Each entry is a [startOffset, endOffset) slice of the 7-day next-week window,
-// so no invocation generates more than ~4 days. The Sunday cron fires one call
-// per batch (see supabase/migrations — weekly-rolling-plan-batch{1,2}).
-const ROLLING_BATCHES: Array<[number, number]> = [[0, 3], [3, 7]]; // days 1–3, then 4–7
+// rolling ("rolling_7", name kept for compatibility) now extends the plan across
+// the NEXT TWO weeks — days 1–14 after the current week — not just one. Reason:
+// the Sunday grocery order must bridge ~10 days (to next Wednesday), so the plan
+// has to already reach into the following week or Mon/Tue dinners there get
+// planned AFTER their order was placed (see writePlan's gap-fill note). Rolling
+// is ADDITIVE — it only fills days with no plan yet, so reaching 2 weeks out does
+// NOT re-churn next week every Sunday.
+//
+// Written in small batches to stay well under the 150s Edge limit: each entry is
+// a [startOffset, endOffset) slice of the 14-day two-week window, so no
+// invocation generates more than ~4 days. The Sunday cron fires one call per
+// batch (see supabase/migrations — weekly-rolling-plan-batch{1..4}).
+const ROLLING_BATCHES: Array<[number, number]> = [[0, 4], [4, 7], [7, 11], [11, 14]];
 const TOTAL_ROLLING_BATCHES = ROLLING_BATCHES.length;
 
 // ── Planning rules ─────────────────────────────────────────────────────────
@@ -1050,7 +1058,17 @@ async function writePlan(
     .in("plan_date", dates)
     .in("meal_type", MEALS);
   const existingRows = (existingData || []) as ExistingRow[];
+  // Rolling generation is ADDITIVE: each Sunday it only FILLS days that have no
+  // plan yet — the newly-reached second week, plus any holes left by a missed
+  // run (self-healing) or the initial roll-out. It must NEVER overwrite an
+  // existing future meal: otherwise the week after next would be re-planned every
+  // Sunday as it rolls closer, churning a plan the user may already have looked
+  // at. So in rolling mode every existing NON-vacation row is protected and only
+  // genuinely empty slots are filled. (full_14 "Regenerate" keeps its
+  // full-rewrite behaviour; vacation days are still cleared below regardless.)
+  const rollingGapFill = mode === "rolling_7";
   const isProtected = (r: ExistingRow) =>
+    (rollingGapFill && !vacSet.has(r.plan_date)) ||
     r.slot_locked === true ||
     r.plan_date <= todayISO ||
     r.actually_made !== null ||
@@ -1394,6 +1412,40 @@ Deno.serve(async (req: Request) => {
       windowDates = Array.from({ length: genDays }, (_, i) => addDays(genStart, i));
     }
 
+    // Skip-if-already-full: rolling generation is additive, so if every day this
+    // batch owns is already planned (a dinner on each day + a lunch on weekend
+    // days) and no vacation day needs clearing, there's nothing to fill — skip
+    // the Claude call entirely. In steady state this makes the near-week batches
+    // (already planned last Sunday) essentially free; they do real work only on
+    // the initial roll-out or after a missed run.
+    let skipGeneration = false;
+    if (mode === "rolling_7" && windowDates?.length) {
+      const [existRes, vacRes] = await Promise.all([
+        supabase.from("meal_plans").select("plan_date, meal_type")
+          .in("plan_date", windowDates).in("meal_type", ["dinner", "lunch"]),
+        supabase.from("day_settings").select("day")
+          .in("day", windowDates).eq("is_vacation", true),
+      ]);
+      const have = new Set(((existRes.data || []) as { plan_date: string; meal_type: string }[]).map(r => `${r.plan_date}|${r.meal_type}`));
+      const vacDays = new Set(((vacRes.data || []) as { day: string }[]).map(r => r.day));
+      const somethingToFill = windowDates.some((d) => {
+        if (vacDays.has(d)) return false;                         // vacation days are never planned
+        const needsLunch = dayOfWeek(d) === 0 || dayOfWeek(d) === 6; // planner writes weekend lunches
+        return !have.has(`${d}|dinner`) || (needsLunch && !have.has(`${d}|lunch`));
+      });
+      const vacToClear = windowDates.some((d) => vacDays.has(d) && (have.has(`${d}|dinner`) || have.has(`${d}|lunch`)));
+      skipGeneration = !somethingToFill && !vacToClear;
+    }
+
+    // Hoisted outputs — filled by the generation block below, or left at their
+    // empty defaults when generation is skipped.
+    let daysPlanned = 0;
+    let unresolvedOut: Unresolved[] = [];
+    let stashOut: StashRecommendation[] = [];
+
+    if (skipGeneration) {
+      console.log(`Batch ${rollingBatch}/${TOTAL_ROLLING_BATCHES}: all owned days already planned — skipping generation`);
+    } else {
     console.log(
       `Planning ${mode} from ${genStart} for ${genDays} day(s)` +
         (rollingBatch ? ` (batch ${rollingBatch}/${TOTAL_ROLLING_BATCHES})` : "") +
@@ -1479,9 +1531,19 @@ Deno.serve(async (req: Request) => {
     const vacationDates = (ctx.daySettings as DaySetting[]).filter(d => d.is_vacation).map(d => d.day);
     await writePlan(supabase, result.plan, mode, targetDates, genStart, vacationDates, ctx.daySettings as DaySetting[], windowDates, start_date);
 
+    // dinner rows are the only ones written; report that count. Batched rolling_7
+    // now generates exactly the days it writes, so every generated dinner is a
+    // written day.
+    const dinnerCount = result.plan.filter((p) => p.meal_type === "dinner").length;
+    daysPlanned = mode === "targeted" ? (targetDates?.length || 0) : dinnerCount;
+    unresolvedOut = result.unresolved;
+    stashOut = result.stash_recommendations;
+    }
+    // ── end generation block (skipped when the batch is already fully planned) ──
+
     // Batched rolling_7 next-batch handoff:
-    //  • SCHEDULED runs rely on the two Sunday cron entries (batch 1 @ 06:00,
-    //    batch 2 @ 06:15) — they must NOT self-chain, or batch 2 would run twice.
+    //  • SCHEDULED runs rely on the four Sunday cron entries (batches 1–4 @
+    //    06:00/06:15/06:30/06:45) — they must NOT self-chain, or a batch runs twice.
     //  • MANUAL "Plan Week N" has no cron to continue the chain, so it triggers
     //    the next batch itself. Fire-and-forget (no await) so this invocation
     //    still returns quickly and stays well under the 150s limit; waitUntil
@@ -1518,14 +1580,6 @@ Deno.serve(async (req: Request) => {
       await postWeeklyConfirmNudge(supabase);
     }
 
-    // dinner rows are the only ones written; report that count. Batched rolling_7
-    // now generates exactly the days it writes, so the old "generated 14, wrote 7"
-    // subtraction no longer applies — every generated dinner is a written day.
-    const dinnerCount = result.plan.filter((p) => p.meal_type === "dinner").length;
-    const daysPlanned = mode === "targeted"
-      ? (targetDates?.length || 0)
-      : dinnerCount;
-
     // Mark the log row succeeded.
     if (logId) {
       await supabase
@@ -1541,8 +1595,8 @@ Deno.serve(async (req: Request) => {
       JSON.stringify({
         success: true,
         days_planned: daysPlanned,
-        unresolved: result.unresolved,
-        stash_recommendations: result.stash_recommendations,
+        unresolved: unresolvedOut,
+        stash_recommendations: stashOut,
       }),
       {
         headers: {
