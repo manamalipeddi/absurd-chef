@@ -857,6 +857,82 @@ body {
 }
 .picker-row--other { background: var(--bg); }
 .picker-row--other .picker-row__name { font-weight: 700; color: var(--primary); }
+
+/* Group header in the picker list ("Freezer" / "Recipes"). */
+.picker-group {
+  font-size: 10.6px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 10px 16px 4px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+/* Freezer items appear above recipes; portions count is dimmed. */
+.picker-row--freezer .picker-row__name { font-weight: 600; }
+.picker-row__portions { font-weight: 500; color: var(--text-muted); font-size: 13px; margin-left: 4px; }
+
+/* Freezer quantity prompt (stepper + Confirm). */
+.freezer-qty-sheet, .freezer-restore-sheet { padding-bottom: 16px; }
+.freezer-qty__q {
+  padding: 16px 16px 10px;
+  font-size: 14.8px;
+  color: var(--text);
+}
+.freezer-qty__stepper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 6px 16px 14px;
+}
+.freezer-qty__btn {
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  border-radius: 50%;
+  font-size: 22px;
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+.freezer-qty__btn:active { opacity: 0.6; }
+.freezer-qty__btn:disabled { opacity: 0.35; cursor: default; }
+.freezer-qty__num { font-size: 22px; font-weight: 700; color: var(--text); min-width: 32px; text-align: center; }
+.freezer-qty__confirm { margin: 0 16px; width: calc(100% - 32px); }
+
+/* Restore-to-freezer confirmation. */
+.freezer-restore__body {
+  padding: 16px;
+  font-size: 14.8px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.freezer-restore__actions {
+  display: flex;
+  gap: 10px;
+  padding: 0 16px;
+}
+.freezer-restore__actions .su-btn-ghost,
+.freezer-restore__actions .su-btn-primary { flex: 1; }
+
+/* Freezer marker on an assigned slot — tap to correct portions used. */
+.day-slot__freezer {
+  font-size: 12.5px;
+  flex-shrink: 0;
+  line-height: 1.4;
+  border: none;
+  background: none;
+  padding: 0 1px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.day-slot__freezer:active { opacity: 0.55; }
 .picker-empty {
   text-align: center;
   padding: 24px;

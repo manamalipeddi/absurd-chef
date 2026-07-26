@@ -60,6 +60,7 @@ const ICON = {
 // ── State ─────────────────────────────────────────────────
 let screenEl        = null
 let allRecipes      = []   // for the recipe picker
+let freezerStash    = []   // available freezer_stash items (portions>0, unused) for the picker
 let generating      = false
 let householdCount  = 0
 let currentStartDate = null  // start of the currently displayed plan window
@@ -173,10 +174,11 @@ async function loadAndRender() {
   const planSelect =
     'plan_date, meal_type, recipe_id, slot_locked, is_commute_day, is_holiday, is_preschool_closed, guest_count, ' +
     'notes, actually_made, actual_recipe_id, actual_notes, expiry_override, additional_recipes, ' +
+    'freezer_stash_id, freezer_portions_used, ' +
     'recipes!meal_plans_recipe_id_fkey(id, name, emoji, serves_base, is_placeholder), ' +
     'actual_recipe:recipes!meal_plans_actual_recipe_id_fkey(id, name, emoji, is_placeholder)'
 
-  const [planRes, dsRes, recipeRes, householdRes, schedLogRes, histRes] = await Promise.all([
+  const [planRes, dsRes, recipeRes, householdRes, schedLogRes, histRes, freezerRes] = await Promise.all([
     supabase
       .from('meal_plans')
       .select(planSelect)
@@ -208,11 +210,19 @@ async function loadAndRender() {
       .select(planSelect)
       .gte('plan_date', histFrom).lt('plan_date', histBefore)
       .order('plan_date', { ascending: false }),
+    // Freezer stash available to pick into a slot: real portions left, not yet
+    // fully used, still active. Store-bought and homemade alike (no distinction).
+    supabase
+      .from('freezer_stash')
+      .select('id, recipe_name, recipe_id, portions, source')
+      .eq('active', true).eq('used', false).gt('portions', 0)
+      .order('recipe_name'),
   ])
 
   householdCount = householdRes.count ?? 0
   allRecipes = recipeRes.data || []
   otherRecipe = allRecipes.find(r => r.is_placeholder) || null
+  freezerStash = freezerRes.data || []
 
   const dsRows = dsRes.data || []
   const noteMap = {}
@@ -600,6 +610,21 @@ function buildSlotRow(date, slot, entry, dayMeta, isPast = false) {
       val.appendChild(tag)
     }
 
+    // Freezer marker — this slot was filled from the freezer stash. Tap to
+    // correct how many portions were actually used (reopens the quantity prompt).
+    if (entry.freezer_stash_id) {
+      const used = Number(entry.freezer_portions_used) || 0
+      const fz = document.createElement('button')
+      fz.className = 'day-slot__freezer'
+      fz.textContent = '❄️'
+      fz.title = `From freezer${used ? ` — ${used} portion${used === 1 ? '' : 's'}` : ''} · tap to adjust`
+      fz.addEventListener('click', (e) => {
+        e.stopPropagation()
+        openFreezerCorrection(date, slot.type, entry.freezer_stash_id, entry.freezer_portions_used, date <= todayStr())
+      })
+      val.appendChild(fz)
+    }
+
     // Serving mismatch warning — only when there are guests that day
     const guestCount = dayMeta?.guestCount || 0
     if (guestCount > 0 && entry.recipes && !entry.recipes.is_placeholder) {
@@ -793,10 +818,35 @@ function showPicker(date, slotType, opts = {}) {
     return row
   }
 
+  function groupHeader(text) {
+    const h = document.createElement('div')
+    h.className = 'picker-group'
+    h.textContent = text
+    return h
+  }
+
   function renderList(q) {
     const lq = q.toLowerCase()
     const hits = lq ? pool.filter(r => r.name.toLowerCase().includes(lq)) : pool
     list.innerHTML = ''
+    // ── Freezer ── group first: pickable freezer_stash items (portions>0, unused).
+    // Not offered in "Also served" mode — that only appends untracked extras and
+    // carries no freezer linkage/decrement.
+    if (!additional) {
+      const fHits = lq ? freezerStash.filter(f => (f.recipe_name || '').toLowerCase().includes(lq)) : freezerStash
+      if (fHits.length) {
+        list.appendChild(groupHeader('Freezer'))
+        for (const f of fHits) {
+          const emoji = f.source === 'store_bought' ? '🛒' : '❄️'
+          const label = `Freezer: ${f.recipe_name} <span class="picker-row__portions">(${f.portions} portion${Number(f.portions) === 1 ? '' : 's'})</span>`
+          list.appendChild(pickRow(emoji, label, () => {
+            closeModal(overlay)
+            openFreezerQtyPrompt(f, date, slotType, isActual)
+          }, 'picker-row--freezer'))
+        }
+        list.appendChild(groupHeader('Recipes'))
+      }
+    }
     for (const r of hits) {
       // Prefix the displayed label with the meal-type category. Display-only —
       // the stored value is the recipe id, so the prefix never enters the slot.
@@ -871,6 +921,10 @@ function showPicker(date, slotType, opts = {}) {
 // Delete the meal_plans row for this date+meal_type → slot returns to empty,
 // available for manual re-pick or the generator to fill on a future replan.
 async function clearSlot(date, slotType) {
+  // Clearing a freezer-linked slot is also an edit that removes the assignment —
+  // offer to restore the portions before the row is deleted.
+  const gate = await maybeRestoreFreezer(date, slotType)
+  if (gate === 'cancel') return
   const { error } = await supabase.from('meal_plans')
     .delete().eq('plan_date', date).eq('meal_type', slotType)
   if (error) { toast('Failed to clear', { error: true }); return }
@@ -880,6 +934,11 @@ async function clearSlot(date, slotType) {
 
 // Single save path for both plan changes and actual-outcome logging.
 async function applyPick(date, slotType, recipeId, isActual, otherText) {
+  // Any edit that moves this slot OFF a freezer meal must first offer to restore
+  // the portions to the physical freezer count (see maybeRestoreFreezer). Applies
+  // uniformly — future, today, or a past History entry.
+  const gate = await maybeRestoreFreezer(date, slotType)
+  if (gate === 'cancel') return
   let error
   if (isActual) {
     // Past/current manual pick = the strongest signal it was actually cooked:
@@ -890,6 +949,7 @@ async function applyPick(date, slotType, recipeId, isActual, otherText) {
     ;({ error } = await supabase.from('meal_plans').upsert({
       plan_date: date, meal_type: slotType,
       actually_made: true, actual_recipe_id: recipeId, actual_notes: otherText,
+      freezer_stash_id: null, freezer_portions_used: null,
     }, { onConflict: 'plan_date,meal_type' }))
   } else {
     // Changing the plan itself (future day): recipe_id + lock; reset any actuals.
@@ -897,6 +957,7 @@ async function applyPick(date, slotType, recipeId, isActual, otherText) {
       plan_date: date, meal_type: slotType,
       recipe_id: recipeId, slot_locked: true, notes: otherText,
       actually_made: null, actual_recipe_id: null, actual_notes: null,
+      freezer_stash_id: null, freezer_portions_used: null,
     }, { onConflict: 'plan_date,meal_type' }))
     await supabase.from('plan_edits').insert({
       plan_date: date, meal_type: slotType, new_recipe_id: recipeId,
@@ -912,6 +973,180 @@ async function applyPick(date, slotType, recipeId, isActual, otherText) {
   }
   toast(isActual ? 'Logged' : 'Plan updated')
   await loadAndRender()
+}
+
+// ── Freezer meals in the picker ───────────────────────────
+// Adjust a freezer_stash row's live portion count. `taken` > 0 decrements (a
+// portion was eaten); `taken` < 0 restores (it wasn't). Flips used/used_date at
+// the zero boundary so an item drops out of / returns to the picker correctly.
+async function adjustFreezerPortions(id, taken) {
+  const { data: cur } = await supabase.from('freezer_stash')
+    .select('portions').eq('id', id).maybeSingle()
+  const newPortions = Math.max(0, (Number(cur?.portions) || 0) - taken)
+  const patch = newPortions === 0
+    ? { portions: 0, used: true, used_date: todayStr() }
+    : { portions: newPortions, used: false, used_date: null }
+  await supabase.from('freezer_stash').update(patch).eq('id', id)
+}
+
+// Quantity prompt shown when a freezer item is chosen. Defaults to 1; the +
+// control stops at the available portions (can't take more than exists). For a
+// correction on the item already assigned to this slot, opts pre-fills the prior
+// quantity and raises the max by what this slot already holds (see below).
+function openFreezerQtyPrompt(item, date, slotType, isActual, opts = {}) {
+  const maxQty = Math.max(1, opts.maxQty != null ? opts.maxQty : (Number(item.portions) || 1))
+  let qty = Math.min(maxQty, Math.max(1, opts.defaultQty || 1))
+
+  const overlay = document.createElement('div'); overlay.className = 'picker-overlay'
+  const sheet = document.createElement('div'); sheet.className = 'picker-sheet freezer-qty-sheet'
+  const head = document.createElement('div'); head.className = 'picker-header'
+  head.innerHTML = `<span class="picker-title">${item.recipe_name}</span><button class="picker-close" aria-label="Close">✕</button>`
+  head.querySelector('.picker-close').addEventListener('click', () => closeModal(overlay))
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(overlay) })
+
+  const prompt = document.createElement('div'); prompt.className = 'freezer-qty__q'
+  prompt.textContent = `How many portions of ${item.recipe_name} did you use?`
+
+  const stepper = document.createElement('div'); stepper.className = 'freezer-qty__stepper'
+  const minus = document.createElement('button'); minus.className = 'freezer-qty__btn'; minus.textContent = '−'
+  const num   = document.createElement('span');   num.className   = 'freezer-qty__num'
+  const plus  = document.createElement('button'); plus.className  = 'freezer-qty__btn'; plus.textContent  = '+'
+  const paint = () => { num.textContent = qty; minus.disabled = qty <= 1; plus.disabled = qty >= maxQty }
+  minus.addEventListener('click', () => { if (qty > 1) { qty--; paint() } })
+  plus.addEventListener('click',  () => { if (qty < maxQty) { qty++; paint() } })
+  paint()
+  stepper.append(minus, num, plus)
+
+  const confirm = document.createElement('button')
+  confirm.className = 'su-btn-primary freezer-qty__confirm'
+  confirm.textContent = 'Confirm'
+  confirm.addEventListener('click', async () => {
+    closeModal(overlay)
+    await applyFreezerPick(date, slotType, item, qty, isActual)
+  })
+
+  sheet.append(head, prompt, stepper, confirm)
+  overlay.appendChild(sheet)
+  document.body.appendChild(overlay)
+  openModal(overlay, () => overlay.remove())
+}
+
+// Tapping the ❄️ marker on an assigned freezer slot re-opens the quantity prompt
+// to correct how many portions were actually used. The max allows re-taking up
+// to what's physically left PLUS what this slot already holds.
+async function openFreezerCorrection(date, slotType, stashId, usedQty, isActual) {
+  const { data: item } = await supabase.from('freezer_stash')
+    .select('id, recipe_name, recipe_id, portions, source').eq('id', stashId).maybeSingle()
+  if (!item) { toast('Freezer item no longer exists', { error: true }); return }
+  const prev = Number(usedQty) || 0
+  openFreezerQtyPrompt(item, date, slotType, isActual, {
+    defaultQty: prev || 1,
+    maxQty: Math.max(1, (Number(item.portions) || 0) + prev),
+  })
+}
+
+// Assign a freezer item to a slot and decrement its portions by the quantity
+// used. recipe_id if the item is linked to a recipe, else the "Other" placeholder
+// carrying the item's name. Sets freezer_stash_id + freezer_portions_used so a
+// later edit can restore the count accurately.
+async function applyFreezerPick(date, slotType, item, qty, isActual) {
+  const { data: cur } = await supabase.from('meal_plans')
+    .select('freezer_stash_id, freezer_portions_used')
+    .eq('plan_date', date).eq('meal_type', slotType).maybeSingle()
+  if (cur && cur.freezer_stash_id === item.id) {
+    // Correcting the SAME item already on this slot — adjust the difference only
+    // (no restore prompt; nothing is being un-assigned).
+    const prevQty = Number(cur.freezer_portions_used) || 0
+    if (qty !== prevQty) await adjustFreezerPortions(item.id, qty - prevQty)
+  } else {
+    // Switching this slot onto a freezer item from something else: offer to
+    // restore whatever it was previously consuming, then take the new quantity.
+    const gate = await maybeRestoreFreezer(date, slotType)
+    if (gate === 'cancel') return
+    await adjustFreezerPortions(item.id, qty)
+  }
+
+  const recipeId = item.recipe_id || otherRecipe?.id || null
+  const freeText = item.recipe_id ? null : item.recipe_name
+
+  let error
+  if (isActual) {
+    ;({ error } = await supabase.from('meal_plans').upsert({
+      plan_date: date, meal_type: slotType,
+      actually_made: true, actual_recipe_id: recipeId, actual_notes: freeText,
+      freezer_stash_id: item.id, freezer_portions_used: qty,
+    }, { onConflict: 'plan_date,meal_type' }))
+  } else {
+    ;({ error } = await supabase.from('meal_plans').upsert({
+      plan_date: date, meal_type: slotType,
+      recipe_id: recipeId, slot_locked: true, notes: freeText,
+      actually_made: null, actual_recipe_id: null, actual_notes: null,
+      freezer_stash_id: item.id, freezer_portions_used: qty,
+    }, { onConflict: 'plan_date,meal_type' }))
+    await supabase.from('plan_edits').insert({
+      plan_date: date, meal_type: slotType, new_recipe_id: recipeId,
+      edit_source: 'manual', instruction_text: `Manual freezer pick: ${item.recipe_name} ×${qty}`,
+    })
+  }
+  if (error) { toast('Failed to save', { error: true }); return }
+  if (isActual && recipeId && recipeId !== otherRecipe?.id) {
+    await supabase.from('recipes').update({ last_made: date }).eq('id', recipeId)
+  }
+  toast(isActual ? 'Logged' : 'Plan updated')
+  await loadAndRender()
+}
+
+// Restore gate: before an edit removes or replaces a freezer-linked slot, offer
+// to put the used portions back on the physical count. Returns:
+//   'none'     – no freezer link, proceed
+//   'restored' – portions restored, proceed
+//   'kept'     – left as used (genuinely eaten), proceed
+//   'cancel'   – user dismissed the prompt, ABORT the edit
+async function maybeRestoreFreezer(date, slotType) {
+  const { data: row } = await supabase.from('meal_plans')
+    .select('freezer_stash_id, freezer_portions_used')
+    .eq('plan_date', date).eq('meal_type', slotType).maybeSingle()
+  if (!row || !row.freezer_stash_id) return 'none'
+  const qty = Number(row.freezer_portions_used) || 0
+  const { data: item } = await supabase.from('freezer_stash')
+    .select('id, recipe_name').eq('id', row.freezer_stash_id).maybeSingle()
+  const name = item?.recipe_name || 'this freezer meal'
+  const choice = await confirmRestore(name, qty)
+  if (choice === 'cancel') return 'cancel'
+  if (choice === 'restore' && qty > 0 && item) await adjustFreezerPortions(item.id, -qty)
+  return choice === 'restore' ? 'restored' : 'kept'
+}
+
+// Modal asking whether to restore freezer portions on an edit. Resolves
+// 'restore' | 'keep' | 'cancel' (Back / backdrop / ✕ = cancel).
+function confirmRestore(name, qty) {
+  return new Promise(resolve => {
+    let settled = false
+    const overlay = document.createElement('div'); overlay.className = 'picker-overlay'
+    const sheet = document.createElement('div'); sheet.className = 'picker-sheet freezer-restore-sheet'
+    const done = (v) => { if (settled) return; settled = true; closeModal(overlay); resolve(v) }
+
+    const head = document.createElement('div'); head.className = 'picker-header'
+    head.innerHTML = `<span class="picker-title">Restore to freezer?</span><button class="picker-close" aria-label="Close">✕</button>`
+    head.querySelector('.picker-close').addEventListener('click', () => done('cancel'))
+    overlay.addEventListener('click', e => { if (e.target === overlay) done('cancel') })
+
+    const body = document.createElement('div'); body.className = 'freezer-restore__body'
+    body.textContent = `This slot was using ${qty} portion${qty === 1 ? '' : 's'} of ${name}. Restore that quantity to the freezer since it wasn't eaten?`
+
+    const actions = document.createElement('div'); actions.className = 'freezer-restore__actions'
+    const keep = document.createElement('button'); keep.className = 'su-btn-ghost'; keep.textContent = 'No, keep as used'
+    const restore = document.createElement('button'); restore.className = 'su-btn-primary'; restore.textContent = 'Restore'
+    keep.addEventListener('click', () => done('keep'))
+    restore.addEventListener('click', () => done('restore'))
+    actions.append(keep, restore)
+
+    sheet.append(head, body, actions)
+    overlay.appendChild(sheet)
+    document.body.appendChild(overlay)
+    // Back / swipe removes the overlay via onClose → resolve cancel so the edit aborts.
+    openModal(overlay, () => { overlay.remove(); if (!settled) { settled = true; resolve('cancel') } })
+  })
 }
 
 // Day-level free-form note editor. Writes day_settings.note only — no replan,

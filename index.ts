@@ -1118,6 +1118,27 @@ async function writePlan(
     await supabase.from("meal_plans").delete().in("id", deletableIds);
   }
 
+  // Freezer decrement accounting. A "freezer_stash" assignment CONSUMES portions,
+  // unlike a week-2 restock ref (portions 0, typically_restocked) which is a
+  // future buy, not a consumption. Fetch the live count for every referenced
+  // stash id so we can (a) stamp only truly-consuming slots with freezer_stash_id
+  // + freezer_portions_used, and (b) decrement by exactly the number of consuming
+  // slots below (default 1 portion each; the user corrects the count in-app).
+  const stashRefIds = [...new Set(
+    toWrite.filter((p) => p.cook_source === "freezer_stash" && p.stash_item_id).map((p) => p.stash_item_id!),
+  )];
+  const consumedStash = new Set<string>();   // stash ids with live portions (>0)
+  const stashPortions = new Map<string, number>();
+  if (stashRefIds.length > 0) {
+    const { data: liveStash } = await supabase.from("freezer_stash")
+      .select("id, portions").in("id", stashRefIds).eq("active", true).gt("portions", 0);
+    for (const s of (liveStash || []) as { id: string; portions: number }[]) {
+      consumedStash.add(s.id); stashPortions.set(s.id, s.portions);
+    }
+  }
+  const isConsuming = (p: PlanDay) =>
+    p.cook_source === "freezer_stash" && !!p.stash_item_id && consumedStash.has(p.stash_item_id);
+
   // Insert new plan — day-context columns come from day_settings, not the model.
   const rows = toWrite.map((p) => ({
     plan_date: p.date,
@@ -1129,6 +1150,8 @@ async function writePlan(
     guest_count: dayContext(p.date).guest_count,
     cook_source: p.cook_source,
     stash_item_id: p.stash_item_id,
+    freezer_stash_id: isConsuming(p) ? p.stash_item_id : null,
+    freezer_portions_used: isConsuming(p) ? 1 : null,
     remap_log: p.remap_log,
     expiry_override: p.expiry_override === true,
     notes: p.notes,
@@ -1142,19 +1165,23 @@ async function writePlan(
     if (error) throw new Error(`Failed to write plan: ${error.message}`);
   }
 
-  // Mark used stash items — but only those with portions remaining. A week-2
-  // restock assignment (portions 0, typically_restocked) is a future need, not
-  // a consumption, so it must NOT be marked used.
-  const stashIds = toWrite.filter(p => p.stash_item_id).map(p => p.stash_item_id!);
-  if (stashIds.length > 0) {
-    const { data: live } = await supabase.from("freezer_stash")
-      .select("id").in("id", stashIds).eq("active", true).gt("portions", 0);
-    const liveIds = (live || []).map((s: { id: string }) => s.id);
-    if (liveIds.length > 0) {
-      await supabase.from("freezer_stash")
-        .update({ used: true, used_date: new Date().toISOString().slice(0, 10) })
-        .in("id", liveIds);
-    }
+  // Decrement consumed freezer stash by the number of slots that used it (1
+  // portion each). used=true only when a row reaches 0 — a partially-consumed
+  // item stays available for the rest of the plan and in the picker. Week-2
+  // restock refs (portions 0, typically_restocked) aren't in consumedStash, so
+  // they're untouched: a future need, not a consumption.
+  const stashCounts = new Map<string, number>();
+  for (const p of toWrite) {
+    if (isConsuming(p)) stashCounts.set(p.stash_item_id!, (stashCounts.get(p.stash_item_id!) || 0) + 1);
+  }
+  const usedDate = new Date().toISOString().slice(0, 10);
+  for (const [id, count] of stashCounts) {
+    const newPortions = Math.max(0, (stashPortions.get(id) ?? 0) - count);
+    await supabase.from("freezer_stash").update(
+      newPortions === 0
+        ? { portions: 0, used: true, used_date: usedDate }
+        : { portions: newPortions, used: false, used_date: null },
+    ).eq("id", id);
   }
 
   // Proactive expiry heads-up: after the plan is written, nudge the user in chat

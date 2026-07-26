@@ -1,0 +1,21 @@
+-- ════════════════════════════════════════════════════════════════════════
+-- Freezer-portion accounting on meal_plans
+-- ════════════════════════════════════════════════════════════════════════
+-- When a slot is filled from a freezer_stash item (manually via the recipe
+-- picker, or auto-assigned by the plan generator's freezer-first chain), we now
+-- DECREMENT that stash row's portions by the quantity taken rather than blindly
+-- marking the whole item used=true.
+--
+-- To restore the count accurately if that slot is later re-picked, swapped, or
+-- cleared — at ANY time, including editing a past History entry — we must know
+-- WHICH stash row the decrement came from and HOW MANY portions were taken:
+--
+--   freezer_stash_id      → the freezer_stash row this slot consumed from
+--   freezer_portions_used → how many portions were subtracted for this slot
+--
+-- Both are null for a normal (non-freezer) slot. freezer_stash.portions is a
+-- live physical count, so these let an edit put back exactly what wasn't eaten.
+-- (Distinct from the older stash_item_id, which the generator has always set for
+-- validation/reporting; these two additionally drive the decrement/restore.)
+alter table meal_plans add column if not exists freezer_stash_id      uuid references freezer_stash(id);
+alter table meal_plans add column if not exists freezer_portions_used int;
