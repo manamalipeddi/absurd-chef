@@ -1232,6 +1232,23 @@ function openInventoryForm(id, defaultCat = 'pantry', defaultFood = 'other') {
   if (id) {
     const danger = document.createElement('div')
     danger.className = 'pn-danger-zone'
+
+    // Reclassify a frozen item as a ready-to-heat Freezer Meal (e.g. château
+    // potatoes — a cooked product that just needs heating). Mirrors the freezer
+    // form's "Move back to Inventory"; teaches an override so the auto-sort
+    // learns this item is a meal. Also available via long-press on the row.
+    if ((item?.category || '') === 'freezer') {
+      const toMealBtn = document.createElement('button')
+      toMealBtn.className = 'pn-danger-btn'
+      toMealBtn.textContent = 'Move to Freezer Meals'
+      toMealBtn.addEventListener('click', async () => {
+        toMealBtn.disabled = true
+        if (await moveToFreezerMeals(item)) { toast(`Moved “${item.name}” to Freezer Meals`); closeInventoryForm() }
+        else { toMealBtn.disabled = false; toast('Move failed', { error: true }) }
+      })
+      danger.appendChild(toMealBtn)
+    }
+
     const hideBtn = document.createElement('button')
     hideBtn.className = 'pn-danger-btn'
     hideBtn.textContent = 'Hide this item'
