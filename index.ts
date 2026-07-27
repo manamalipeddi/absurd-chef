@@ -1245,6 +1245,23 @@ async function extendDaySettings(supabase: ReturnType<typeof createClient>) {
 }
 
 // ── Proactive expiry heads-up (Part 3) ─────────────────────────────────────
+// Mirror a proactive Chef→Manasa message into chef_outbox so Allie (the
+// WhatsApp bot) can relay it — see migrations/20260727_allie_relay_channel.sql.
+// The message is ALSO written to chat_history by the caller (the PWA log is the
+// source of truth); this is purely the notify channel. Best-effort: a relay
+// failure must never block plan generation, so it never throws.
+async function enqueueOutbox(
+  supabase: ReturnType<typeof createClient>,
+  kind: string,
+  content: string,
+) {
+  try {
+    await supabase.from("chef_outbox").insert({ kind, content });
+  } catch (_e) {
+    /* best-effort — the message still lives in chat_history for the PWA */
+  }
+}
+
 // Best-effort chat nudge about items expiring in the plan window, so nothing
 // rots unnoticed (the polenta failure). Critical meat/fish within 2 days is
 // EXCLUDED — the generator already slotted those (rule 18). Deduped to at most
@@ -1286,6 +1303,7 @@ async function postExpiryNudge(
     const more = items.length > 8 ? ` …and ${items.length - 8} more` : "";
     const content = `⏳ Heads-up — a few things are expiring soon: ${list}${more}. Want me to work one into the plan? I can suggest a recipe that uses them up (or make a new one) and slot it wherever suits — just say the word.`;
     await supabase.from("chat_history").insert({ role: "assistant", content });
+    await enqueueOutbox(supabase, "expiry_nudge", content);
   } catch (_e) {
     /* best-effort — a nudge must never block or fail plan generation */
   }
@@ -1342,6 +1360,7 @@ async function postWeeklyConfirmNudge(supabase: ReturnType<typeof createClient>)
     }).join(" · ");
     const content = `🗓️ Quick check on last week — did these go as planned? ${list}. Reply "all as planned", or tell me what changed (e.g. "all as planned except Wednesday — we ordered pizza") and I'll log it. Knowing what you really ate is how I learn your habits.`;
     await supabase.from("chat_history").insert({ role: "assistant", content });
+    await enqueueOutbox(supabase, "weekly_checkin", content);
   } catch (_e) {
     /* best-effort — a nudge must never block or fail plan generation */
   }

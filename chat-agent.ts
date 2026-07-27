@@ -1926,6 +1926,16 @@ async function handleAutomatedOrder(body: Record<string, unknown>, db: DB): Prom
         { role: 'assistant', content: result.summary || message, created_at: new Date(nowMs + 1).toISOString() },
       ]).then(() => {}, () => {})
 
+      // Unified relay: a CLEAN "done" confirmation also goes to Allie's outbox so
+      // she relays it on WhatsApp in her own voice (chef_outbox → poll_outbox).
+      // needs_review stays Allie's immediate message — it's a decision to make,
+      // not a confirmation. See migrations/20260727_allie_relay_channel.sql.
+      if (!flagged.length) {
+        await db.from('chef_outbox')
+          .insert({ kind: 'handoff_confirm', content: message })
+          .then(() => {}, () => {})
+      }
+
       return json({ status, items_added: itemsAdded, message })
     } catch (e) {
       // Import threw MID-WRITE: some items may already be in inventory, so the
@@ -1990,6 +2000,85 @@ async function handleHoldListHandoff(body: Record<string, unknown>, db: DB): Pro
   }
 }
 
+// ── Chef → Allie outbox poll (AbsurdAssistant / "Allie") ──
+// Payload: { source:'absurdassistant', kind:'poll_outbox' }
+// Allie polls for proactive Chef messages queued in chef_outbox (expiry nudges,
+// the weekly check-in, grocery hand-off confirmations), rewrites each in her own
+// voice, and relays them on WhatsApp. Returns unrelayed rows oldest-first and
+// stamps relayed_at so nothing is relayed twice; if the stamp fails we return
+// NOTHING (a delayed relay beats a doubled one). Prunes relayed rows > 7 days old
+// to keep the table tiny. See migrations/20260727_allie_relay_channel.sql.
+async function handlePollOutbox(db: DB): Promise<Response> {
+  const json = (obj: Record<string, unknown>) =>
+    new Response(JSON.stringify(obj), { headers: { ...CORS, 'Content-Type': 'application/json' } })
+  try {
+    const { data, error } = await db.from('chef_outbox')
+      .select('id, kind, content, created_at')
+      .is('relayed_at', null)
+      .order('created_at', { ascending: true })
+      .limit(20)
+    if (error) return json({ messages: [] })
+    const rows = (data || []) as { id: string; kind: string; content: string; created_at: string }[]
+    if (!rows.length) return json({ messages: [] })
+
+    const ids = rows.map(r => r.id)
+    const { error: markErr } = await db.from('chef_outbox')
+      .update({ relayed_at: new Date().toISOString() }).in('id', ids)
+    if (markErr) return json({ messages: [] })   // don't hand back what we couldn't mark relayed
+
+    // Best-effort prune of long-relayed rows — never blocks the poll.
+    const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString()
+    db.from('chef_outbox').delete().lt('relayed_at', weekAgo).then(() => {}, () => {})
+
+    return json({ messages: rows })
+  } catch (err) {
+    console.error('handlePollOutbox:', err)
+    return json({ messages: [] })
+  }
+}
+
+// ── Isolated Allie↔Chef Q&A channel (AbsurdAssistant / "Allie") ──
+// Payload: { source:'absurdassistant', kind:'chat', message }
+// Runs the SAME tool-calling agent as the PWA (runLoop), but against
+// allie_chat_history — NEVER Manasa's chat_history — so Allie's questions/relays
+// stay out of Manasa's 20-message context window and her in-app log. Plain JSON
+// in/out (not SSE). Retention is time-based: rows older than the window are
+// deleted up front, so the channel self-cleans with no end-of-conversation
+// signal. See migrations/20260727_allie_relay_channel.sql.
+const ALLIE_CHAT_RETENTION_DAYS = 3
+async function handleAllieChat(body: Record<string, unknown>, db: DB): Promise<Response> {
+  const json = (obj: Record<string, unknown>) =>
+    new Response(JSON.stringify(obj), { headers: { ...CORS, 'Content-Type': 'application/json' } })
+  try {
+    const message = String(body.message || '').trim()
+    if (!message) return json({ reply: 'No message received.' })
+
+    // Time-based cleanup FIRST, so the context load below never carries stale turns.
+    const cutoff = new Date(Date.now() - ALLIE_CHAT_RETENTION_DAYS * 86_400_000).toISOString()
+    await db.from('allie_chat_history').delete().lt('created_at', cutoff).then(() => {}, () => {})
+
+    const { data: histRows } = await db.from('allie_chat_history')
+      .select('role, content')
+      .order('created_at', { ascending: false })
+      .limit(20)
+    const history = ((histRows || []) as { role: 'user' | 'assistant'; content: string }[]).reverse()
+
+    const { reply } = await runLoop(message, history, db)
+
+    // Persist into the ISOLATED channel only — Manasa's chat_history is untouched.
+    const nowMs = Date.now()
+    await db.from('allie_chat_history').insert([
+      { role: 'user', content: message, created_at: new Date(nowMs).toISOString() },
+      { role: 'assistant', content: reply, created_at: new Date(nowMs + 1).toISOString() },
+    ]).then(() => {}, () => {})
+
+    return json({ reply })
+  } catch (err) {
+    console.error('handleAllieChat:', err)
+    return json({ reply: '', error: 'Allie chat failed.' })
+  }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS })
 
@@ -2009,7 +2098,9 @@ Deno.serve(async (req: Request) => {
         )
       }
       const adb = createClient(SUPABASE_URL, SUPABASE_KEY)
-      if (body?.kind === 'hold_list') return await handleHoldListHandoff(body as Record<string, unknown>, adb)
+      if (body?.kind === 'poll_outbox') return await handlePollOutbox(adb)
+      if (body?.kind === 'chat')        return await handleAllieChat(body as Record<string, unknown>, adb)
+      if (body?.kind === 'hold_list')   return await handleHoldListHandoff(body as Record<string, unknown>, adb)
       return await handleAutomatedOrder(body as Record<string, unknown>, adb)
     }
 
