@@ -158,6 +158,37 @@ async function moveToFreezerSection(item) {
   return true
 }
 
+// ── Personal "always freeze" rules (this household's habit, not a general rule) ──
+// A few Fridge/Pantry staples always live in OUR freezer, so whenever they turn
+// up in Inventory under Fridge/Pantry they should be auto-filed into the Freezer
+// section (same row, category='freezer' — NOT a Freezer Meal). Reasons: bread
+// keeps far longer frozen, and we grate + freeze cheese to grab a handful at a
+// time. This is deliberately family-specific — it's a note-to-self list, so add
+// a line here whenever something new becomes a freezer regular.
+//
+// Matched against the (English) inventory name, case-insensitive; a hit anywhere
+// in the name is enough. Because the rule is "always", an item you deliberately
+// move back out to Fridge/Pantry will get pulled into the Freezer again on the
+// next Inventory load — that's intended for these staples. If you want a one-off
+// exception, keep it and just don't add it here.
+const ALWAYS_FREEZE = [
+  /\bbread\b/,                 // any bread — loaves, rolls, buns, bröd
+  /\bbröd\b/,
+  /grated\s+cheese/,          // grated/shredded cheese of any type
+  /shredded\s+cheese/,
+  /riven\s+ost/,              // (Swedish "grated cheese", in case a name slips through untranslated)
+  // Add more freezer regulars below, one /pattern/ per line:
+]
+
+// Should this Fridge/Pantry item be auto-filed into the Freezer? (Freezer items
+// and non-food are never candidates.)
+function isAlwaysFrozen(item) {
+  if ((item.category || '') === 'freezer') return false
+  if (item.food_category === 'non_food') return false
+  const n = normName(item.name)
+  return ALWAYS_FREEZE.some(re => re.test(n))
+}
+
 // Loose status ↔ quantity: status is an input convenience that resolves to a
 // real quantity against the item's typical_quantity baseline.
 const STATUS_ORDER = ['out', 'very_low', 'some', 'enough', 'plenty', 'overstock']
@@ -275,7 +306,7 @@ function updateTabBar() {
 async function loadAndShow(tab) {
   updateTabBar()
   contentEl.innerHTML = `<div class="loading-row"><div class="spinner"></div>Loading…</div>`
-  if (tab === 'inventory') { await loadInventory(); await autoSortFreezerMeals(); renderInventory() }
+  if (tab === 'inventory') { await loadInventory(); await autoSortFreezerStorage(); await autoSortFreezerMeals(); renderInventory() }
   else if (tab === 'freezer') { await loadFreezer(); renderFreezer() }
   else if (tab === 'nonfood') { await loadInventory(); renderNonFood() }
   else if (tab === 'grocery') { await loadGrocery(); renderGrocery() }
@@ -400,6 +431,22 @@ async function autoSortFreezerMeals() {
     inventoryData = inventoryData.filter(r => !movedIds.has(r.id))
     toast(`Sorted ${movedIds.size} freezer meal${movedIds.size === 1 ? '' : 's'} into Freezer Meals`)
   }
+}
+
+// Auto-file this household's "always freeze" staples (bread, grated cheese — see
+// ALWAYS_FREEZE) into the Freezer section when they appear under Fridge/Pantry.
+// Same in-place re-file as the manual "Move to Freezer" button (moveToFreezerSection
+// flips item.category to 'freezer' on the row we already hold), so renderInventory
+// just groups it under Freezer. Runs once per item — once filed it's already in
+// the freezer and no longer matches. Mutates inventoryData; call after
+// loadInventory and BEFORE autoSortFreezerMeals (so a newly-frozen item still
+// gets the meal check).
+async function autoSortFreezerStorage() {
+  const staples = inventoryData.filter(isAlwaysFrozen)
+  if (!staples.length) return
+  let moved = 0
+  for (const it of staples) if (await moveToFreezerSection(it)) moved++
+  if (moved) toast(`Filed ${moved} staple${moved === 1 ? '' : 's'} into the Freezer`)
 }
 
 function renderInventory() {
@@ -1070,7 +1117,7 @@ function renderNonFood() {
 
 // ── Inventory form ─────────────────────────────────────────
 let invFormView = null
-async function showInventoryList() { await loadInventory(); await autoSortFreezerMeals(); renderInventory() }
+async function showInventoryList() { await loadInventory(); await autoSortFreezerStorage(); await autoSortFreezerMeals(); renderInventory() }
 // Inventory and Non-food share the same rows, form and gestures (non-food items
 // are inventory rows with food_category='non_food'); re-render whichever tab the
 // action was taken from so an edit/deactivate on the Non-food tab stays there.
@@ -1078,6 +1125,7 @@ function renderActiveTab() { activeTab === 'nonfood' ? renderNonFood() : renderI
 async function showListForActiveTab() {
   await loadInventory()
   if (activeTab === 'nonfood') { renderNonFood(); return }
+  await autoSortFreezerStorage()
   await autoSortFreezerMeals()
   renderInventory()
 }
