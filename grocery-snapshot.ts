@@ -134,6 +134,24 @@ ${listText}`
       .map(it => ({ name: it.name, quantity: 'as needed', category: 'other', note: 'Restock (non-food)' }))
     if (nfNeeded.length) items = [...(items as unknown[]), ...nfNeeded]
 
+    // Bulk-prep breakfast eggs: when a frozen bulk-prep breakfast has run out,
+    // check_breakfast_prep opens a prep_need carrying that batch's egg count (see
+    // migrations/20260728_breakfast_prep.sql). Fold every OPEN need into one Eggs
+    // line so the count rides the next list until she re-preps (which closes it).
+    const { data: preps } = await db.from('prep_needs')
+      .select('label, eggs_needed').is('fulfilled_at', null)
+    const openPreps = ((preps || []) as { label: string; eggs_needed: number }[])
+    if (openPreps.length) {
+      const totalEggs = openPreps.reduce((n, p) => n + (Number(p.eggs_needed) || 0), 0)
+      const detail = openPreps.map(p => `${p.label} (${p.eggs_needed})`).join(', ')
+      items = [...(items as unknown[]), {
+        name: 'Eggs',
+        quantity: String(totalEggs),
+        category: 'dairy',
+        note: `Prep batch${openPreps.length === 1 ? '' : 'es'}: ${detail}`,
+      }]
+    }
+
     const { data: snap, error } = await db.from('grocery_list_snapshot').insert({
       triggered_by: triggeredBy,
       plan_date_range_start: today,
