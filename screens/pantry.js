@@ -144,6 +144,20 @@ async function moveToInventory(entry) {
   return true
 }
 
+// Restock a fridge/pantry component into the Freezer section of Inventory —
+// for things kept in the freezer that are NOT ready-to-heat meals (bread,
+// butter). It's the same inventory row, just re-filed under category='freezer',
+// so it keeps its quantity/history and shows up in the Freezer section.
+// (Distinct from moveToFreezerMeals, which turns an item into a Meals-tab dish.)
+async function moveToFreezerSection(item) {
+  const { error } = await supabase.from('inventory')
+    .update({ category: 'freezer', last_updated_at: new Date().toISOString() })
+    .eq('id', item.id)
+  if (error) return false
+  item.category = 'freezer'
+  return true
+}
+
 // Loose status ↔ quantity: status is an input convenience that resolves to a
 // real quantity against the item's typical_quantity baseline.
 const STATUS_ORDER = ['out', 'very_low', 'some', 'enough', 'plenty', 'overstock']
@@ -708,6 +722,19 @@ function openDeactivateSheet(item) {
       else toast('Move failed', { error: true })
     })
     sheet.append(toMeal)
+  } else {
+    // Fridge/pantry item stored in the freezer (bread, butter): re-file it into
+    // the Freezer section of Inventory. Not a ready-to-heat meal.
+    const toFreezer = document.createElement('button')
+    toFreezer.className = 'act-sheet__btn'
+    toFreezer.textContent = 'Move to Freezer'
+    toFreezer.addEventListener('click', async () => {
+      if (!pressInside) return
+      close()
+      if (await moveToFreezerSection(item)) { toast(`Moved “${item.name}” to Freezer`); showListForActiveTab() }
+      else toast('Move failed', { error: true })
+    })
+    sheet.append(toFreezer)
   }
 
   sheet.append(deact, cancelBtn)
@@ -1247,6 +1274,18 @@ function openInventoryForm(id, defaultCat = 'pantry', defaultFood = 'other') {
         else { toMealBtn.disabled = false; toast('Move failed', { error: true }) }
       })
       danger.appendChild(toMealBtn)
+    } else {
+      // Fridge/pantry item that's actually kept in the freezer (bread, butter):
+      // re-file it under the Freezer section so it's tracked there. Not a meal.
+      const toFreezerBtn = document.createElement('button')
+      toFreezerBtn.className = 'pn-danger-btn'
+      toFreezerBtn.textContent = 'Move to Freezer'
+      toFreezerBtn.addEventListener('click', async () => {
+        toFreezerBtn.disabled = true
+        if (await moveToFreezerSection(item)) { toast(`Moved “${item.name}” to Freezer`); closeInventoryForm() }
+        else { toFreezerBtn.disabled = false; toast('Move failed', { error: true }) }
+      })
+      danger.appendChild(toFreezerBtn)
     }
 
     const hideBtn = document.createElement('button')
