@@ -66,6 +66,7 @@ interface TemplateRule {
   constraint_type: string;
   constraint_value: string;
   label: string;
+  kids_home_only?: boolean;   // lunch rule that applies only on kids-home days (holidays)
 }
 
 interface DaySetting {
@@ -440,7 +441,12 @@ function buildPrompt(
       kids_home: kidsHome,
       weekday_kids_home: kidsHome && dow >= 1 && dow <= 5,   // effort chain (rule 15)
       holiday_relaxed: false,                    // set below (rule 2 relaxation)
-      needs_lunch: !!lunchRule || kidsHome,      // lunch trigger (rule 14)
+      // Lunch trigger (rule 14): a lunch is planned on any kids-home day (which
+      // includes weekends by default), OR when a lunch template applies that
+      // ISN'T kids-home-only (the always-on weekend lunches). A kids-home-only
+      // lunch rule (weekday holiday lunch) never forces a lunch onto a school day
+      // — it only themes the lunch already planned when kids_home is true.
+      needs_lunch: kidsHome || (!!lunchRule && !lunchRule.kids_home_only),
       lunch_template: lunchRule?.label || lunchRule?.constraint_value || null,
       special_type: special?.type || null,
       guest_count: special?.guest_count || 0,
@@ -745,7 +751,7 @@ PLANNING RULES
    guest_allergens, those are HARD constraints for that date only —
    treat them exactly like household allergens (do not suggest any
    recipe whose contains_allergen list intersects with guest_allergens).
-8. needs_lunch days: plan a lunch (light, quick). Weekend lunches follow the lunch template (see WEEKLY TEMPLATE LUNCH). Weekday kids-home lunches follow the weekday kids-home effort chain (rule 15).
+8. needs_lunch days: plan a lunch (light, quick). If the day has a lunch_template, honour it (its style/protein theme) — this applies to weekend lunches AND to weekday kids-home (holiday) lunches when a lunch template is set for that day. Weekday kids-home lunches ALSO follow the weekday kids-home effort chain (rule 15), so keep them quick/kid-safe within the theme. A weekday with no lunch_template just follows the effort chain.
 9. Mark one dinner per week as batch_cook if recipe is freezable —
    this builds the freezer stash.
 10. Prefer dump recipes on days adjacent to commute days too

@@ -72,6 +72,12 @@ function buildRow(r, ruled) {
   sub.textContent = [r.constraint_type, r.constraint_value].filter(Boolean).join(': ')
   centre.append(main, sub)
   row.appendChild(centre)
+  if (r.kids_home_only) {
+    const badge = document.createElement('span')
+    badge.className = 'su-badge su-badge-kids'
+    badge.textContent = 'kids-home'
+    row.appendChild(badge)
+  }
   if (r.is_hard_constraint) {
     const badge = document.createElement('span')
     badge.className = 'su-badge su-badge-hard'
@@ -113,6 +119,22 @@ function openForm(id) {
     mkField('Label (optional)', labelInp),
   )
 
+  // Kids-home-only: for LUNCH rules that should only be planned on kids-home
+  // days (holidays/breaks). Weekday lunches only happen when the kids are off
+  // school, so a weekday lunch theme must be flagged here or the planner would
+  // put a lunch on normal school days too. Weekend lunches: leave OFF (always
+  // planned). Shown only for lunch — irrelevant to dinner/breakfast/snack.
+  const kidsHomeWrap = document.createElement('div')
+  kidsHomeWrap.appendChild(mkCheckboxRow('Only when kids are home (holidays)', r?.kids_home_only ?? false, 'kidsHomeCheck'))
+  const khHint = document.createElement('p')
+  khHint.className = 'su-hint'
+  khHint.textContent = 'Weekday lunches are only planned on kids-home days. Leave off for weekend lunches (always planned).'
+  kidsHomeWrap.appendChild(khHint)
+  const syncKidsHome = () => { kidsHomeWrap.style.display = mealSelEl.value === 'lunch' ? '' : 'none' }
+  mealSelEl.addEventListener('change', syncKidsHome)
+  syncKidsHome()
+  form.appendChild(kidsHomeWrap)
+
   form.appendChild(mkCheckboxRow('Hard constraint (must follow)', r?.is_hard_constraint ?? false, 'hardCheck'))
   form.appendChild(mkCheckboxRow('Active', r?.active ?? true, 'activeCheck'))
 
@@ -126,6 +148,8 @@ function openForm(id) {
       constraint_value:  conInp.value.trim() || null,
       label:             labelInp.value.trim() || null,
       is_hard_constraint: form.querySelector('#hardCheck').checked,
+      // Only meaningful for lunch; the field is hidden (and stays false) otherwise.
+      kids_home_only:    mealSelEl.value === 'lunch' && form.querySelector('#kidsHomeCheck').checked,
       active:            form.querySelector('#activeCheck').checked,
     }
     save.disabled = true; save.textContent = 'Saving…'

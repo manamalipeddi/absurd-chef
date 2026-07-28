@@ -2779,6 +2779,7 @@ body {
 }
 .su-badge { font-size: 11.7px; border-radius: 4px; padding: 2px 6px; flex-shrink: 0; }
 .su-badge-hard { background: #fee2e2; color: #991b1b; }
+.su-badge-kids { background: #e0e7ff; color: #3730a3; }
 
 /* Form ───────────────────────────────────────────────────── */
 /* Add/edit form screens render as a light surface panel — NOT bare on the
