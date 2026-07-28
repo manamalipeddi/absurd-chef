@@ -1918,7 +1918,7 @@ async function handleAutomatedOrder(body: Record<string, unknown>, db: DB): Prom
 
     try {
       const result = await toolImportGroceryOrder({ raw_text: emailBody }, db) as {
-        error?: string; updated?: number; created?: string[]; freezer_meals_added?: string[]; flagged?: string[]; summary?: string
+        error?: string; updated?: number; created?: string[]; freezer_meals_added?: string[]; non_food_added?: string[]; flagged?: string[]; summary?: string
       }
       if (result.error) {
         // Nothing was written (the tool only errors before writing) — release
@@ -1926,7 +1926,10 @@ async function handleAutomatedOrder(body: Record<string, unknown>, db: DB): Prom
         await db.from('processed_orders').delete().eq('id', claimId)
         return json({ status: 'error', items_added: 0, message: `Order ${orderId}: ${result.error}` })
       }
-      const itemsAdded = (result.updated || 0) + (result.created?.length || 0) + (result.freezer_meals_added?.length || 0)
+      // Count EVERY destination the order wrote to — non-food included (it was
+      // previously omitted, so items_added undercounted any order with non-food).
+      const itemsAdded = (result.updated || 0) + (result.created?.length || 0)
+        + (result.freezer_meals_added?.length || 0) + (result.non_food_added?.length || 0)
       const flagged = result.flagged || []
       const status = flagged.length ? 'needs_review' : 'added'
       const message = flagged.length
@@ -2196,14 +2199,14 @@ Deno.serve(async (req: Request) => {
               if (!claim.error) claimId = (claim.data as { id: string }).id
             }
             const result = await toolImportGroceryOrder({ raw_text: rawText }, db, emit)
-            const r = result as { summary?: string; error?: string; updated?: number; created?: string[]; freezer_meals_added?: string[]; flagged?: string[] }
+            const r = result as { summary?: string; error?: string; updated?: number; created?: string[]; freezer_meals_added?: string[]; non_food_added?: string[]; flagged?: string[] }
             reply = r.summary || r.error || 'Order processed.'
             toolCalls = [{ name: 'import_grocery_order', input: { raw_text: '[verbatim order text]' } }]
             toolResults = [{ tool: 'import_grocery_order', result }]
             if (claimId) {
               await db.from('processed_orders').update({
                 status: r.error ? 'error' : (r.flagged?.length ? 'needs_review' : 'added'),
-                items_added: (r.updated || 0) + (r.created?.length || 0) + (r.freezer_meals_added?.length || 0),
+                items_added: (r.updated || 0) + (r.created?.length || 0) + (r.freezer_meals_added?.length || 0) + (r.non_food_added?.length || 0),
                 summary: (r.summary || r.error || '').slice(0, 2000),
               }).eq('id', claimId)
             }
