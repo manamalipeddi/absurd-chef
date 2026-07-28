@@ -280,13 +280,18 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
       .from("plan_edits")
       .select("previous_recipe_id, new_recipe_id, edit_source")
       .gte("plan_date", addDays(startDate, -90)),
-    // Habit evidence (rule 20): ~16 weeks of history with each day's context
-    // flags, to learn what the family ACTUALLY eats per circumstance. Only
-    // confirmed outcomes carry weight — see buildHabitEvidence.
+    // Habit evidence (rule 20): history with each day's context flags, to learn
+    // what the family ACTUALLY eats per circumstance. Loaded over a LONG window
+    // (~18 months) — buildHabitEvidence keeps only the recent 16 weeks for
+    // everyday contexts, but lets the seasonal kids-home/holiday context learn
+    // from the whole window so vacation habits survive the months between
+    // vacations. notes/actual_notes/freezer_stash_id let a freezer pull count as
+    // a real signal (its dish name lives in notes/actual_notes). Only confirmed
+    // outcomes carry weight — see buildHabitEvidence.
     supabase
       .from("meal_plans")
-      .select("plan_date, meal_type, recipe_id, actually_made, actual_recipe_id, is_commute_day, is_holiday, is_preschool_closed, guest_count")
-      .gte("plan_date", addDays(startDate, -112))
+      .select("plan_date, meal_type, recipe_id, actually_made, actual_recipe_id, notes, actual_notes, freezer_stash_id, is_commute_day, is_holiday, is_preschool_closed, guest_count")
+      .gte("plan_date", addDays(startDate, -540))
       .lt("plan_date", startDate)
       .in("meal_type", ["dinner", "lunch"]),
     // gintas_away isn't denormalized onto meal_plans — join via day_settings.
@@ -637,32 +642,65 @@ function buildPrompt(
     if (gintasAwayDays.has(r.plan_date)) return `gintas-away ${r.meal_type}`;
     return `${DOW_NAMES[dow]} ${r.meal_type}`;
   };
-  const habitCounts = new Map<string, Map<string, number>>();   // bucket → recipeId → n
+  const habitCounts = new Map<string, Map<string, number>>();   // bucket → key → n
   const habitTotals = new Map<string, number>();                // bucket → confirmed meals
+  const habitKeyName = new Map<string, string>();               // key → display name
+  const freezerPulls = new Map<string, number>();               // bucket → freezer-pull count
+  // Kids-home/holiday learns from the FULL loaded window (seasonal — must survive
+  // the months between vacations); every other context stays on the recent 16
+  // weeks so ordinary weeks reflect the current rotation.
+  const recentCutoff = addDays(startDate, -112);
+  const normName = (s: string) => s.toLowerCase().trim();
   for (const r of (ctx.mealHistory || []) as {
     plan_date: string; meal_type: string; recipe_id: string | null;
     actually_made: boolean | null; actual_recipe_id: string | null;
+    notes: string | null; actual_notes: string | null; freezer_stash_id: string | null;
     is_commute_day: boolean | null; is_holiday: boolean | null;
     is_preschool_closed: boolean | null; guest_count: number | null;
   }[]) {
-    const eatenId = r.actual_recipe_id || (r.actually_made === true ? r.recipe_id : null);
-    if (!eatenId || !safeNameById.has(eatenId)) continue;   // unconfirmed / unsafe / retired → no signal
     const bucket = habitBucketOf(r);
+    const isKidsHome = bucket.startsWith("weekday-kids-home");
+    if (!isKidsHome && r.plan_date < recentCutoff) continue;   // everyday contexts: recent 16 weeks only
+
+    let key: string | null = null, name: string | null = null, isFreezer = false;
+    if (r.freezer_stash_id) {
+      // A freezer pull on a PAST day is confirmed by the physical portion draw
+      // (not an unchallenged AI suggestion). It reads as the "Other" placeholder,
+      // so credit the specific dish by NAME (stored on the slot's notes) and
+      // count it toward this context's freezer-lean.
+      const dish = (r.actual_notes || r.notes || "").trim();
+      if (dish) { key = "freezer:" + normName(dish); name = "🧊 " + dish; isFreezer = true; }
+    } else {
+      const eatenId = r.actual_recipe_id || (r.actually_made === true ? r.recipe_id : null);
+      if (eatenId && safeNameById.has(eatenId)) { key = eatenId; name = safeNameById.get(eatenId)!; }
+    }
+    if (!key) continue;   // unconfirmed / unsafe / retired → no signal
     habitTotals.set(bucket, (habitTotals.get(bucket) || 0) + 1);
     if (!habitCounts.has(bucket)) habitCounts.set(bucket, new Map());
-    const m = habitCounts.get(bucket)!;
-    m.set(eatenId, (m.get(eatenId) || 0) + 1);
+    habitCounts.get(bucket)!.set(key, (habitCounts.get(bucket)!.get(key) || 0) + 1);
+    habitKeyName.set(key, name!);
+    if (isFreezer) freezerPulls.set(bucket, (freezerPulls.get(bucket) || 0) + 1);
   }
   const habitEvidence: { context: string; recipe: string; made: number; of: number }[] = [];
   for (const [bucket, counts] of habitCounts) {
     const total = habitTotals.get(bucket) || 0;
-    for (const [id, n] of counts) {
+    for (const [key, n] of counts) {
       if (n >= 3 && n / total >= 0.5)
-        habitEvidence.push({ context: bucket, recipe: safeNameById.get(id)!, made: n, of: total });
+        habitEvidence.push({ context: bucket, recipe: habitKeyName.get(key)!, made: n, of: total });
     }
   }
   habitEvidence.sort((a, b) => b.made - a.made);
   const habits = habitEvidence.slice(0, 12);
+  // Freezer-lean: contexts where the family leans on the freezer even if no single
+  // dish dominates — surfaced so the planner schedules / leaves room for a freezer
+  // meal there rather than a fresh cook.
+  const freezerLean: { context: string; freezer_pulls: number; of: number }[] = [];
+  for (const [bucket, n] of freezerPulls) {
+    const total = habitTotals.get(bucket) || 0;
+    if (n >= 3 && n / total >= 0.4)
+      freezerLean.push({ context: bucket, freezer_pulls: n, of: total });
+  }
+  freezerLean.sort((a, b) => b.freezer_pulls - a.freezer_pulls);
 
   return `You must respond with valid JSON only. No preamble, no explanation, no prose. Your entire response must be parseable by JSON.parse(). If you cannot complete the task, return a JSON error object: {"error": "reason"}. Never return plain text under any circumstances.
 
@@ -835,9 +873,19 @@ PLANNING RULES
     one. When you place one, the note reads like a deliberate choice:
     "Trying this one — calm Tuesday, good night for an experiment."
 20. HABITS (see HABITS below — confirmed real behaviour, never plans): each
-    entry means "in this context the family actually ate this recipe made-of-of
-    confirmed times over ~16 weeks". Match a slot to a context by checking the
-    day's fields IN THIS ORDER (a day has exactly one habit context):
+    entry means "in this context the family actually ate this recipe, <made> of
+    <of> confirmed times". The everyday contexts use the recent ~16 weeks; the
+    weekday-kids-home context uses a MUCH longer window (seasonal holidays recur
+    only a few times a year, so its habits are kept far longer) — treat a
+    kids-home habit as current even if the last kids-home stretch was months ago.
+    A habit recipe prefixed with 🧊 is a FREEZER MEAL the family pulls in that
+    context (by dish name, since it rides the "Other" placeholder): satisfy it by
+    assigning a matching freezer_stash meal, or if none is stocked, leave the slot
+    as a light cook and note that a freezer meal usually fills it. Separately,
+    FREEZER LEAN entries mark contexts where the family routinely pulls SOME
+    freezer meal (no single dish dominating) — there, prefer scheduling a freezer
+    meal or a batch-cook over a fresh cook. Match a slot to a context by checking
+    the day's fields IN THIS ORDER (a day has exactly one habit context):
     guest_count > 0 → "guest-day"; is_commute → "commute-day";
     weekday_kids_home → "weekday-kids-home"; special_type = "gintas_away" →
     "gintas-away"; otherwise the day_name ("Fri dinner" matches a Friday's
@@ -888,6 +936,9 @@ ${JSON.stringify(preferenceEvidence)}
 
 HABITS (confirmed actual outcomes per context — see rule 20; empty = no habit signal yet, follow normal rules)
 ${JSON.stringify(habits)}
+
+FREEZER LEAN (contexts where the family usually pulls a freezer meal — see rule 20; empty = no signal yet)
+${JSON.stringify(freezerLean)}
 
 LOCKED (immovable — keep these exactly; see rule 13)
 ${JSON.stringify(lockedList, null, 2)}
