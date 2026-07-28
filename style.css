@@ -3876,7 +3876,10 @@ body {
 /* Standard floating action button (create-new entry point, every list screen) */
 .fab {
   position: fixed;
-  right: 18px;
+  /* Align to the 480px app column's right edge, not the viewport corner, so on
+     wide desktop screens it sits with the content instead of stranded far right.
+     On phones (viewport < 480px) the max() falls back to the plain 18px inset. */
+  right: max(18px, calc((100% - 480px) / 2 + 18px));
   bottom: calc(var(--nav-h) + var(--safe-bottom) + 18px);
   width: 56px;
   height: 56px;
