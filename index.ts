@@ -204,6 +204,7 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
     lockedSlotsRes,
     familyRes,
     invExpiringRes,
+    inStockRes,
     recipeIngRes,
     planEditsRes,
     mealHistoryRes,
@@ -269,6 +270,15 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
       .not("expiry_date", "is", null)
       .gte("expiry_date", startDate).lte("expiry_date", endDate)
       .order("expiry_date"),
+    // In-stock proteins/mains to build meals AROUND (rule 18b — autonomy: use up
+    // what's on hand, not just 2-day-critical items). No expiry filter, so a
+    // whole chicken with no date or a pulled pork weeks out are still visible —
+    // the whole point is the generator can't currently see them.
+    supabase
+      .from("inventory")
+      .select("name, food_category, category, quantity, status, expiry_date")
+      .eq("active", true)
+      .in("food_category", ["meat", "fish"]),
     // Ingredient lists to match an expiring item to recipes that use it.
     supabase
       .from("recipe_ingredients")
@@ -314,6 +324,7 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
     lockedSlots: lockedSlotsRes.data || [],
     family: familyRes.data || [],
     inventoryExpiring: invExpiringRes.data || [],
+    inStockProteins: inStockRes.data || [],
     recipeIngredients: recipeIngRes.data || [],
     planEdits: planEditsRes.data || [],
     mealHistory: mealHistoryRes.data || [],
@@ -593,6 +604,20 @@ function buildPrompt(
   // the generator never sees it and plans normally.
   const criticalExpiring = expiringIngredients.filter(e => e.urgency === "critical");
 
+  // In-stock proteins/mains to build meals AROUND (rule 18b). Skips empties;
+  // sorts soonest-to-expire first (undated last) so the generator sees the most
+  // urgent-to-use item at the top. This is the fix for "the plan ignores the
+  // chicken/pulled pork in my fridge" — those were invisible before.
+  const anchorStock = (ctx.inStockProteins as { name: string; category: string | null; quantity: number | null; status: string | null; expiry_date: string | null }[])
+    .filter(it => !(Number(it.quantity) === 0 || it.status === "out"))
+    .map(it => ({
+      name: it.name,
+      where: it.category,                                              // fridge | freezer | pantry
+      quantity: it.quantity,
+      days_until: it.expiry_date ? daysBetween(startDate, it.expiry_date) : null,
+    }))
+    .sort((a, b) => (a.days_until ?? 9999) - (b.days_until ?? 9999));
+
   // ── Passive preference evidence (rule 2): recipes repeatedly swapped OUT of
   //    the plan vs. repeatedly picked IN by hand. Threshold ≥2 so a one-off
   //    swap never becomes a "signal"; capped at 10 each to keep the prompt lean. ──
@@ -866,6 +891,27 @@ PLANNING RULES
       slot. Add the item to "unresolved": "[item] expires [date] — no matching
       recipe. Ask the Absurd Chef to suggest one."
     - Every slot not filled for a critical-expiry reason keeps "expiry_override": false.
+18b. USE WHAT'S IN STOCK — AUTONOMY (see IN-STOCK PROTEINS & MAINS): you are
+    given the proteins/mains already in the fridge/freezer/pantry. Treat using
+    these up as a FIRST-CLASS goal, balanced against the template — the template
+    is a BROAD GUIDELINE, not a mandate; you MAY deviate from it to cook what's on
+    hand. Think for yourself:
+    - Anchor meals on stocked proteins, soonest-to-expire first (an undated FRESH
+      meat like a whole chicken is perishable — treat it as use-within-days).
+      Prefer a stocked protein over a template recipe that would need shopping.
+    - Slot a protein where the day's theme fits (a chicken → a meat/white-meat or
+      flexible day; a ready-to-heat main → an easy lunch), but do NOT force meat
+      onto a clearly veggie/bean-templated day unless it's genuinely at-risk.
+    - THINK ACROSS MEALS: one large protein can anchor TWO meals — e.g. a whole
+      chicken slow-cooked or roasted once (hands-off), then its shredded leftovers
+      become tacos / soup / fried rice / sandwiches another day. Plan both slots
+      and say so. Ready-to-heat mains (e.g. pulled pork) are a near-zero-effort
+      kids-home lunch or dinner.
+    - On kids-home days prefer hands-off methods (slow cooker, sheet pan, one-pot).
+    - When you deviate from the template to use stock, put the reason in the note
+      ("roasting the whole chicken before it turns — Fri's leftovers become
+      tacos"). This is NOT the critical-expiry override (rule 18) — leave
+      expiry_override false; it's ordinary good judgement.
 19. NOVELTY BUDGET: at most ONE recipe with never_made = true may appear per
     calendar week of the plan, and only on a CALM day: not a commute day, not
     weekday_kids_home, and no guests. All other slots use proven recipes
@@ -922,6 +968,9 @@ ${JSON.stringify(recipeList, null, 2)}
 
 CRITICAL EXPIRING (meat/fish within 2 days — see rule 18; empty = nothing critical)
 ${JSON.stringify(criticalExpiring, null, 2)}
+
+IN-STOCK PROTEINS & MAINS (build meals AROUND these — see rule 18b; where = fridge/freezer/pantry; days_until = null when undated; soonest first)
+${JSON.stringify(anchorStock, null, 2)}
 
 FREEZER STASH (available now)
 ${JSON.stringify(stashList, null, 2)}
