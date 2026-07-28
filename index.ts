@@ -278,7 +278,7 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
       .from("inventory")
       .select("name, food_category, category, quantity, status, expiry_date")
       .eq("active", true)
-      .in("food_category", ["meat", "fish"]),
+      .in("food_category", ["meat", "seafood"]),   // 'seafood' is the fish convention, not 'fish'
     // Ingredient lists to match an expiring item to recipes that use it.
     supabase
       .from("recipe_ingredients")
