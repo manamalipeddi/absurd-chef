@@ -1390,7 +1390,10 @@ async function toolUpdateActualOutcome(input: Record<string, unknown>, db: DB) {
   const actualRecipeId = (input.actual_recipe_id as string) || null
   const actualNotes    = (input.actual_notes as string) || null
 
-  if (plan_date >= today()) return { success: false, error: 'Actual outcomes can only be logged for past dates.' }
+  // Block only STRICTLY-future dates. "Today" is loggable in the evening — its
+  // meals have happened — which the Sunday Plan Fit flow relies on to confirm
+  // Sunday's own slots before the 19:30 scoring.
+  if (plan_date > today()) return { success: false, error: "Actual outcomes can't be logged for a future date." }
 
   const { data: row } = await db.from('meal_plans')
     .select('recipe_id').eq('plan_date', plan_date).eq('meal_type', meal_type).maybeSingle()
