@@ -1264,12 +1264,27 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
     items: { fingerprint, count: toUpdate.length + freezerMeals.length + nonFood.length },
   }).then(() => {}, () => {})
 
-  const parts: string[] = [`Done. Updated inventory for ${updatedNames.length} item${updatedNames.length === 1 ? '' : 's'}.`]
-  if (createdNames.length)   parts.push(`${createdNames.length} new item${createdNames.length === 1 ? '' : 's'} added: ${createdNames.join(', ')}.`)
-  if (freezerAdded.length)   parts.push(`Added ${freezerAdded.length} item${freezerAdded.length === 1 ? '' : 's'} to Freezer Meals: ${freezerAdded.join(', ')}. If anything landed in the wrong place, remove it from Freezer Meals or Pantry directly.`)
-  if (cancelled.length)      parts.push(`${cancelled.length} fully cancelled and skipped: ${cancelled.map(g => g.name).join(', ')}.`)
-  if (nonFoodAdded.length)   parts.push(`${nonFoodAdded.length} non-food item${nonFoodAdded.length === 1 ? '' : 's'} added to the Non-food list: ${nonFoodAdded.join(', ')}.`)
-  if (flagged.length)        parts.push(`${flagged.length} flagged for review: ${flagged.join('; ')}.`)
+  // Lead with a total + category breakdown so the report answers "how many
+  // items were in the order, and where did each go?" — total counts every parsed
+  // product line across all destinations (food, freezer meals, non-food). The
+  // breakdown always shows the counts (incl. non-food, even when 0 non-food
+  // means "no toiletries/cleaning in this order"), then the names follow.
+  const totalParsed = food.length + freezerMeals.length + nonFood.length
+  const breakdown: string[] = [`${updatedNames.length} restocked`]
+  if (createdNames.length) breakdown.push(`${createdNames.length} new`)
+  if (freezerAdded.length) breakdown.push(`${freezerAdded.length} freezer meal${freezerAdded.length === 1 ? '' : 's'}`)
+  breakdown.push(`${nonFoodAdded.length} non-food`)
+  if (cancelled.length)    breakdown.push(`${cancelled.length} cancelled`)
+  if (flagged.length)      breakdown.push(`${flagged.length} flagged`)
+
+  const parts: string[] = [
+    `📦 ${totalParsed} item${totalParsed === 1 ? '' : 's'} in the order → ${breakdown.join(' · ')}.`,
+  ]
+  if (createdNames.length)   parts.push(`New food: ${createdNames.join(', ')}.`)
+  if (freezerAdded.length)   parts.push(`Freezer Meals: ${freezerAdded.join(', ')}. If anything landed in the wrong place, remove it from Freezer Meals or Pantry directly.`)
+  if (nonFoodAdded.length)   parts.push(`Non-food: ${nonFoodAdded.join(', ')}.`)
+  if (cancelled.length)      parts.push(`Cancelled/skipped: ${cancelled.map(g => g.name).join(', ')}.`)
+  if (flagged.length)        parts.push(`Flagged for review: ${flagged.join('; ')}.`)
 
   return {
     parsed_items: food.length,
@@ -1931,11 +1946,15 @@ async function handleAutomatedOrder(body: Record<string, unknown>, db: DB): Prom
 
       // Unified relay: a CLEAN "done" confirmation also goes to Allie's outbox so
       // she relays it on WhatsApp in her own voice (chef_outbox → poll_outbox).
-      // needs_review stays Allie's immediate message — it's a decision to make,
-      // not a confirmation. See migrations/20260727_allie_relay_channel.sql.
+      // Relay the FULL breakdown (total + per-category counts), not just a count,
+      // so the WhatsApp report shows how many items went where — including how
+      // many non-food. needs_review stays Allie's immediate message — it's a
+      // decision to make, not a confirmation.
       if (!flagged.length) {
+        const retailerLabel = retailer ? retailer.charAt(0).toUpperCase() + retailer.slice(1) + ' ' : ''
+        const confirmContent = `${retailerLabel}order ${orderId} processed into AbsurdChef.\n${result.summary || message}`
         await db.from('chef_outbox')
-          .insert({ kind: 'handoff_confirm', content: message })
+          .insert({ kind: 'handoff_confirm', content: confirmContent })
           .then(() => {}, () => {})
       }
 
