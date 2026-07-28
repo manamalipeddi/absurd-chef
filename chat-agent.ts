@@ -1594,6 +1594,45 @@ async function toolTriggerReplan(input: Record<string, unknown>) {
   }
 }
 
+// After a grocery import brings in PERISHABLES (meat/fish/produce), aggressively
+// re-plan upcoming meals so they get used before they spoil — the same full_14
+// rebuild as the manual Regenerate button: the plan-generator's protected-row
+// guard keeps locked/manual/cooked/today slots, and rule 18b makes using the
+// fresh stock a first-class goal. Only perishable-bearing orders trigger it
+// (pantry/non-food restocks don't). Fired in the BACKGROUND (EdgeRuntime.waitUntil)
+// so the import response isn't blocked; notifies in-app + via Allie on success.
+// `since` = an ISO timestamp captured BEFORE the import wrote inventory.
+async function replanAroundPerishables(db: DB, since: string): Promise<void> {
+  try {
+    const { data: fresh } = await db.from('inventory')
+      .select('name')
+      .eq('active', true)
+      .in('food_category', ['meat', 'fish', 'produce'])
+      .gte('last_updated_at', since)
+      .order('last_updated_at', { ascending: false })
+      .limit(8)
+    const names = ((fresh || []) as { name: string }[]).map(r => r.name)
+    if (!names.length) return   // no perishables in this order → nothing to re-plan for
+
+    const run = fetch(`${FUNCTIONS_URL}/plan-generator`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SUPABASE_KEY}` },
+      body: JSON.stringify({ mode: 'full_14', start_date: getMondayOf(today()), triggered_by: 'manual' }),
+    }).then(async (r) => {
+      if (!r.ok) return
+      const list = names.slice(0, 4).join(', ') + (names.length > 4 ? ', …' : '')
+      const msg = `🧑‍🍳 New groceries in — I re-planned your upcoming meals to use the fresh perishables (${list}) before they spoil. Locked and already-cooked days were kept. Check the Plan tab.`
+      await db.from('chat_history').insert({ role: 'assistant', content: msg }).then(() => {}, () => {})
+      await db.from('chef_outbox').insert({ kind: 'plan_replan', content: msg }).then(() => {}, () => {})
+    }).catch(() => {})
+
+    // Keep the background re-plan + notify alive past the import response.
+    const er = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime
+    if (er?.waitUntil) er.waitUntil(run)
+    else await run
+  } catch (_e) { /* best-effort — a re-plan failure never breaks the import */ }
+}
+
 // ── Plan verification pass ────────────────────────────────
 
 type ToolCall   = { name: string; input: Record<string, unknown> }
@@ -1885,6 +1924,7 @@ async function allieKeyValid(header: string | null): Promise<boolean> {
 async function handleAutomatedOrder(body: Record<string, unknown>, db: DB): Promise<Response> {
   const json = (obj: Record<string, unknown>) =>
     new Response(JSON.stringify(obj), { headers: { ...CORS, 'Content-Type': 'application/json' } })
+  const importStart = new Date().toISOString()   // for the perishable-replan detection
   try {
     const emailBody = String(body.email_body || '')
     if (!emailBody.trim()) {
@@ -1968,6 +2008,10 @@ async function handleAutomatedOrder(body: Record<string, unknown>, db: DB): Prom
           .insert({ kind: 'handoff_confirm', content: confirmContent })
           .then(() => {}, () => {})
       }
+
+      // Perishables in this order → aggressively re-plan upcoming meals to use
+      // them before they spoil (background; only fires if meat/fish/produce came in).
+      if (itemsAdded > 0) await replanAroundPerishables(db, importStart)
 
       return json({ status, items_added: itemsAdded, message })
     } catch (e) {
@@ -2187,6 +2231,7 @@ Deno.serve(async (req: Request) => {
           let toolResults: unknown[] = []
 
           const runImport = async (rawText: string) => {
+            const importStart = new Date().toISOString()   // for the perishable-replan detection
             // Claim the order id in the shared ledger BEFORE writing (see
             // "Processed-order ledger" above). If Allie already handed this
             // order off — or it was pasted before — the unique index rejects
@@ -2218,6 +2263,9 @@ Deno.serve(async (req: Request) => {
                 summary: (r.summary || r.error || '').slice(0, 2000),
               }).eq('id', claimId)
             }
+            // Perishables in this paste → background re-plan around them (only
+            // fires if meat/fish/produce actually came in).
+            if (!r.error) await replanAroundPerishables(db, importStart)
           }
 
           // A short affirmative right after a paused large order = the user
