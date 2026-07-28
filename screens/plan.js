@@ -838,7 +838,7 @@ function showPicker(date, slotType, opts = {}) {
         list.appendChild(groupHeader('Freezer'))
         for (const f of fHits) {
           const emoji = f.source === 'store_bought' ? '🛒' : '❄️'
-          const label = `Freezer: ${f.recipe_name} <span class="picker-row__portions">(${f.portions} portion${Number(f.portions) === 1 ? '' : 's'})</span>`
+          const label = `<span class="picker-row__cat">Freezer</span>${f.recipe_name} <span class="picker-row__portions">(${f.portions} portion${Number(f.portions) === 1 ? '' : 's'})</span>`
           list.appendChild(pickRow(emoji, label, () => {
             closeModal(overlay)
             openFreezerQtyPrompt(f, date, slotType, isActual)

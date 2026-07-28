@@ -879,8 +879,8 @@ body {
   background: var(--bg);
   border-bottom: 1px solid var(--border);
 }
-/* Freezer items appear above recipes; portions count is dimmed. */
-.picker-row--freezer .picker-row__name { font-weight: 600; }
+/* Freezer items appear above recipes, styled like recipe rows (all-caps
+   "FREEZER" prefix via picker-row__cat, normal-weight name); portions dimmed. */
 .picker-row__portions { font-weight: 500; color: var(--text-muted); font-size: 13px; margin-left: 4px; }
 
 /* Freezer quantity prompt (stepper + Confirm). */
