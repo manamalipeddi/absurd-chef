@@ -1269,7 +1269,13 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
   // product line across all destinations (food, freezer meals, non-food). The
   // breakdown always shows the counts (incl. non-food, even when 0 non-food
   // means "no toiletries/cleaning in this order"), then the names follow.
+  // Distinct PRODUCTS (one inventory row each) vs total UNITS (sum of the net
+  // per-product quantities). Retailers like Mathem count units in the basket
+  // (e.g. "87"), while inventory tracks products (e.g. "54") — showing both
+  // makes the two reconcile at a glance instead of looking like lost items.
   const totalParsed = food.length + freezerMeals.length + nonFood.length
+  const totalUnits = [...toUpdate, ...freezerMeals, ...nonFood]
+    .reduce((n, g) => n + (Number(g.net) || 0), 0)
   const breakdown: string[] = [`${updatedNames.length} restocked`]
   if (createdNames.length) breakdown.push(`${createdNames.length} new`)
   if (freezerAdded.length) breakdown.push(`${freezerAdded.length} freezer meal${freezerAdded.length === 1 ? '' : 's'}`)
@@ -1278,7 +1284,7 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
   if (flagged.length)      breakdown.push(`${flagged.length} flagged`)
 
   const parts: string[] = [
-    `📦 ${totalParsed} item${totalParsed === 1 ? '' : 's'} in the order → ${breakdown.join(' · ')}.`,
+    `📦 ${totalParsed} product${totalParsed === 1 ? '' : 's'} (${totalUnits} unit${totalUnits === 1 ? '' : 's'}) in the order → ${breakdown.join(' · ')}.`,
   ]
   if (createdNames.length)   parts.push(`New food: ${createdNames.join(', ')}.`)
   if (freezerAdded.length)   parts.push(`Freezer Meals: ${freezerAdded.join(', ')}. If anything landed in the wrong place, remove it from Freezer Meals or Pantry directly.`)
@@ -1288,6 +1294,8 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
 
   return {
     parsed_items: food.length,
+    total_products: totalParsed,
+    total_units: totalUnits,
     updated: updatedNames.length,
     created: createdNames,
     freezer_meals_added: freezerAdded,
