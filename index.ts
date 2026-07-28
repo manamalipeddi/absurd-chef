@@ -1297,6 +1297,7 @@ async function writePlan(
   if (startDate) {
     const endDate = dates.length ? dates.slice().sort()[dates.length - 1] : addDays(startDate, 13);
     await postExpiryNudge(supabase, startDate, endDate);
+    await postPlanGapNudge(supabase, startDate, endDate);
   }
 }
 
@@ -1410,6 +1411,52 @@ async function postExpiryNudge(
     const content = `⏳ Heads-up — a few things are expiring soon: ${list}${more}. Want me to work one into the plan? I can suggest a recipe that uses them up (or make a new one) and slot it wherever suits — just say the word.`;
     await supabase.from("chat_history").insert({ role: "assistant", content });
     await enqueueOutbox(supabase, "expiry_nudge", content);
+  } catch (_e) {
+    /* best-effort — a nudge must never block or fail plan generation */
+  }
+}
+
+// Proactive plan-gap heads-up: after the plan is written, flag upcoming
+// dinner/lunch slots left WITHOUT a recipe (an open themed slot where no existing
+// recipe fit) so Manasa can have the Absurd Chef suggest + add an easy
+// kid-friendly one. Deliberate open slots (chef's-choice / leftovers) are
+// skipped. The recommend-and-approve flow runs in chat (see chat-agent PLAN GAPS).
+async function postPlanGapNudge(
+  supabase: ReturnType<typeof createClient>,
+  startDate: string,
+  endDate: string,
+) {
+  try {
+    const { data } = await supabase
+      .from("meal_plans")
+      .select("plan_date, meal_type, notes, actually_made, actual_recipe_id, actual_notes")
+      .gte("plan_date", startDate).lte("plan_date", endDate)
+      .in("meal_type", ["dinner", "lunch"])
+      .is("recipe_id", null)
+      .order("plan_date");
+    const rows = ((data as { plan_date: string; meal_type: string; notes: string | null; actually_made: boolean | null; actual_recipe_id: string | null; actual_notes: string | null }[]) || [])
+      .filter((r) => r.actually_made == null && r.actual_recipe_id == null && r.actual_notes == null)   // not already resolved
+      .filter((r) => !/chef'?s choice|leftover/i.test(r.notes || ""));                                   // skip deliberate open slots
+    if (!rows.length) return;
+
+    const since = new Date(Date.now() - 20 * 3600 * 1000).toISOString();
+    const { data: recent } = await supabase
+      .from("chat_history").select("id")
+      .eq("role", "assistant").ilike("content", "🍳 A few upcoming meals%")
+      .gte("created_at", since).limit(1);
+    if (recent && recent.length) return;   // already nudged recently
+
+    const dayName = (d: string) => ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][new Date(d + "T00:00:00Z").getUTCDay()];
+    const themeOf = (n: string | null) => {
+      const seg = (n || "").split("—").pop() || "";              // last em-dash segment = the theme
+      const theme = seg.split(/[,.;]/)[0].trim();
+      return theme && theme.length <= 40 ? ` (${theme})` : "";
+    };
+    const list = rows.slice(0, 8).map((r) => `${dayName(r.plan_date)} ${r.meal_type}${themeOf(r.notes)}`).join(", ");
+    const more = rows.length > 8 ? ` …and ${rows.length - 8} more` : "";
+    const content = `🍳 A few upcoming meals don't have a recipe yet: ${list}${more}. Want me to suggest easy, kid-friendly recipes for them? I'll propose one per slot (or tweak an existing one), you approve, and I'll add + slot it — just say the word.`;
+    await supabase.from("chat_history").insert({ role: "assistant", content });
+    await enqueueOutbox(supabase, "plan_gap", content);
   } catch (_e) {
     /* best-effort — a nudge must never block or fail plan generation */
   }
