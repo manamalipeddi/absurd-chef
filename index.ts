@@ -270,15 +270,13 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
       .not("expiry_date", "is", null)
       .gte("expiry_date", startDate).lte("expiry_date", endDate)
       .order("expiry_date"),
-    // In-stock proteins/mains to build meals AROUND (rule 18b — autonomy: use up
-    // what's on hand, not just 2-day-critical items). No expiry filter, so a
-    // whole chicken with no date or a pulled pork weeks out are still visible —
-    // the whole point is the generator can't currently see them.
+    // All active inventory — powers (a) the in-stock PROTEINS list to build meals
+    // around (rule 18b) and (b) the ingredient-availability / makeability check
+    // (rule 18c). No expiry filter, so an undated whole chicken is still seen.
     supabase
       .from("inventory")
-      .select("name, food_category, category, quantity, status, expiry_date")
-      .eq("active", true)
-      .in("food_category", ["meat", "seafood"]),   // 'seafood' is the fish convention, not 'fish'
+      .select("name, food_category, category, quantity, status, expiry_date, master_ingredient_id")
+      .eq("active", true),
     // Ingredient lists to match an expiring item to recipes that use it.
     supabase
       .from("recipe_ingredients")
@@ -324,7 +322,7 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
     lockedSlots: lockedSlotsRes.data || [],
     family: familyRes.data || [],
     inventoryExpiring: invExpiringRes.data || [],
-    inStockProteins: inStockRes.data || [],
+    inStockInventory: inStockRes.data || [],
     recipeIngredients: recipeIngRes.data || [],
     planEdits: planEditsRes.data || [],
     mealHistory: mealHistoryRes.data || [],
@@ -526,6 +524,48 @@ function buildPrompt(
   // rather than shipping raw tags + prep/cook minutes for all ~64 recipes, which
   // keeps the prompt small (the worker is memory-sensitive). Recency is already
   // covered by recently_used.
+
+  // ── Makeability index (rule 18c) — is a recipe's key stuff actually in stock?
+  //    Built here so recipeList can tag each recipe with makeable_now. Tight
+  //    matching keeps false alarms down: an ingredient counts as in stock if it
+  //    shares a master ingredient, OR a stocked name contains the whole
+  //    ingredient name, OR the ingredient's core noun (last word, de-pluralised).
+  const inStockItems = (ctx.inStockInventory as { name: string; food_category: string | null; category: string | null; quantity: number | null; status: string | null; expiry_date: string | null; master_ingredient_id: string | null }[])
+    .filter(it => !(Number(it.quantity) === 0 || it.status === "out"));
+  const stockMasters = new Set<string>();
+  const stockNames: string[] = [];
+  for (const it of inStockItems) {
+    if (it.master_ingredient_id) stockMasters.add(it.master_ingredient_id);
+    stockNames.push((it.name || "").toLowerCase().trim());
+  }
+  // Proteins/mains (make-or-break) vs pantry staples/garnishes (assumed on hand).
+  const PROTEIN_RE = /\b(chicken|kyckling|beef|n[oö]t|pork|fl[aä]sk|lamb|lamm|sausage|korv|bacon|ham|skinka|mince|f[aä]rs|turkey|kalkon|meatball|k[oö]ttbull|nugget|fish|fisk|salmon|lax|cod|torsk|tuna|prawn|shrimp|r[aä]k|tofu|paneer|halloumi|bean|b[oö]nor|lentil|lins|chickpea|chick pea|rajma|chana|channa|dal|daal)\b/i;
+  const STAPLE_RE = /\b(salt|pepper|oil|butter|ghee|garlic|ginger|onion|water|flour|sugar|stock|broth|bouillon|spice|cumin|coriander|turmeric|paprika|chilli|chili|masala|cinnamon|vinegar|soy|sauce|herb|parsley|cilantro|basil|dill|mint|corn ?starch|baking|yeast|honey|lemon|lime)\b/i;
+  const coreNoun = (n: string) => { const w = (n.toLowerCase().trim().split(/\s+/).pop() || ""); return w.endsWith("s") ? w.slice(0, -1) : w; };
+  const ingInStock = (ing: { name: string; master: string | null }) => {
+    if (ing.master && stockMasters.has(ing.master)) return true;
+    const n = (ing.name || "").toLowerCase().trim();
+    if (stockNames.some(s => s.length >= 4 && (s.includes(n) || n.includes(s)))) return true;
+    const c = coreNoun(ing.name);
+    return c.length >= 4 && stockNames.some(s => s.includes(c));
+  };
+  const ingByRecipe = new Map<string, { name: string; master: string | null }[]>();
+  for (const ri of (ctx.recipeIngredients || []) as { recipe_id: string; name: string; master_ingredient_id: string | null }[]) {
+    if (!ingByRecipe.has(ri.recipe_id)) ingByRecipe.set(ri.recipe_id, []);
+    ingByRecipe.get(ri.recipe_id)!.push({ name: ri.name, master: ri.master_ingredient_id });
+  }
+  const feasibilityOf = (recipeId: string): { makeable: boolean; short: string[] } => {
+    const ings = ingByRecipe.get(recipeId) || [];
+    if (!ings.length) return { makeable: true, short: [] };   // no ingredient data → don't block
+    const proteins = ings.filter(i => PROTEIN_RE.test(i.name));
+    const defining = ings.filter(i => !PROTEIN_RE.test(i.name) && !STAPLE_RE.test(i.name)).slice(0, 2);
+    const proteinShort = proteins.filter(i => !ingInStock(i));
+    const short = [...proteinShort, ...defining.filter(i => !ingInStock(i))].map(i => i.name);
+    // HARD gate = the protein (reliable); defining items ride along as `short` for
+    // the model to weigh, but don't by themselves mark a recipe un-makeable.
+    return { makeable: proteinShort.length === 0, short };
+  };
+
   const recipeList = safeRecipes.map((r: Recipe) => {
     const tags = r.tags || [];
     // Numeric fallback: only counts as a time signal if at least one of
@@ -537,6 +577,7 @@ function buildPrompt(
       r.cooking_method === "slow_cook" ||                     // dump/slow-cook pool
       (tags.includes("quick") && tags.includes("kidproof")) || // fast + kid-safe
       quickByTime;                                            // ≤20 min combined
+    const feas = feasibilityOf(r.id);
     return {
       id: r.id,
       name: r.name,
@@ -547,6 +588,8 @@ function buildPrompt(
       freezable: r.is_freezable,
       wkh_quick,   // true → eligible for weekday kids-home quick tier (rule 15c)
       never_made: r.last_made == null,   // novelty budget (rule 19)
+      makeable_now: feas.makeable,       // protein in stock right now? (rule 18c)
+      ...(feas.short.length ? { short: feas.short } : {}),   // key items not in stock (model weighs these)
     };
   });
 
@@ -604,12 +647,12 @@ function buildPrompt(
   // the generator never sees it and plans normally.
   const criticalExpiring = expiringIngredients.filter(e => e.urgency === "critical");
 
-  // In-stock proteins/mains to build meals AROUND (rule 18b). Skips empties;
-  // sorts soonest-to-expire first (undated last) so the generator sees the most
-  // urgent-to-use item at the top. This is the fix for "the plan ignores the
-  // chicken/pulled pork in my fridge" — those were invisible before.
-  const anchorStock = (ctx.inStockProteins as { name: string; category: string | null; quantity: number | null; status: string | null; expiry_date: string | null }[])
-    .filter(it => !(Number(it.quantity) === 0 || it.status === "out"))
+  // In-stock proteins/mains to build meals AROUND (rule 18b), soonest-to-expire
+  // first. This is the fix for "the plan ignores the chicken/pulled pork".
+  // (inStockItems + the makeability index are computed up near recipeList.)
+  const MEAT_FISH_FC = new Set(["meat", "seafood"]);
+  const anchorStock = inStockItems
+    .filter(it => MEAT_FISH_FC.has(it.food_category || ""))
     .map(it => ({
       name: it.name,
       where: it.category,                                              // fridge | freezer | pantry
@@ -617,6 +660,15 @@ function buildPrompt(
       days_until: it.expiry_date ? daysBetween(startDate, it.expiry_date) : null,
     }))
     .sort((a, b) => (a.days_until ?? 9999) - (b.days_until ?? 9999));
+
+  // The "shop line": near-term slots (before the next grocery delivery, ~next
+  // Wednesday) must be makeable from CURRENT stock; later slots may assume the
+  // upcoming order (rule 18c).
+  const nextDelivery = (() => {
+    const d = new Date();
+    do { d.setUTCDate(d.getUTCDate() + 1); } while (d.getUTCDay() !== 3);   // next Wednesday strictly after today
+    return d.toISOString().slice(0, 10);
+  })();
 
   // ── Passive preference evidence (rule 2): recipes repeatedly swapped OUT of
   //    the plan vs. repeatedly picked IN by hand. Threshold ≥2 so a one-off
@@ -912,6 +964,19 @@ PLANNING RULES
       ("roasting the whole chicken before it turns — Fri's leftovers become
       tacos"). This is NOT the critical-expiry override (rule 18) — leave
       expiry_override false; it's ordinary good judgement.
+18c. MAKEABLE NOW (recipe field makeable_now + SHOP LINE): makeable_now = false
+    means the recipe's MAIN PROTEIN is not in stock right now. For any slot dated
+    BEFORE the SHOP LINE (no grocery delivery arrives before it), you MUST NOT
+    use a makeable_now = false recipe — its protein simply isn't there. Instead
+    pick a makeable_now = true recipe that fits the slot, or build around an
+    IN-STOCK PROTEIN (rule 18b); if nothing fits, leave the slot open with a note
+    saying what's missing. For slots ON/AFTER the SHOP LINE the incoming order
+    covers them, so makeable_now is NOT a constraint there. A recipe's "short"
+    list (key non-protein items not in stock) is a SOFT signal — weigh it, but
+    don't reject a recipe over pantry staples you likely have. This is what stops
+    "planning the sausage skillet when the sausages never arrived": once an order
+    lands without them, that recipe reads makeable_now = false and gets swapped
+    for this week's slots.
 19. NOVELTY BUDGET: at most ONE recipe with never_made = true may appear per
     calendar week of the plan, and only on a CALM day: not a commute day, not
     weekday_kids_home, and no guests. All other slots use proven recipes
@@ -971,6 +1036,8 @@ ${JSON.stringify(criticalExpiring, null, 2)}
 
 IN-STOCK PROTEINS & MAINS (build meals AROUND these — see rule 18b; where = fridge/freezer/pantry; days_until = null when undated; soonest first)
 ${JSON.stringify(anchorStock, null, 2)}
+
+SHOP LINE — next grocery delivery: ${nextDelivery}. Slots ON/AFTER this date may assume the incoming order; slots BEFORE it must be makeable from CURRENT stock (see rule 18c).
 
 FREEZER STASH (available now)
 ${JSON.stringify(stashList, null, 2)}
