@@ -534,8 +534,14 @@ function buildPrompt(
   //    beans); everything else uses master-id / tight name match. Master-ingredient
   //    id (exact) always wins first.
   const MEAT_FISH_FC = new Set(["meat", "seafood"]);
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const PERISHABLE_FC = new Set(["meat", "seafood", "produce", "dairy", "eggs"]);
   const inStockItems = (ctx.inStockInventory as { name: string; food_category: string | null; category: string | null; quantity: number | null; status: string | null; expiry_date: string | null; master_ingredient_id: string | null }[])
-    .filter(it => !(Number(it.quantity) === 0 || it.status === "out"));
+    .filter(it => !(Number(it.quantity) === 0 || it.status === "out"))
+    // A perishable past its expiry is spoiled, not "in stock" — don't surface it
+    // as a protein (rule 18b) or count it toward makeability (rule 18c). Fixes
+    // expired hot dog buns being offered as a sausage-adjacent protein.
+    .filter(it => !(it.expiry_date && it.expiry_date < todayISO && PERISHABLE_FC.has(it.food_category || "")));
   const stock = inStockItems.map(it => ({ n: (it.name || "").toLowerCase().trim(), fc: (it.food_category || ""), master: it.master_ingredient_id }));
   const stockMasters = new Set(stock.filter(s => s.master).map(s => s.master as string));
   const MEATFISH_RE = /\b(chicken|kyckling|beef|n[oö]t|pork|fl[aä]sk|lamb|lamm|sausage|korv|bacon|ham|skinka|turkey|kalkon|meatball|k[oö]ttbull|nugget|fish|fisk|salmon|lax|cod|torsk|tuna|prawn|shrimp|r[aä]k|mince|f[aä]rs)\b/i;
@@ -978,7 +984,10 @@ PLANNING RULES
     use a makeable_now = false recipe — its protein simply isn't there. Instead
     pick a makeable_now = true recipe that fits the slot, or build around an
     IN-STOCK PROTEIN (rule 18b); if nothing fits, leave the slot open with a note
-    saying what's missing. For slots ON/AFTER the SHOP LINE the incoming order
+    that PLAINLY states what's missing (e.g. "No sausages in stock — buy them or
+    pick another recipe"). Do NOT dress up an unmakeable meal as if it works, and
+    NEVER propose a "main" built on a non-protein item (buns, a sauce, a side) as
+    though it were the meal. For slots ON/AFTER the SHOP LINE the incoming order
     covers them, so makeable_now is NOT a constraint there. A recipe's "short"
     list (key non-protein items not in stock) is a SOFT signal — weigh it, but
     don't reject a recipe over pantry staples you likely have. This is what stops
