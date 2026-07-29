@@ -793,7 +793,15 @@ function buildPrompt(
   }
   freezerLean.sort((a, b) => b.freezer_pulls - a.freezer_pulls);
 
-  return `You must respond with valid JSON only. No preamble, no explanation, no prose. Your entire response must be parseable by JSON.parse(). If you cannot complete the task, return a JSON error object: {"error": "reason"}. Never return plain text under any circumstances.
+  // Deterministic rule-18c guard: recipe_id → the key item(s) not in stock. The
+  // write site blanks any near-term slot assigned one of these (see writePlan).
+  const notMakeableNow = new Map<string, string>(
+    recipeList
+      .filter((r) => !r.makeable_now)
+      .map((r) => [r.id, ((r as { short?: string[] }).short || []).join(", ")]),
+  );
+
+  const _prompt = `You must respond with valid JSON only. No preamble, no explanation, no prose. Your entire response must be parseable by JSON.parse(). If you cannot complete the task, return a JSON error object: {"error": "reason"}. Never return plain text under any circumstances.
 
 You are AbsurdChef, an autonomous meal planning agent for a busy family.
 
@@ -1122,6 +1130,7 @@ meal_type "lunch" for each day where needs_lunch = true (rule 1/8).
 }
 
 IMPORTANT: Your response must be valid JSON only. Nothing else.`;
+  return { prompt: _prompt, notMakeableNow, nextDelivery };
 }
 
 // ── Write plan to Supabase ─────────────────────────────────────────────────
@@ -1143,6 +1152,13 @@ async function writePlan(
   // (rules 16b/17). Defaults to startDate; batched rolling passes the original
   // current-week Monday so next-week batch days stay week-2 eligible.
   weekBase?: string,
+  // Deterministic makeability guard (rule 18c). recipe_ids the feasibility index
+  // flagged makeable_now=false (key protein out of stock), plus the next grocery
+  // delivery date. Any near-term slot (date < nextDelivery) the model assigned
+  // one of these recipes gets un-cooked at write time: we blank the recipe_id
+  // and leave an honest note, rather than trust the model's hedge note.
+  notMakeableNow?: Map<string, string>,
+  nextDelivery?: string,
 ) {
   const MEALS = ["dinner", "lunch"];          // the planner writes these two
   const lockedKey = (d: string, m: string) => `${d}|${m}`;
@@ -1328,6 +1344,33 @@ async function writePlan(
   }
   const isConsuming = (p: PlanDay) =>
     p.cook_source === "freezer_stash" && !!p.stash_item_id && consumedStash.has(p.stash_item_id);
+
+  // ── Rule 18c enforcement (deterministic) ────────────────────────────────
+  // The model is told not to schedule an un-makeable recipe on a near-term day,
+  // but it sometimes does it anyway with a hedge note ("buy sausage or swap").
+  // We don't trust the hedge: for any NON-freezer slot before the next grocery
+  // delivery whose recipe is flagged makeable_now=false (key protein out of
+  // stock), blank the recipe and leave the slot open with an honest note. A
+  // freezer pull is exempt — the portion is physically in the freezer. Slots on
+  // or after nextDelivery are left alone (the shop refills the protein first).
+  if (notMakeableNow && notMakeableNow.size > 0 && nextDelivery) {
+    let blanked = 0;
+    toWrite = toWrite.map((p) => {
+      if (p.cook_source === "freezer_stash") return p;
+      if (!p.recipe_id || !notMakeableNow.has(p.recipe_id)) return p;
+      if (p.date >= nextDelivery) return p;   // shop day refills it first
+      blanked++;
+      const missing = notMakeableNow.get(p.recipe_id)?.trim() || "a key ingredient";
+      const dish = p.recipe_name ? `"${p.recipe_name}" ` : "";
+      return {
+        ...p,
+        recipe_id: null,
+        stash_item_id: null,
+        notes: `Open — ${dish}needs ${missing}, not in stock. Buy it or pick another recipe.`,
+      };
+    });
+    if (blanked > 0) console.warn(`Rule 18c: blanked ${blanked} near-term un-makeable slot(s) before ${nextDelivery}`);
+  }
 
   // Insert new plan — day-context columns come from day_settings, not the model.
   const rows = toWrite.map((p) => ({
@@ -1741,7 +1784,7 @@ Deno.serve(async (req: Request) => {
 
     // 2. Build prompt (weekBase = current-week Monday, so a next-week batch is
     //    still labelled week 2 for inventory purposes)
-    const prompt = buildPrompt(genStart, genDays, ctx, start_date);
+    const { prompt, notMakeableNow, nextDelivery } = buildPrompt(genStart, genDays, ctx, start_date);
 
     // 3. Call Claude
     const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
@@ -1812,7 +1855,7 @@ Deno.serve(async (req: Request) => {
 
     // 5. Write plan to DB (skip & clear vacation days)
     const vacationDates = (ctx.daySettings as DaySetting[]).filter(d => d.is_vacation).map(d => d.day);
-    await writePlan(supabase, result.plan, mode, targetDates, genStart, vacationDates, ctx.daySettings as DaySetting[], windowDates, start_date);
+    await writePlan(supabase, result.plan, mode, targetDates, genStart, vacationDates, ctx.daySettings as DaySetting[], windowDates, start_date, notMakeableNow, nextDelivery);
 
     // dinner rows are the only ones written; report that count. Batched rolling_7
     // now generates exactly the days it writes, so every generated dinner is a
