@@ -142,8 +142,8 @@ window.addEventListener('popstate', async (e) => {
     history.pushState({ screen: currentScreen }, '')
     return
   }
-  // 3. Step back to the previous screen.
-  await applyScreen((e.state && e.state.screen) || 'plan')
+  // 3. Step back to the previous screen (fall back to the landing page).
+  await applyScreen((e.state && e.state.screen) || 'pantry')
 })
 
 navBtns.forEach(btn =>
@@ -234,8 +234,9 @@ export function setProcessing(active, label) {
 // ── Boot ──────────────────────────────────────────────────
 async function boot() {
   // Seed the initial history entry, then show the first screen without pushing.
-  history.replaceState({ screen: 'plan' }, '')
-  await applyScreen('plan')
+  // Landing page = Pantry (opens on its Inventory sub-tab) — the most-used view.
+  history.replaceState({ screen: 'pantry' }, '')
+  await applyScreen('pantry')
 
   if ('serviceWorker' in navigator) {
     // When a newly-deployed SW takes control, reload once so the page runs the
