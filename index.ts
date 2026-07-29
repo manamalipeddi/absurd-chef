@@ -553,8 +553,16 @@ function buildPrompt(
     if (ing.master && stockMasters.has(ing.master)) return true;      // exact master link wins
     const n = (ing.name || "").toLowerCase().trim();
     const mn = (n.match(MEATFISH_RE) || [])[0];                        // meat/fish protein → meat/seafood stock only
-    if (mn) return stock.some(s => MEAT_FISH_FC.has(s.fc) && s.n.includes(mn));
+    if (mn) {
+      // A mastered protein must be satisfied by the exact master (checked above
+      // and failed if we're here) — the coarse meat-word fallback would let a
+      // WHOLE chicken satisfy "chicken mince", or chicken dumplings satisfy
+      // "ground chicken". Only unmastered proteins fall back to the word match.
+      if (ing.master) return false;
+      return stock.some(s => MEAT_FISH_FC.has(s.fc) && s.n.includes(mn));
+    }
     if (LEGUME_RE.test(n)) {                                           // legume → its SPECIFIC word (not bare "bean")
+      if (ing.master) return false;                                   // same rule: mastered legume must match by master
       const tok = LEGUME_TOKENS.find(t => n.includes(t));
       if (tok) return stock.some(s => s.n.includes(tok));
       return stock.some(s => /\b(bean|lentil|chickpea|pea)\b/.test(s.n) && !s.n.includes("coffee"));
