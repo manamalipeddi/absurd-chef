@@ -526,42 +526,51 @@ function buildPrompt(
   // covered by recently_used.
 
   // ── Makeability index (rule 18c) — is a recipe's key stuff actually in stock?
-  //    Built here so recipeList can tag each recipe with makeable_now. Tight
-  //    matching keeps false alarms down: an ingredient counts as in stock if it
-  //    shares a master ingredient, OR a stocked name contains the whole
-  //    ingredient name, OR the ingredient's core noun (last word, de-pluralised).
+  //    Built here so recipeList can tag each recipe with makeable_now. Matching is
+  //    category-aware to avoid the false hits a bare word-match gives: a MEAT/FISH
+  //    protein is only satisfied by a MEAT/SEAFOOD stock item sharing the same meat
+  //    word (so "ground chicken" ≠ chicken bouillon, "Chicken Tikka" ≠ tikka
+  //    SAUCE); a legume matches on its SPECIFIC word (so "kidney beans" ≠ coffee
+  //    beans); everything else uses master-id / tight name match. Master-ingredient
+  //    id (exact) always wins first.
+  const MEAT_FISH_FC = new Set(["meat", "seafood"]);
   const inStockItems = (ctx.inStockInventory as { name: string; food_category: string | null; category: string | null; quantity: number | null; status: string | null; expiry_date: string | null; master_ingredient_id: string | null }[])
     .filter(it => !(Number(it.quantity) === 0 || it.status === "out"));
-  const stockMasters = new Set<string>();
-  const stockNames: string[] = [];
-  for (const it of inStockItems) {
-    if (it.master_ingredient_id) stockMasters.add(it.master_ingredient_id);
-    stockNames.push((it.name || "").toLowerCase().trim());
-  }
-  // Proteins/mains (make-or-break) vs pantry staples/garnishes (assumed on hand).
-  const PROTEIN_RE = /\b(chicken|kyckling|beef|n[oö]t|pork|fl[aä]sk|lamb|lamm|sausage|korv|bacon|ham|skinka|mince|f[aä]rs|turkey|kalkon|meatball|k[oö]ttbull|nugget|fish|fisk|salmon|lax|cod|torsk|tuna|prawn|shrimp|r[aä]k|tofu|paneer|halloumi|bean|b[oö]nor|lentil|lins|chickpea|chick pea|rajma|chana|channa|dal|daal)\b/i;
+  const stock = inStockItems.map(it => ({ n: (it.name || "").toLowerCase().trim(), fc: (it.food_category || ""), master: it.master_ingredient_id }));
+  const stockMasters = new Set(stock.filter(s => s.master).map(s => s.master as string));
+  const MEATFISH_RE = /\b(chicken|kyckling|beef|n[oö]t|pork|fl[aä]sk|lamb|lamm|sausage|korv|bacon|ham|skinka|turkey|kalkon|meatball|k[oö]ttbull|nugget|fish|fisk|salmon|lax|cod|torsk|tuna|prawn|shrimp|r[aä]k|mince|f[aä]rs)\b/i;
+  const LEGUME_RE = /\b(bean|b[oö]nor|lentil|lins|chickpea|chick pea|rajma|chana|channa|dal|daal|tofu|paneer|halloumi)\b/i;
+  const LEGUME_TOKENS = ["kidney", "cannellini", "black bean", "chickpea", "chick pea", "lentil", "lins", "edamame", "rajma", "chana", "channa", "pinto", "navy", "butter bean", "tofu", "paneer", "halloumi"];
   const STAPLE_RE = /\b(salt|pepper|oil|butter|ghee|garlic|ginger|onion|water|flour|sugar|stock|broth|bouillon|spice|cumin|coriander|turmeric|paprika|chilli|chili|masala|cinnamon|vinegar|soy|sauce|herb|parsley|cilantro|basil|dill|mint|corn ?starch|baking|yeast|honey|lemon|lime)\b/i;
-  const coreNoun = (n: string) => { const w = (n.toLowerCase().trim().split(/\s+/).pop() || ""); return w.endsWith("s") ? w.slice(0, -1) : w; };
+  const coreNoun = (n: string) => { const w = (n.split(/\s+/).pop() || ""); return w.endsWith("s") ? w.slice(0, -1) : w; };
   const ingInStock = (ing: { name: string; master: string | null }) => {
-    if (ing.master && stockMasters.has(ing.master)) return true;
+    if (ing.master && stockMasters.has(ing.master)) return true;      // exact master link wins
     const n = (ing.name || "").toLowerCase().trim();
-    if (stockNames.some(s => s.length >= 4 && (s.includes(n) || n.includes(s)))) return true;
-    const c = coreNoun(ing.name);
-    return c.length >= 4 && stockNames.some(s => s.includes(c));
+    const mn = (n.match(MEATFISH_RE) || [])[0];                        // meat/fish protein → meat/seafood stock only
+    if (mn) return stock.some(s => MEAT_FISH_FC.has(s.fc) && s.n.includes(mn));
+    if (LEGUME_RE.test(n)) {                                           // legume → its SPECIFIC word (not bare "bean")
+      const tok = LEGUME_TOKENS.find(t => n.includes(t));
+      if (tok) return stock.some(s => s.n.includes(tok));
+      return stock.some(s => /\b(bean|lentil|chickpea|pea)\b/.test(s.n) && !s.n.includes("coffee"));
+    }
+    if (stock.some(s => s.n.length >= 4 && (s.n.includes(n) || n.includes(s.n)))) return true;   // non-protein: tight name
+    const c = coreNoun(n);
+    return c.length >= 4 && stock.some(s => s.n.includes(c));
   };
   const ingByRecipe = new Map<string, { name: string; master: string | null }[]>();
   for (const ri of (ctx.recipeIngredients || []) as { recipe_id: string; name: string; master_ingredient_id: string | null }[]) {
     if (!ingByRecipe.has(ri.recipe_id)) ingByRecipe.set(ri.recipe_id, []);
     ingByRecipe.get(ri.recipe_id)!.push({ name: ri.name, master: ri.master_ingredient_id });
   }
+  const isProtein = (name: string) => (MEATFISH_RE.test(name) || LEGUME_RE.test(name)) && !STAPLE_RE.test(name);
   const feasibilityOf = (recipeId: string): { makeable: boolean; short: string[] } => {
     const ings = ingByRecipe.get(recipeId) || [];
     if (!ings.length) return { makeable: true, short: [] };   // no ingredient data → don't block
-    const proteins = ings.filter(i => PROTEIN_RE.test(i.name));
-    const defining = ings.filter(i => !PROTEIN_RE.test(i.name) && !STAPLE_RE.test(i.name)).slice(0, 2);
+    const proteins = ings.filter(i => isProtein(i.name));     // excludes "minced garlic" etc. (staple wins)
+    const defining = ings.filter(i => !isProtein(i.name) && !STAPLE_RE.test(i.name)).slice(0, 2);
     const proteinShort = proteins.filter(i => !ingInStock(i));
     const short = [...proteinShort, ...defining.filter(i => !ingInStock(i))].map(i => i.name);
-    // HARD gate = the protein (reliable); defining items ride along as `short` for
+    // HARD gate = the protein (reliable); defining items ride along as short for
     // the model to weigh, but don't by themselves mark a recipe un-makeable.
     return { makeable: proteinShort.length === 0, short };
   };
@@ -649,8 +658,7 @@ function buildPrompt(
 
   // In-stock proteins/mains to build meals AROUND (rule 18b), soonest-to-expire
   // first. This is the fix for "the plan ignores the chicken/pulled pork".
-  // (inStockItems + the makeability index are computed up near recipeList.)
-  const MEAT_FISH_FC = new Set(["meat", "seafood"]);
+  // (inStockItems + MEAT_FISH_FC + the makeability index are computed near recipeList.)
   const anchorStock = inStockItems
     .filter(it => MEAT_FISH_FC.has(it.food_category || ""))
     .map(it => ({
