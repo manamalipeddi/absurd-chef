@@ -537,7 +537,10 @@ function buildPrompt(
   const todayISO = new Date().toISOString().slice(0, 10);
   const PERISHABLE_FC = new Set(["meat", "seafood", "produce", "dairy", "eggs"]);
   const inStockItems = (ctx.inStockInventory as { name: string; food_category: string | null; category: string | null; quantity: number | null; status: string | null; expiry_date: string | null; master_ingredient_id: string | null }[])
-    .filter(it => !(Number(it.quantity) === 0 || it.status === "out"))
+    // "restock" means nearly-out / on the buy list — treat it like "out" for
+    // planning: don't build a near-term meal around it and don't count it toward
+    // makeability (rule 18c). It still rides the grocery list either way.
+    .filter(it => !(Number(it.quantity) === 0 || it.status === "out" || it.status === "restock"))
     // A perishable past its expiry is spoiled, not "in stock" — don't surface it
     // as a protein (rule 18b) or count it toward makeability (rule 18c). Fixes
     // expired hot dog buns being offered as a sausage-adjacent protein.

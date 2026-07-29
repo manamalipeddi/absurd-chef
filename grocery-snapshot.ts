@@ -21,6 +21,20 @@ const CORS = {
 // treated as not in stock for recipe coverage and lands on the restock list.
 // (Renamed from very_low/some in the 2026-07 status-vocab rework.)
 const LOW = new Set(['out', 'restock'])
+// Confident "we have it" statuses.
+const HAVE = new Set(['enough', 'plenty', 'overstock', 'guest'])
+
+// "Do we already have this?" — deliberately errs toward ADDING to the list. An
+// item counts as stocked (→ skip) only on positive evidence: a have-it status,
+// or a real positive quantity, and never when it's Out/Restock. A never-checked
+// item (no status, no quantity) is treated as needed and lands on the list — the
+// household no longer tracks exact counts, and can just choose not to order it.
+function confidentlyStocked(it: Record<string, unknown>): boolean {
+  const s = String(it.status || '')
+  if (LOW.has(s)) return false
+  if (HAVE.has(s)) return true
+  return it.quantity != null && Number(it.quantity) > 0
+}
 
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS })
@@ -72,8 +86,7 @@ Deno.serve(async (req: Request) => {
     const stockedMasters = new Set<string>()
     const stockedNames: string[] = []
     for (const it of (inv || []) as Record<string, unknown>[]) {
-      const inStock = it.quantity != null && Number(it.quantity) > 0 && !LOW.has(it.status as string)
-      if (!inStock) continue
+      if (!confidentlyStocked(it)) continue
       if (it.master_ingredient_id) stockedMasters.add(it.master_ingredient_id as string)
       stockedNames.push(String(it.name || '').toLowerCase())
     }
@@ -125,15 +138,15 @@ ${listText}`
       }
     }
 
-    // Non-food restock: low/out-of-stock non-food items (cleaning, paper,
+    // Non-food restock: not-confidently-stocked non-food items (cleaning, paper,
     // toiletries, pet) belong on the shopping list too — same stock treatment as
-    // food (quantity 0 or a low status), but independent of any recipe. Appended
-    // directly; their names are already clean, so no AI dedup pass is needed.
+    // food (see confidentlyStocked; errs toward adding), independent of any
+    // recipe. Appended directly; names are already clean, so no AI dedup needed.
     const { data: nf } = await db.from('inventory')
       .select('name, quantity, status')
       .eq('active', true).eq('food_category', 'non_food')
     const nfNeeded = ((nf || []) as Record<string, unknown>[])
-      .filter(it => it.quantity == null || Number(it.quantity) <= 0 || LOW.has(it.status as string))
+      .filter(it => !confidentlyStocked(it))
       .map(it => ({ name: it.name, quantity: 'as needed', category: 'other', note: 'Restock (non-food)' }))
     if (nfNeeded.length) items = [...(items as unknown[]), ...nfNeeded]
 
