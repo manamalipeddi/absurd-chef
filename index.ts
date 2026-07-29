@@ -827,6 +827,11 @@ function buildPrompt(
     .map((r) => ({ id: r.id, name: r.name, wkh_quick: r.wkh_quick, never_made: r.never_made, useUp: recipeUseUp(r.id) }))
     .sort((a, b) => a.useUp - b.useUp || (a.never_made ? 1 : 0) - (b.never_made ? 1 : 0));
 
+  // recipe_id → protein type (chicken/beef/lamb/egg/vegetarian/legume/…), for the
+  // guard's protein-spacing: an auto-swap avoids repeating a protein already on a
+  // dinner within ±2 days, so two legume curries don't land back-to-back.
+  const recipeProtein = new Map((ctx.recipes as Recipe[]).map((r) => [r.id, (r.protein || "").toLowerCase()]));
+
   const _prompt = `You must respond with valid JSON only. No preamble, no explanation, no prose. Your entire response must be parseable by JSON.parse(). If you cannot complete the task, return a JSON error object: {"error": "reason"}. Never return plain text under any circumstances.
 
 You are AbsurdChef, an autonomous meal planning agent for a busy family.
@@ -1160,7 +1165,7 @@ meal_type "lunch" for each day where needs_lunch = true (rule 1/8).
 }
 
 IMPORTANT: Your response must be valid JSON only. Nothing else.`;
-  return { prompt: _prompt, notMakeableNow, nextDelivery, makeablePool };
+  return { prompt: _prompt, notMakeableNow, nextDelivery, makeablePool, recipeProtein };
 }
 
 // ── Write plan to Supabase ─────────────────────────────────────────────────
@@ -1191,6 +1196,7 @@ async function writePlan(
   notMakeableNow?: Map<string, string>,
   nextDelivery?: string,
   makeablePool?: { id: string; name: string; wkh_quick: boolean; never_made: boolean; useUp: number }[],
+  recipeProtein?: Map<string, string>,
 ) {
   const MEALS = ["dinner", "lunch"];          // the planner writes these two
   const lockedKey = (d: string, m: string) => `${d}|${m}`;
@@ -1390,11 +1396,30 @@ async function writePlan(
   if (notMakeableNow && notMakeableNow.size > 0 && nextDelivery) {
     // Recipes already placed anywhere in this batch — don't repeat one.
     const usedIds = new Set(toWrite.map((p) => p.recipe_id).filter(Boolean) as string[]);
-    const pickSubstitute = (isKidsHome: boolean): { id: string; name: string } | null => {
+    // Snapshot each slot's protein type so a swap can avoid repeating a protein
+    // that's already on a dinner within ±2 days (kept live as swaps happen).
+    const protOf = (rid: string | null) => (rid && recipeProtein?.get(rid)) || "";
+    const slotProtein = new Map<string, string>();
+    for (const p of toWrite) if (p.recipe_id) slotProtein.set(`${p.date}|${p.meal_type}`, protOf(p.recipe_id));
+    const neighborProteins = (date: string, meal: string): Set<string> => {
+      const s = new Set<string>();
+      for (const off of [-2, -1, 1, 2]) {
+        const pr = slotProtein.get(`${addDays(date, off)}|${meal}`);
+        if (pr) s.add(pr);   // skip "" (unknown protein never blocks)
+      }
+      return s;
+    };
+    const pickSubstitute = (date: string, meal: string, isKidsHome: boolean): { id: string; name: string } | null => {
       const pool = (makeablePool || []).filter((c) => !usedIds.has(c.id));
       if (!pool.length) return null;
-      if (isKidsHome) { const q = pool.find((c) => c.wkh_quick); if (q) return q; }
-      return pool[0];   // pool is pre-sorted by use-up-the-stock priority
+      // Prefer a protein not seen on a neighbouring dinner; relax if that empties
+      // the pool. Unknown-protein recipes ("") are always allowed.
+      const neigh = neighborProteins(date, meal);
+      const spaced = pool.filter((c) => { const pr = protOf(c.id); return pr === "" || !neigh.has(pr); });
+      const cands = spaced.length ? spaced : pool;
+      // On a kids-home day, take the first quick/kid-safe one; else the best-ranked.
+      if (isKidsHome) { const q = cands.find((c) => c.wkh_quick); if (q) return q; }
+      return cands[0];   // pool is pre-sorted by use-up-the-stock priority
     };
     let swapped = 0, opened = 0;
     toWrite = toWrite.map((p) => {
@@ -1403,9 +1428,10 @@ async function writePlan(
       if (p.date >= nextDelivery) return p;   // shop day refills it first
       const missing = notMakeableNow.get(p.recipe_id)?.trim() || "a key ingredient";
       const dish = p.recipe_name ? `"${p.recipe_name}" ` : "";
-      const sub = pickSubstitute(dayContext(p.date).is_preschool_closed);
+      const sub = pickSubstitute(p.date, p.meal_type, dayContext(p.date).is_preschool_closed);
       if (sub) {
         usedIds.add(sub.id);
+        slotProtein.set(`${p.date}|${p.meal_type}`, protOf(sub.id));   // keep spacing live
         swapped++;
         return {
           ...p,
@@ -1416,6 +1442,7 @@ async function writePlan(
         };
       }
       opened++;
+      slotProtein.delete(`${p.date}|${p.meal_type}`);   // no longer contributes to spacing
       return {
         ...p,
         recipe_id: null,
@@ -1838,7 +1865,7 @@ Deno.serve(async (req: Request) => {
 
     // 2. Build prompt (weekBase = current-week Monday, so a next-week batch is
     //    still labelled week 2 for inventory purposes)
-    const { prompt, notMakeableNow, nextDelivery, makeablePool } = buildPrompt(genStart, genDays, ctx, start_date);
+    const { prompt, notMakeableNow, nextDelivery, makeablePool, recipeProtein } = buildPrompt(genStart, genDays, ctx, start_date);
 
     // 3. Call Claude
     const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
@@ -1909,7 +1936,7 @@ Deno.serve(async (req: Request) => {
 
     // 5. Write plan to DB (skip & clear vacation days)
     const vacationDates = (ctx.daySettings as DaySetting[]).filter(d => d.is_vacation).map(d => d.day);
-    await writePlan(supabase, result.plan, mode, targetDates, genStart, vacationDates, ctx.daySettings as DaySetting[], windowDates, start_date, notMakeableNow, nextDelivery, makeablePool);
+    await writePlan(supabase, result.plan, mode, targetDates, genStart, vacationDates, ctx.daySettings as DaySetting[], windowDates, start_date, notMakeableNow, nextDelivery, makeablePool, recipeProtein);
 
     // dinner rows are the only ones written; report that count. Batched rolling_7
     // now generates exactly the days it writes, so every generated dinner is a
