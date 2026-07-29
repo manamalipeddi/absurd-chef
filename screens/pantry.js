@@ -189,20 +189,26 @@ function isAlwaysFrozen(item) {
   return ALWAYS_FREEZE.some(re => re.test(n))
 }
 
-// Loose status ↔ quantity: status is an input convenience that resolves to a
-// real quantity against the item's typical_quantity baseline.
-const STATUS_ORDER = ['out', 'very_low', 'some', 'enough', 'plenty', 'overstock']
-const STATUS_PCT   = { out: 0, very_low: 0.10, some: 0.25, enough: 0.60, plenty: 0.85, overstock: 1.25 }
-const STATUS_LABEL = { out: 'Out', very_low: 'Very low', some: 'Some', enough: 'Enough', plenty: 'Plenty', overstock: 'Overstock' }
+// Status is a low-effort STORED signal — the household doesn't track exact
+// quantities, so a status is set by tapping the pill, not derived from a count.
+// Its most important job: answer "when this runs out, what happens?" (buy it,
+// or — for a one-off guest item — let it drop away). typical_quantity decides
+// which of the two behaviours an item has (see isGuest).
+//
+//   STAPLE  (typical_quantity > 0 OR null): Out · Restock · Enough · Plenty ·
+//           Overstock. Out/Restock put it on the grocery list.
+//   GUEST   (typical_quantity = 0): a one-off. Only Guest / Out(used up); it is
+//           never restocked and auto-leaves inventory when out.
+//   null    status = never checked → shows "—", stays null, never auto-assigned.
+const STAPLE_STATUSES = ['out', 'restock', 'enough', 'plenty', 'overstock']
+const STATUS_LABEL = { out: 'Out', restock: 'Restock', enough: 'Enough', plenty: 'Plenty', overstock: 'Overstock', guest: 'Guest' }
 
-// An item with typical_quantity = 0 is "atypical" — a one-off the household
-// doesn't normally stock. It has no baseline to derive a status against, so it
-// carries an explicit stored status ('some' while it has stock) instead.
-function isAtypical(item) { return Number(item.typical_quantity) === 0 }
-// Status to DISPLAY on the pill: stored for atypical items, derived otherwise.
-function displayStatus(item) {
-  return isAtypical(item) ? (item.status || null) : deriveStatus(item.quantity, item.typical_quantity)
-}
+// A GUEST item (typical_quantity = 0) is a one-off the household doesn't normally
+// stock — "Restock/Enough/Plenty" are meaningless for it. It carries an explicit
+// 'guest' status while it has stock and auto-deactivates when used up.
+function isGuest(item) { return Number(item.typical_quantity) === 0 }
+// Status to DISPLAY on the pill: the stored value for every item (never derived).
+function displayStatus(item) { return item.status || null }
 
 // Out of stock: an explicit zero quantity, or a status that resolves to 'out'.
 // Used to hide the (irrelevant) expiry label and sink these to the bottom.
@@ -211,20 +217,6 @@ function isOutOfStock(item) {
   return displayStatus(item) === 'out'
 }
 
-function deriveStatus(qty, typical) {
-  if (typical == null || Number(typical) <= 0) return null
-  if (qty == null || Number(qty) === 0) return 'out'
-  const ratio = Number(qty) / Number(typical)
-  let best = 'out', bestD = Infinity
-  for (const k of STATUS_ORDER) {
-    const d = Math.abs(STATUS_PCT[k] - ratio)
-    if (d < bestD) { bestD = d; best = k }
-  }
-  return best
-}
-function qtyFromStatus(statusKey, typical) {
-  return Math.round(Number(typical) * STATUS_PCT[statusKey] * 100) / 100
-}
 function fmtQty(q) {
   if (q == null) return '0'
   const n = Number(q)
@@ -863,12 +855,10 @@ function renderInvItem(wrap, item, ruled) {
   row.appendChild(buildFavStar(wrap, item, ruled))
   row.appendChild(tap)
 
-  // Quick-adjust control.
-  row.appendChild(
-    item.typical_quantity != null
-      ? buildStatusControl(wrap, item, ruled)
-      : buildStepper(wrap, item, ruled)
-  )
+  // Quick-adjust control: every item now uses the tap-to-expand status pill
+  // (staple → 5-option grid, guest → Guest / Out). The numeric stepper is gone
+  // from the list — exact amounts live in the edit form for the rare case.
+  row.appendChild(buildStatusControl(wrap, item, ruled))
 
   wrap.appendChild(row)
 }
@@ -895,16 +885,17 @@ async function setFav(wrap, item, ruled) {
 
 // Persist a new quantity (+ optional status) by ANY quick path; the DB trigger
 // handles last_updated_at + expiry. Re-render in place with the fresh row.
-async function setInvQuantity(wrap, item, ruled, newQty, statusKey) {
-  const payload = { quantity: newQty }
-  if (statusKey !== undefined) payload.status = statusKey
-  // Atypical items (typical_quantity = 0) auto-reconcile in the same write:
-  // any stock → status 'some'; emptied (qty 0 or status 'out') → auto-deactivate
-  // so the one-off drops out of inventory rather than sitting at zero.
+// Status-first write from the pill grid — the primary low-effort path. Sets the
+// stored status directly; the household doesn't track counts, so quantity is
+// left alone EXCEPT: 'out' also zeroes quantity (keeps the makeability/grocery
+// signals honest), and a guest marked 'out' (used up) auto-deactivates so the
+// one-off leaves inventory.
+async function setInvStatus(wrap, item, ruled, statusKey) {
+  const payload = { status: statusKey }
   let deactivated = false
-  if (isAtypical(item)) {
-    if (statusKey === 'out' || Number(newQty) <= 0) { payload.status = 'out'; payload.active = false; deactivated = true }
-    else { payload.status = 'some' }
+  if (statusKey === 'out') {
+    payload.quantity = 0
+    if (isGuest(item)) { payload.active = false; deactivated = true }
   }
   const { data, error } = await supabase.from('inventory').update(payload).eq('id', item.id).select('*').single()
   if (error || !data) { toast('Update failed', { error: true }); return }
@@ -912,124 +903,72 @@ async function setInvQuantity(wrap, item, ruled, newQty, statusKey) {
   const idx = inventoryData.findIndex(x => x.id === item.id)
   if (idx >= 0) inventoryData[idx] = { ...inventoryData[idx], ...data }
   if (deactivated) {
-    renderInventory()   // full re-render: the emptied atypical item disappears
+    renderInventory()
     toast(`${item.name} used up — removed from inventory`)
   } else {
     renderInvItem(wrap, item, ruled)
   }
 }
 
-function buildStepper(wrap, item, ruled) {
-  const c = document.createElement('div')
-  c.className = 'pn-stepper'
-  const mk = (txt, cls) => { const b = document.createElement('button'); b.className = 'pn-step-btn ' + cls; b.textContent = txt; return b }
-  const minus = mk('−', 'pn-step-btn--minus')
-  const plus  = mk('+', 'pn-step-btn--plus')
-  const num = document.createElement('button')
-  num.className = 'pn-step-num'
-  num.textContent = fmtQty(item.quantity)
-
-  minus.addEventListener('click', e => { e.stopPropagation(); setInvQuantity(wrap, item, ruled, Math.max(0, (Number(item.quantity) || 0) - 1)) })
-  plus.addEventListener('click',  e => { e.stopPropagation(); setInvQuantity(wrap, item, ruled, (Number(item.quantity) || 0) + 1) })
-  num.addEventListener('click', e => {
-    e.stopPropagation()
-    const inp = document.createElement('input')
-    inp.type = 'number'; inp.className = 'pn-qty-input'; inp.min = 0; inp.step = 'any'
-    inp.value = item.quantity ?? ''
-    num.replaceWith(inp); inp.focus(); inp.select()
-    let done = false
-    const commit = () => { if (done) return; done = true; const v = inp.value === '' ? 0 : Math.max(0, parseFloat(inp.value) || 0); setInvQuantity(wrap, item, ruled, v) }
-    const cancel = () => { if (done) return; done = true; renderInvItem(wrap, item, ruled) }
-    inp.addEventListener('click', e2 => e2.stopPropagation())
-    inp.addEventListener('blur', commit)
-    inp.addEventListener('keydown', e2 => {
-      if (e2.key === 'Enter') { e2.preventDefault(); inp.blur() }
-      else if (e2.key === 'Escape') { e2.preventDefault(); cancel() }
-    })
-  })
-  c.append(minus, num, plus)
-  return c
+// Pill visual class for a status. Guest items always read as the amber "won't
+// restock" outline. A null status is the muted "—" (never checked, no pill).
+function statusPillClass(item, cur) {
+  if (isGuest(item)) return ' pn-status-pill--guest'
+  if (!cur) return ' pn-status-pill--empty'
+  return ' pn-status-pill--' + cur
 }
 
 function buildStatusControl(wrap, item, ruled) {
   const c = document.createElement('div')
   c.className = 'pn-qtyctl'
   const cur = displayStatus(item)
-  // Atypical item with stock → amber outline pill. Regular low-stock statuses
-  // (out / very low / some) → filled green pill so they stand out. The amber
-  // treatment takes precedence (an atypical 'some' is never also green).
-  const atypicalSome = isAtypical(item) && cur === 'some'
   const pill = document.createElement('button')
-  pill.className = 'pn-status-pill'
-    + (atypicalSome ? ' pn-status-pill--atypical' : (LOW_STATUS.has(cur) ? ' pn-status-pill--low' : ''))
-  pill.textContent = STATUS_LABEL[cur] || '—'
-  // The percentage grid is meaningless when typical = 0 (every option resolves
-  // to qty 0), so atypical items get a direct exact-amount entry instead.
+  pill.className = 'pn-status-pill' + statusPillClass(item, cur)
+  pill.textContent = (cur && STATUS_LABEL[cur]) || '—'
   pill.addEventListener('click', e => {
     e.stopPropagation()
-    if (isAtypical(item)) toggleExactAmount(wrap, item, ruled, pill)
+    if (isGuest(item)) toggleGuestGrid(wrap, item, ruled, pill)
     else toggleStatusGrid(wrap, item, ruled, pill)
   })
   c.appendChild(pill)
   return c
 }
 
-// Inline exact-amount entry for atypical items (typical = 0). Setting a value
-// >0 marks it 'some'; setting 0 empties it and setInvQuantity auto-deactivates.
-function toggleExactAmount(wrap, item, ruled, pill) {
-  const open = wrap.querySelector('.pn-status-grid')
-  if (open) { open.remove(); pill.classList.remove('pn-status-pill--open'); return }
-  pill.classList.add('pn-status-pill--open')
-  const grid = document.createElement('div')
-  grid.className = 'pn-status-grid pn-status-grid--exact'
-  const inp = document.createElement('input')
-  inp.type = 'number'; inp.className = 'pn-qty-input pn-qty-input--wide'; inp.min = 0; inp.step = 'any'
-  inp.value = item.quantity ?? ''
-  const ok = document.createElement('button'); ok.className = 'pn-status-exact pn-status-exact--set'; ok.textContent = 'Set'
-  let done = false
-  const commit = () => { if (done) return; done = true; const v = inp.value === '' ? 0 : Math.max(0, parseFloat(inp.value) || 0); setInvQuantity(wrap, item, ruled, v) }
-  ok.addEventListener('click', e2 => { e2.stopPropagation(); commit() })
-  inp.addEventListener('click', e2 => e2.stopPropagation())
-  inp.addEventListener('keydown', e2 => { if (e2.key === 'Enter') { e2.preventDefault(); commit() } })
-  grid.append(inp, ok)
-  wrap.appendChild(grid)
-  inp.focus()
-}
-
+// STAPLE picker (typical_quantity > 0 or null): least → most stock. Sets the
+// stored status directly — no quantity guessing (see setInvStatus).
 function toggleStatusGrid(wrap, item, ruled, pill) {
   const open = wrap.querySelector('.pn-status-grid')
   if (open) { open.remove(); pill.classList.remove('pn-status-pill--open'); return }
   pill.classList.add('pn-status-pill--open')
-
-  const cur = deriveStatus(item.quantity, item.typical_quantity)
+  const cur = item.status || null
   const grid = document.createElement('div')
   grid.className = 'pn-status-grid'
-  STATUS_ORDER.forEach(k => {
+  STAPLE_STATUSES.forEach(k => {
     const b = document.createElement('button')
-    b.className = 'pn-status-opt' + (k === cur ? ' pn-status-opt--active' : '')
+    b.className = 'pn-status-opt pn-status-opt--' + k + (k === cur ? ' pn-status-opt--active' : '')
     b.textContent = STATUS_LABEL[k]
-    b.addEventListener('click', e => { e.stopPropagation(); setInvQuantity(wrap, item, ruled, qtyFromStatus(k, item.typical_quantity), k) })
+    b.addEventListener('click', e => { e.stopPropagation(); setInvStatus(wrap, item, ruled, k) })
     grid.appendChild(b)
   })
-  const exact = document.createElement('button')
-  exact.className = 'pn-status-exact'
-  exact.textContent = 'Enter exact amount instead'
-  exact.addEventListener('click', e => {
-    e.stopPropagation()
-    grid.innerHTML = ''
-    const inp = document.createElement('input')
-    inp.type = 'number'; inp.className = 'pn-qty-input pn-qty-input--wide'; inp.min = 0; inp.step = 'any'
-    inp.value = item.quantity ?? ''
-    const ok = document.createElement('button'); ok.className = 'pn-status-exact pn-status-exact--set'; ok.textContent = 'Set'
-    let done = false
-    const commit = () => { if (done) return; done = true; const v = inp.value === '' ? 0 : Math.max(0, parseFloat(inp.value) || 0); setInvQuantity(wrap, item, ruled, v) }
-    ok.addEventListener('click', e2 => { e2.stopPropagation(); commit() })
-    inp.addEventListener('click', e2 => e2.stopPropagation())
-    inp.addEventListener('keydown', e2 => { if (e2.key === 'Enter') { e2.preventDefault(); commit() } })
-    grid.append(inp, ok)
-    inp.focus()
+  wrap.appendChild(grid)
+}
+
+// GUEST picker (typical_quantity = 0): only Guest / Out(used up). Restock and
+// the stock tiers don't apply to a one-off. Out auto-removes it from inventory.
+function toggleGuestGrid(wrap, item, ruled, pill) {
+  const open = wrap.querySelector('.pn-status-grid')
+  if (open) { open.remove(); pill.classList.remove('pn-status-pill--open'); return }
+  pill.classList.add('pn-status-pill--open')
+  const cur = item.status || 'guest'
+  const grid = document.createElement('div')
+  grid.className = 'pn-status-grid pn-status-grid--guest'
+  ;[['guest', 'Guest'], ['out', 'Out (used up)']].forEach(([k, label]) => {
+    const b = document.createElement('button')
+    b.className = 'pn-status-opt pn-status-opt--' + k + (k === cur ? ' pn-status-opt--active' : '')
+    b.textContent = label
+    b.addEventListener('click', e => { e.stopPropagation(); setInvStatus(wrap, item, ruled, k) })
+    grid.appendChild(b)
   })
-  grid.appendChild(exact)
   wrap.appendChild(grid)
 }
 // Read-only "Prepped" grouping inside Inventory (visibility of the same data).
@@ -1285,11 +1224,11 @@ function openInventoryForm(id, defaultCat = 'pantry', defaultFood = 'other') {
     // Saving an inactive item (reached via search) reactivates it. The atypical
     // reconcile below may still re-hide it if it's a typical=0 item with no stock.
     if (item && item.active === false) payload.active = true
-    // Atypical reconcile (typical_quantity = 0): stock → 'some'; emptied → drop
-    // it out of inventory (active = false) in the same save.
+    // Guest reconcile (typical_quantity = 0): stock → 'guest'; emptied → drop it
+    // out of inventory (active = false) in the same save.
     if (Number(payload.typical_quantity) === 0) {
       if (payload.quantity == null || Number(payload.quantity) <= 0) { payload.status = 'out'; payload.active = false }
-      else { payload.status = 'some' }
+      else { payload.status = 'guest' }
     }
     saveBtn.disabled = true; saveBtn.textContent = 'Saving…'
     const op = id
@@ -1793,10 +1732,11 @@ async function loadGrocery() {
   ])
 
   const allInventory = invData || []
-  // Section 1 "Absurdly Low Stock": live from inventory — status out/very_low/low
-  // OR an explicit zero quantity (never-checked items, null quantity, excluded).
-  const lowStock = allInventory.filter(i =>
-    LOW_STATUS.has(i.status) || (i.quantity != null && Number(i.quantity) === 0))
+  // Section 1 "Absurdly Low Stock" = the buy list: status 'out' or 'restock'
+  // only. Guest one-offs are never restocked (and auto-leave inventory anyway);
+  // enough/plenty/overstock/null never appear. Status is the whole signal now —
+  // no quantity fallback (a null-status item is "never checked", not "buy").
+  const lowStock = allInventory.filter(i => LOW_STATUS.has(i.status))
   lowStock.sort((a, b) => {
     const fa = !!a.is_favourite, fb = !!b.is_favourite
     if (fa !== fb) return fa ? -1 : 1
@@ -1871,10 +1811,12 @@ function fmtRaw(q, u) {
 function canonUnitFor(dim) { return dim === 'mass' ? 'g' : dim === 'volume' ? 'ml' : '' }
 
 // Grocery sort, shared by both sections: favourites first (alpha), then low-stock
-// (status out/very_low/low, a shortfall, or out of stock) by last_updated_at DESC
+// (status out/restock, a shortfall, or out of stock) by last_updated_at DESC
 // with never-checked items at the bottom of that group, then everything else
 // alphabetically. A favourite that's also low-stock stays in the favourites tier.
-const LOW_STATUS = new Set(['out', 'very_low', 'some'])
+// LOW_STATUS = the two "buy this" statuses (Out is none-left, Restock is nearly-
+// out / want-more); both land on the grocery list.
+const LOW_STATUS = new Set(['out', 'restock'])
 function isLowStock(item) {
   return !!item.shortfall || LOW_STATUS.has(item.status) || item.quantity === 0 || item.quantity === null
 }
@@ -1968,11 +1910,10 @@ function buildLowStockRow(item, ruled) {
   name.textContent = item.name
 
   const pill = document.createElement('span')
-  // Atypical item with stock keeps its amber outline here too; otherwise the
-  // standard low-stock pill.
-  const atypicalSome = Number(item.typical_quantity) === 0 && item.status === 'some'
-  pill.className = 'pn-status-pill pn-low-row__pill ' + (atypicalSome ? 'pn-status-pill--atypical' : 'pn-status-pill--low')
-  pill.textContent = STATUS_LABEL[item.status] || 'Out'
+  // Only out/restock reach this list, so colour the pill to match its status.
+  const cur = item.status || 'out'
+  pill.className = 'pn-status-pill pn-low-row__pill pn-status-pill--' + cur
+  pill.textContent = STATUS_LABEL[cur] || 'Out'
 
   row.append(name, pill)
   row.addEventListener('click', () => openInventoryForm(item.id, item.category || 'pantry'))

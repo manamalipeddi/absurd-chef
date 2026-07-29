@@ -705,9 +705,9 @@ Return ONLY valid JSON, no other text:
 
   type UpdatedEntry = { name: string; quantity: number | null; unit: string | null }
   const updated: UpdatedEntry[] = []
-  // Atypical reconcile: load typical_quantity for the rows being updated. For an
-  // atypical item (typical = 0), a write that empties it (qty 0 / 'out') drops it
-  // out of inventory (active = false); any remaining stock marks it 'some'.
+  // Guest reconcile: load typical_quantity for the rows being updated. For a
+  // guest item (typical = 0), a write that empties it (qty 0 / 'out') drops it
+  // out of inventory (active = false); any remaining stock marks it 'guest'.
   const updIds = updateItems.map(i => i.matched_id!).filter(Boolean)
   const typicalById = new Map<string, number | null>()
   if (updIds.length) {
@@ -720,7 +720,7 @@ Return ONLY valid JSON, no other text:
     if (typicalById.get(item.matched_id!) === 0) {
       const q = item.quantity
       if (q == null || Number(q) <= 0) { upd.status = 'out'; upd.active = false }
-      else { upd.status = 'some' }
+      else { upd.status = 'guest' }
     }
     const { error } = await db.from('inventory').update(upd).eq('id', item.matched_id!)
     if (!error) updated.push({ name: item.name, quantity: item.quantity, unit: item.unit })
@@ -1166,7 +1166,7 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
           last_updated_at: nowIso,
         }
         if (wasInactive) upd.active = true                              // buying it → relevant again
-        if (Number(row.typical_quantity) === 0) upd.status = 'some'     // atypical restock has stock again
+        if (Number(row.typical_quantity) === 0) upd.status = 'guest'    // guest one-off has stock again
         // Inferred shelf life on restock — only when no valid manual date exists.
         const rowFc = (row.food_category as string) || inferFoodCategory(g.name)
         const rowLife = rowFc ? SHELF_LIFE_DAYS[rowFc] : undefined
@@ -1212,7 +1212,7 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
     if (floored) newQty = 0
     const upd: Record<string, unknown> = { quantity: newQty, last_updated_at: nowIso }
     if (Number(r.typical_quantity) === 0 && newQty <= 0) { upd.status = 'out'; upd.active = false }
-    else if (Number(r.typical_quantity) === 0) upd.status = 'some'
+    else if (Number(r.typical_quantity) === 0) upd.status = 'guest'
     await db.from('inventory').update(upd).eq('id', r.id as string)
     flagged.push(floored
       ? `${r.name as string} — reduced by ${dropped} (had ${cur}); floored to 0`
@@ -1252,7 +1252,7 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
           last_updated_at: nowIso,
         }
         if (m.wasInactive) upd.active = true
-        if (Number(m.row.typical_quantity) === 0) upd.status = 'some'
+        if (Number(m.row.typical_quantity) === 0) upd.status = 'guest'
         const { error } = await db.from('inventory').update(upd).eq('id', m.row.id as string)
         if (error) flagged.push(`${g.name} — non-food write failed (${error.message})`)
         else nonFoodAdded.push(m.wasInactive ? `${m.row.name as string} (reactivated)` : (m.row.name as string))

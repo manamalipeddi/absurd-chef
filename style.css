@@ -3647,18 +3647,37 @@ body {
 }
 .pn-status-pill--open { border-color: var(--primary); color: var(--primary); }
 .pn-status-pill:active { background: var(--primary-bg); }
-/* Low-stock pills (out / very low / some): same as a regular pill, just a
-   darker green border to mark them out. */
-.pn-status-pill--low { border-color: var(--primary); }
-/* Atypical stock (typical_quantity = 0) at status 'some': amber outline pill —
-   distinguishes a one-off item that has stock from a regular low-stock item.
-   Same radius as every other pill; only border/background/text change. */
-.pn-status-pill--atypical {
-  border: 1.5px solid #D4A017;
-  background: transparent;
-  color: #D4A017;
+
+/* Per-status pill colours — the "when depleted, what happens?" signal at a
+   glance. Out/Restock read as "buy" (strong, filled); Enough/Plenty are calm;
+   Overstock warns (too much); Guest is the amber "won't restock" outline; a
+   null status is the muted "—" with no pill outline (never checked). */
+.pn-status-pill--out {
+  background: #b91c1c; border-color: #b91c1c; color: #fff;   /* none left — buy */
 }
-.pn-status-pill--atypical:active { background: rgba(212, 160, 23, 0.10); }
+.pn-status-pill--restock {
+  background: var(--primary); border-color: var(--primary); color: #fff;   /* nearly out — buy */
+}
+.pn-status-pill--enough { color: var(--text); }             /* neutral, one meal */
+.pn-status-pill--plenty {
+  border-color: var(--primary); color: var(--primary); background: var(--primary-bg);   /* 2+ meals */
+}
+.pn-status-pill--overstock {
+  border-color: #D4A017; color: #7a5f0d; background: rgba(212, 160, 23, 0.14);   /* draw it down */
+}
+.pn-status-pill--guest {                                    /* one-off, not restocked */
+  border: 1.5px solid #D4A017; background: transparent; color: #D4A017;
+}
+.pn-status-pill--guest:active { background: rgba(212, 160, 23, 0.10); }
+.pn-status-pill--empty {                                    /* never checked */
+  border-color: transparent; background: transparent; color: var(--text-muted);
+}
+
+/* Grid option accents mirror the pill so the picker reads the same way. */
+.pn-status-opt--out.pn-status-opt--active      { border-color: #b91c1c; background: #fdecec; color: #b91c1c; }
+.pn-status-opt--restock.pn-status-opt--active  { border-color: var(--primary); background: var(--primary-bg); color: var(--primary); }
+.pn-status-opt--overstock.pn-status-opt--active{ border-color: #D4A017; background: rgba(212, 160, 23, 0.14); color: #7a5f0d; }
+.pn-status-opt--guest.pn-status-opt--active    { border-color: #D4A017; background: rgba(212, 160, 23, 0.10); color: #b8860b; }
 
 /* Expanded 2×3 status grid below the row */
 .pn-status-grid {

@@ -17,7 +17,10 @@ const CORS = {
   'Access-Control-Allow-Headers': 'content-type',
 }
 
-const LOW = new Set(['out', 'very_low', 'some'])
+// "Buy this / not really available" statuses — an item marked Out or Restock is
+// treated as not in stock for recipe coverage and lands on the restock list.
+// (Renamed from very_low/some in the 2026-07 status-vocab rework.)
+const LOW = new Set(['out', 'restock'])
 
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS })
