@@ -802,12 +802,30 @@ function buildPrompt(
   freezerLean.sort((a, b) => b.freezer_pulls - a.freezer_pulls);
 
   // Deterministic rule-18c guard: recipe_id → the key item(s) not in stock. The
-  // write site blanks any near-term slot assigned one of these (see writePlan).
+  // write site swaps any near-term slot assigned one of these for a makeable
+  // recipe from the pool below (see writePlan).
   const notMakeableNow = new Map<string, string>(
     recipeList
       .filter((r) => !r.makeable_now)
       .map((r) => [r.id, ((r as { short?: string[] }).short || []).join(", ")]),
   );
+
+  // Auto-fill pool for the guard: makeable recipes, ordered so the write site
+  // grabs the one that best USES UP stock — soonest-expiring in-stock protein
+  // first (rule 18b), then already-made (reliable) before never-made. Each
+  // recipe's "use-up" score = the soonest days_until among the in-stock
+  // meat/fish anchors whose core word appears in its protein ingredients.
+  const anchorWords = anchorStock.map((a) => ({ w: coreNoun((a.name || "").toLowerCase()), d: a.days_until ?? 9999 }));
+  const recipeUseUp = (rid: string): number => {
+    const proteinNames = (ingByRecipe.get(rid) || []).filter((i) => isProtein(i.name)).map((i) => i.name.toLowerCase());
+    let best = 9999;
+    for (const a of anchorWords) if (a.w.length >= 4 && proteinNames.some((pn) => pn.includes(a.w))) best = Math.min(best, a.d);
+    return best;
+  };
+  const makeablePool = recipeList
+    .filter((r) => r.makeable_now)
+    .map((r) => ({ id: r.id, name: r.name, wkh_quick: r.wkh_quick, never_made: r.never_made, useUp: recipeUseUp(r.id) }))
+    .sort((a, b) => a.useUp - b.useUp || (a.never_made ? 1 : 0) - (b.never_made ? 1 : 0));
 
   const _prompt = `You must respond with valid JSON only. No preamble, no explanation, no prose. Your entire response must be parseable by JSON.parse(). If you cannot complete the task, return a JSON error object: {"error": "reason"}. Never return plain text under any circumstances.
 
@@ -998,10 +1016,14 @@ PLANNING RULES
     means the recipe's MAIN PROTEIN is not in stock right now. For any slot dated
     BEFORE the SHOP LINE (no grocery delivery arrives before it), you MUST NOT
     use a makeable_now = false recipe — its protein simply isn't there. Instead
-    pick a makeable_now = true recipe that fits the slot, or build around an
-    IN-STOCK PROTEIN (rule 18b); if nothing fits, leave the slot open with a note
-    that PLAINLY states what's missing (e.g. "No sausages in stock — buy them or
-    pick another recipe"). Do NOT dress up an unmakeable meal as if it works, and
+    you MUST SUBSTITUTE: pick a makeable_now = true recipe that fits the slot, or
+    build around an IN-STOCK PROTEIN (rule 18b) — favour using up the soonest-
+    expiring in-stock protein. Do NOT report the slot as unresolved and do NOT
+    leave it empty just because the templated recipe won't work — a makeable
+    recipe almost always exists (there are in-stock proteins listed above). Only
+    as an absolute LAST resort, if literally no makeable recipe fits, leave the
+    slot open with a note that PLAINLY states what's missing (e.g. "No sausages
+    in stock — buy them or pick another recipe"). Do NOT dress up an unmakeable meal as if it works, and
     NEVER propose a "main" built on a non-protein item (buns, a sauce, a side) as
     though it were the meal. For slots ON/AFTER the SHOP LINE the incoming order
     covers them, so makeable_now is NOT a constraint there. A recipe's "short"
@@ -1138,7 +1160,7 @@ meal_type "lunch" for each day where needs_lunch = true (rule 1/8).
 }
 
 IMPORTANT: Your response must be valid JSON only. Nothing else.`;
-  return { prompt: _prompt, notMakeableNow, nextDelivery };
+  return { prompt: _prompt, notMakeableNow, nextDelivery, makeablePool };
 }
 
 // ── Write plan to Supabase ─────────────────────────────────────────────────
@@ -1161,12 +1183,14 @@ async function writePlan(
   // current-week Monday so next-week batch days stay week-2 eligible.
   weekBase?: string,
   // Deterministic makeability guard (rule 18c). recipe_ids the feasibility index
-  // flagged makeable_now=false (key protein out of stock), plus the next grocery
-  // delivery date. Any near-term slot (date < nextDelivery) the model assigned
-  // one of these recipes gets un-cooked at write time: we blank the recipe_id
-  // and leave an honest note, rather than trust the model's hedge note.
+  // flagged makeable_now=false (key protein out of stock), the next grocery
+  // delivery date, and an ordered pool of makeable substitute recipes. Any
+  // near-term slot (date < nextDelivery) the model assigned an un-makeable
+  // recipe gets AUTO-SWAPPED at write time for the best makeable recipe from
+  // the pool — only left open if the pool is exhausted.
   notMakeableNow?: Map<string, string>,
   nextDelivery?: string,
+  makeablePool?: { id: string; name: string; wkh_quick: boolean; never_made: boolean; useUp: number }[],
 ) {
   const MEALS = ["dinner", "lunch"];          // the planner writes these two
   const lockedKey = (d: string, m: string) => `${d}|${m}`;
@@ -1355,29 +1379,51 @@ async function writePlan(
 
   // ── Rule 18c enforcement (deterministic) ────────────────────────────────
   // The model is told not to schedule an un-makeable recipe on a near-term day,
-  // but it sometimes does it anyway with a hedge note ("buy sausage or swap").
-  // We don't trust the hedge: for any NON-freezer slot before the next grocery
-  // delivery whose recipe is flagged makeable_now=false (key protein out of
-  // stock), blank the recipe and leave the slot open with an honest note. A
-  // freezer pull is exempt — the portion is physically in the freezer. Slots on
-  // or after nextDelivery are left alone (the shop refills the protein first).
+  // but it sometimes does it anyway (a hedge note, or leaving it unresolved).
+  // We don't trust it: for any NON-freezer slot before the next grocery delivery
+  // whose recipe is makeable_now=false (key protein out of stock), AUTO-SWAP in
+  // the best makeable recipe from the pool (soonest-expiring stock first, and on
+  // a kids-home day prefer a quick/kid-safe one). Only if the pool is exhausted
+  // do we leave the slot open with an honest note. A freezer pull is exempt (the
+  // portion is physically in the freezer); slots on/after nextDelivery are left
+  // alone (the shop refills the protein first).
   if (notMakeableNow && notMakeableNow.size > 0 && nextDelivery) {
-    let blanked = 0;
+    // Recipes already placed anywhere in this batch — don't repeat one.
+    const usedIds = new Set(toWrite.map((p) => p.recipe_id).filter(Boolean) as string[]);
+    const pickSubstitute = (isKidsHome: boolean): { id: string; name: string } | null => {
+      const pool = (makeablePool || []).filter((c) => !usedIds.has(c.id));
+      if (!pool.length) return null;
+      if (isKidsHome) { const q = pool.find((c) => c.wkh_quick); if (q) return q; }
+      return pool[0];   // pool is pre-sorted by use-up-the-stock priority
+    };
+    let swapped = 0, opened = 0;
     toWrite = toWrite.map((p) => {
       if (p.cook_source === "freezer_stash") return p;
       if (!p.recipe_id || !notMakeableNow.has(p.recipe_id)) return p;
       if (p.date >= nextDelivery) return p;   // shop day refills it first
-      blanked++;
       const missing = notMakeableNow.get(p.recipe_id)?.trim() || "a key ingredient";
       const dish = p.recipe_name ? `"${p.recipe_name}" ` : "";
+      const sub = pickSubstitute(dayContext(p.date).is_preschool_closed);
+      if (sub) {
+        usedIds.add(sub.id);
+        swapped++;
+        return {
+          ...p,
+          recipe_id: sub.id,
+          recipe_name: sub.name,
+          stash_item_id: null,
+          notes: `Auto-swapped — ${dish}needs ${missing} (out of stock), so Chef picked ${sub.name} from what's in the kitchen.`,
+        };
+      }
+      opened++;
       return {
         ...p,
         recipe_id: null,
         stash_item_id: null,
-        notes: `Open — ${dish}needs ${missing}, not in stock. Buy it or pick another recipe.`,
+        notes: `Open — ${dish}needs ${missing}, not in stock, and nothing else makeable was free. Buy it or pick another recipe.`,
       };
     });
-    if (blanked > 0) console.warn(`Rule 18c: blanked ${blanked} near-term un-makeable slot(s) before ${nextDelivery}`);
+    if (swapped || opened) console.warn(`Rule 18c: swapped ${swapped}, left open ${opened} near-term un-makeable slot(s) before ${nextDelivery}`);
   }
 
   // Insert new plan — day-context columns come from day_settings, not the model.
@@ -1792,7 +1838,7 @@ Deno.serve(async (req: Request) => {
 
     // 2. Build prompt (weekBase = current-week Monday, so a next-week batch is
     //    still labelled week 2 for inventory purposes)
-    const { prompt, notMakeableNow, nextDelivery } = buildPrompt(genStart, genDays, ctx, start_date);
+    const { prompt, notMakeableNow, nextDelivery, makeablePool } = buildPrompt(genStart, genDays, ctx, start_date);
 
     // 3. Call Claude
     const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
@@ -1863,7 +1909,7 @@ Deno.serve(async (req: Request) => {
 
     // 5. Write plan to DB (skip & clear vacation days)
     const vacationDates = (ctx.daySettings as DaySetting[]).filter(d => d.is_vacation).map(d => d.day);
-    await writePlan(supabase, result.plan, mode, targetDates, genStart, vacationDates, ctx.daySettings as DaySetting[], windowDates, start_date, notMakeableNow, nextDelivery);
+    await writePlan(supabase, result.plan, mode, targetDates, genStart, vacationDates, ctx.daySettings as DaySetting[], windowDates, start_date, notMakeableNow, nextDelivery, makeablePool);
 
     // dinner rows are the only ones written; report that count. Batched rolling_7
     // now generates exactly the days it writes, so every generated dinner is a
