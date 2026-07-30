@@ -682,6 +682,10 @@ function buildPrompt(
       name: it.name,
       where: it.category,                                              // fridge | freezer | pantry
       quantity: it.quantity,
+      // How much is on hand, in meal terms (see legend on the IN-STOCK header):
+      // "enough" = one meal for 4–5 people; "plenty" = at least a double batch.
+      // Only surfaced for the two batch-size tiers; other statuses stay silent.
+      ...(it.status === "enough" || it.status === "plenty" ? { stock_level: it.status } : {}),
       days_until: it.expiry_date ? daysBetween(startDate, it.expiry_date) : null,
     }))
     .sort((a, b) => (a.days_until ?? 9999) - (b.days_until ?? 9999));
@@ -924,7 +928,10 @@ PLANNING RULES
    recipe whose contains_allergen list intersects with guest_allergens).
 8. needs_lunch days: plan a lunch (light, quick). If the day has a lunch_template, honour it (its style/protein theme) — this applies to weekend lunches AND to weekday kids-home (holiday) lunches when a lunch template is set for that day. Weekday kids-home lunches ALSO follow the weekday kids-home effort chain (rule 15), so keep them quick/kid-safe within the theme. A weekday with no lunch_template just follows the effort chain.
 9. Mark one dinner per week as batch_cook if recipe is freezable —
-   this builds the freezer stash.
+   this builds the freezer stash. Prefer a batch_cook built around an in-stock
+   protein whose stock_level is "plenty" (at least a double batch on hand) —
+   don't pick a "enough"-level protein (only a single meal's worth) for a
+   doubled batch-cook.
 10. Prefer dump recipes on days adjacent to commute days too
     (less prep the day before helps).
 11. Do not repeat the same protein that the preschool served that day — but ONLY
@@ -1098,6 +1105,7 @@ CRITICAL EXPIRING (meat/fish within 2 days — see rule 18; empty = nothing crit
 ${JSON.stringify(criticalExpiring, null, 2)}
 
 IN-STOCK PROTEINS & MAINS (build meals AROUND these — see rule 18b; where = fridge/freezer/pantry; days_until = null when undated; soonest first)
+stock_level (when present): "enough" = enough for ONE meal for 4–5 people, so use it in a single dinner and don't plan a batch-cook/double on it. "plenty" = enough for at least a double batch (or more), so it's a good candidate to batch-cook and freeze (rule 9). Absent stock_level = amount unknown; treat as a single meal's worth.
 ${JSON.stringify(anchorStock, null, 2)}
 
 SHOP LINE — next grocery delivery: ${nextDelivery}. Slots ON/AFTER this date may assume the incoming order; slots BEFORE it must be makeable from CURRENT stock (see rule 18c).
