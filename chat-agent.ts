@@ -89,6 +89,7 @@ BEHAVIOR:
 - WEEKLY OUTCOME CHECK-IN: on Sundays the planner posts a "🗓️ Quick check on last week" message listing last week's unconfirmed meals. When Manasa replies to it ("all as planned", "all as planned except Wednesday — we ordered pizza", "Tuesday we had the leftover dal instead"), log the WHOLE week in this one turn: call get_plan with start_date 7 days ago and days 7 to see each past slot's confirmation state (actually_made / actual_recipe_id / actual_notes all null = unconfirmed), then call update_actual_outcome once per unconfirmed slot — made_as_planned: true for the confirmed ones, actual_recipe_id (tracked recipe) or actual_notes (free text like takeout) for the exceptions. A slot with no planned recipe (open slot / chef's choice) can't be "made as planned" — log what she says was eaten, or skip it if she doesn't say. Never ask her to confirm day by day; one short summary of what you logged at the end is enough.
 - COOKING LEARNINGS: when a cooking conversation produces a correction or discovery worth keeping (timing, temperature, a substitution that worked), OFFER to save it to the recipe ("want me to note that on the recipe?") and call update_recipe only after she agrees. When she mentions prepped food she has ready ("I have 10 cubes of cooked onion in the freezer"), log it with add_prepped_component.
 - EXPIRING FOOD (recommend-and-approve): get_expiry_recommendations lists inventory expiring in the next ~2 weeks, each with matching existing recipes, plus the upcoming plan slots. Use it when Manasa asks what to cook to use things up, says something is expiring/going off, or replies to an expiry heads-up. Then RECOMMEND ONE concrete action: the nearest suitable upcoming slot + a SINGLE recipe that uses most or all of the expiring items — prefer an existing matching_recipes entry. If none is appealing (or she asks), offer to generate a NEW recipe built around the expiring items via add_recipe. NEVER auto-apply: only after she approves, call update_plan_slot (for a brand-new recipe, add_recipe first, then update_plan_slot with the new id). If she wants a different idea, propose another. If nothing in the catalogue uses an item and she doesn't want a new recipe, say plainly to use it up manually — never invent that it's handled. Items flagged already_auto_planned (critical meat/fish within ~2 days) are already slotted by the planner; don't re-handle them. Don't overwrite a locked slot (see LOCKED SLOTS).
+- OVERSTOCK USE-IT-UP (recommend-and-approve): after a grocery order, AbsurdChef may nudge Manasa (relayed by Allie) that some items look overstocked — she confirms by tapping the Overstock pill in Pantry, then asks you for ideas. When she asks how to use up overstock, replies to an overstock heads-up, or says she has too much of something, call get_overstock_use_up (items she has CONFIRMED as Overstock, each with matching recipes + upcoming slots). For each item, RECOMMEND how to use it up and let her decide per item: FIRST prefer folding it into an already-planned upcoming meal (name the slot + how it fits — this is the "use what's already planned" path she wants), else a SINGLE existing recipe, else offer a NEW recipe via add_recipe. NEVER auto-apply: only after she approves, call update_plan_slot (add_recipe first for a brand-new recipe). Overstock is never auto-set — if the tool returns nothing, tell her to tap Overstock on the items she means first, then ask again. Don't overwrite a locked slot.
 - PLAN GAPS (recommend-and-approve): when Manasa asks to fill empty/recipe-less plan slots, or replies to a "a few upcoming meals don't have a recipe" heads-up, call get_plan for the upcoming window and find the dinner/lunch slots that have NO recipe (skip deliberate chef's-choice / leftovers slots, and any locked slot). For each, RECOMMEND ONE concrete, EASY, KID-FRIENDLY option — first prefer an existing recipe that fits the slot's theme/day; if none fits, offer a NEW easy recipe (or a lightly-modified version of an existing one, honouring the slot's theme note e.g. "frozen meaty meal", "rösti or potatisbullar") via add_recipe. Keep it low-effort — these are kids-home days. NEVER auto-apply: only after she approves, add_recipe (if new) THEN update_plan_slot with the recipe id. You may handle several slots in one turn; end with a short summary of what you added and slotted. If she'd rather leave a slot open, leave it.
 - Today: ${today()}`
 }
@@ -153,6 +154,11 @@ const TOOLS: Anthropic.Tool[] = [
         days: { type: 'integer', description: 'Window size in days from today. Defaults to 14.' },
       },
     },
+  },
+  {
+    name: 'get_overstock_use_up',
+    description: "Get inventory items Manasa has CONFIRMED as Overstock (status='overstock'), each annotated with matching existing recipes, PLUS the upcoming dinner/lunch slots — everything needed to recommend using them up. Use when she asks how to use up overstock, replies to an overstock heads-up from an order, or mentions having too much of something. For each item recommend either folding it into an already-planned meal or a single recipe (offer a NEW recipe via add_recipe if nothing fits); only apply via update_plan_slot after she approves. Overstock is never auto-set — if nothing is returned, tell her to tap the Overstock pill on the items she means first.",
+    input_schema: { type: 'object' as const, properties: {} },
   },
   {
     name: 'get_prepped_components',
@@ -528,6 +534,67 @@ async function toolGetExpiryRecommendations(input: Record<string, unknown>, db: 
   return {
     expiring, upcoming_slots,
     note: 'Recommend ONE slot + ONE recipe that uses most/all of these (prefer a matching_recipes entry; offer a NEW recipe via add_recipe if none fits or on request). Do NOT call update_plan_slot until the user approves. Skip items where already_auto_planned is true.',
+  }
+}
+
+// Overstock use-it-up: items Manasa has CONFIRMED as overstock (status =
+// 'overstock' — she taps the pill; it is never auto-set), each annotated with
+// existing recipes that use it, PLUS the upcoming dinner/lunch slots. Everything
+// needed to suggest either folding an item into an already-planned meal or a new
+// recipe. On-demand only — she asks after an overstock nudge. Mirror of
+// toolGetExpiryRecommendations, keyed on status instead of an expiry window.
+async function toolGetOverstockUseUp(db: DB) {
+  const start = today()
+  const end = addDays(start, 13)
+  const { data: inv } = await db.from('inventory')
+    .select('name, food_category, quantity, master_ingredient_id')
+    .eq('active', true).eq('status', 'overstock').neq('food_category', 'non_food')
+  const items = (inv || []) as Record<string, unknown>[]
+  if (!items.length) return { overstocked: [], note: 'Nothing is marked Overstock right now — nothing to use up. (An item becomes Overstock only when Manasa taps that pill in Pantry.)' }
+
+  const [{ data: recipes }, { data: ings }, { data: slots }] = await Promise.all([
+    db.from('recipes').select('id, name, protein, style').eq('active', true).eq('is_placeholder', false),
+    db.from('recipe_ingredients').select('recipe_id, name, master_ingredient_id'),
+    db.from('meal_plans')
+      .select('plan_date, meal_type, slot_locked, recipes!meal_plans_recipe_id_fkey(name)')
+      .gte('plan_date', start).lte('plan_date', end).in('meal_type', ['dinner', 'lunch'])
+      .order('plan_date').order('meal_type'),
+  ])
+  const nameById = new Map((recipes || []).map((r: Record<string, unknown>) => [r.id as string, r.name as string]))
+  const byMaster = new Map<string, Set<string>>()
+  const ingRows: { n: string; recipe_id: string }[] = []
+  for (const ri of (ings || []) as Record<string, unknown>[]) {
+    if (!nameById.has(ri.recipe_id as string)) continue
+    if (ri.master_ingredient_id) {
+      const k = ri.master_ingredient_id as string
+      if (!byMaster.has(k)) byMaster.set(k, new Set())
+      byMaster.get(k)!.add(ri.recipe_id as string)
+    }
+    ingRows.push({ n: (ri.name as string || '').toLowerCase(), recipe_id: ri.recipe_id as string })
+  }
+  const matchRecipes = (it: Record<string, unknown>) => {
+    const ids = new Set<string>()
+    const mid = it.master_ingredient_id as string | null
+    if (mid && byMaster.has(mid)) for (const id of byMaster.get(mid)!) ids.add(id)
+    const n = (it.name as string || '').toLowerCase()
+    const words = n.split(/[\s,-]+/).filter(w => w.length >= 4)
+    for (const ri of ingRows) {
+      if (ri.n === n || ri.n.includes(n) || n.includes(ri.n) || words.some(w => ri.n.includes(w))) ids.add(ri.recipe_id)
+    }
+    return [...ids].map(id => nameById.get(id)).filter(Boolean).slice(0, 6)
+  }
+  const overstocked = items.map((it: Record<string, unknown>) => ({
+    name: it.name, quantity: it.quantity ?? null,
+    matching_recipes: matchRecipes(it),
+  }))
+  const upcoming_slots = (slots || []).map((s: Record<string, unknown>) => ({
+    date: s.plan_date, meal_type: s.meal_type,
+    current_recipe: (s.recipes as { name?: string } | null)?.name || null,
+    locked: s.slot_locked === true,
+  }))
+  return {
+    overstocked, upcoming_slots,
+    note: 'For each overstocked item, recommend how to use it up and let Manasa decide per item: FIRST prefer folding it into an already-planned upcoming meal (name the slot + how it fits), else a SINGLE existing recipe from matching_recipes, else offer a NEW recipe via add_recipe. Only apply a plan change via update_plan_slot after she approves; never touch a locked slot.',
   }
 }
 
@@ -1086,6 +1153,13 @@ function parseGroceryOrder(rawText: string, overrides: Map<string, boolean> = ne
   return { food, toUpdate, freezerMeals, cancelled, parseErrors, corrections, nonFood, fingerprint }
 }
 
+// A restock lands an item as an overstock CANDIDATE when its new quantity is
+// more than this multiple of its typical baseline (i.e. more than double the
+// amount normally kept). Sits above "plenty" (> ½ baseline). Candidates are only
+// suggested — Manasa confirms by tapping Overstock; nothing is auto-marked.
+// Tunable: start at 2×, tighten/loosen from real orders.
+const OVERSTOCK_RATIO = 2
+
 async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, emit: (label: string) => void = () => {}) {
   const rawText = (input.raw_text as string) || ''
   if (!rawText.trim()) return { error: 'No order text provided to parse.' }
@@ -1101,7 +1175,7 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
   // ── Step 4: load inventory (active + inactive) + master vocabulary. ──
   emit('Matching items to inventory…')
   const [{ data: inv }, { data: masters }] = await Promise.all([
-    db.from('inventory').select('id, name, quantity, category, food_category, master_ingredient_id, typical_quantity, active, expiry_date'),
+    db.from('inventory').select('id, name, quantity, category, food_category, master_ingredient_id, typical_quantity, active, expiry_date, status'),
     db.from('master_ingredients').select('id, canonical_name, aliases').eq('active', true),
   ])
   const invRows = (inv || []) as Record<string, unknown>[]
@@ -1154,6 +1228,9 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
   const freezerAdded: string[] = []
   const nonFoodAdded: string[] = []
   const flagged: string[] = []
+  // Items this order pushed well past their baseline — surfaced as overstock
+  // *candidates* (auto-suggest, Manasa confirms). See OVERSTOCK_RATIO.
+  const overstockCandidates: string[] = []
 
   // ── Step 5: write net>0 items in batches of 10; progress between batches. ──
   const X = resolved.length
@@ -1175,7 +1252,20 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
         }
         const { error } = await db.from('inventory').update(upd).eq('id', row.id as string)
         if (error) flagged.push(`${g.name} — write failed (${error.message})`)
-        else updatedNames.push(wasInactive ? `${row.name as string} (reactivated)` : (row.name as string))
+        else {
+          updatedNames.push(wasInactive ? `${row.name as string} (reactivated)` : (row.name as string))
+          // Overstock candidate: this restock landed the item well over its
+          // baseline. NOT auto-marked 'overstock' — that stays a manual pill
+          // tap; we only surface it so Manasa can confirm + ask for use-up
+          // ideas. Food staples with a real baseline only; skip non-food and
+          // anything already confirmed overstock.
+          const typ = Number(row.typical_quantity)
+          const newQty = Number(upd.quantity)
+          if (row.food_category !== 'non_food' && typ > 0
+              && newQty > OVERSTOCK_RATIO * typ && row.status !== 'overstock') {
+            overstockCandidates.push(row.name as string)
+          }
+        }
       } else {
         // AI classification first (reliable on Swedish names + prepared foods),
         // regex on the raw name as fallback — this is the fix for perishables
@@ -1304,6 +1394,7 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
   if (nonFoodAdded.length)   parts.push(`Non-food: ${nonFoodAdded.join(', ')}.`)
   if (cancelled.length)      parts.push(`Cancelled/skipped: ${cancelled.map(g => g.name).join(', ')}.`)
   if (flagged.length)        parts.push(`Flagged for review: ${flagged.join('; ')}.`)
+  if (overstockCandidates.length) parts.push(`Looks overstocked after this order: ${overstockCandidates.join(', ')}. Mark any as Overstock in Pantry and ask me for ideas to use them up.`)
 
   return {
     parsed_items: food.length,
@@ -1315,6 +1406,7 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
     cancelled: cancelled.map(g => g.name),
     non_food_added: nonFoodAdded,
     flagged,
+    overstock_candidates: overstockCandidates,
     summary: parts.join(' '),
     note: 'Inventory, freezer meals and non-food items have already been written directly (no confirmation step). Present the summary to the user as-is; do NOT regenerate the grocery list.',
   }
@@ -1776,6 +1868,7 @@ async function dispatch(name: string, input: Record<string, unknown>, db: DB, us
       case 'get_inventory':          result = await toolGetInventory(input, db); break
       case 'get_freezer_stash':      result = await toolGetFreezerStash(db); break
       case 'get_expiry_recommendations': result = await toolGetExpiryRecommendations(input, db); break
+      case 'get_overstock_use_up':   result = await toolGetOverstockUseUp(db); break
       case 'get_prepped_components': result = await toolGetPreppedComponents(db); break
       case 'check_substitutes':      result = await toolCheckSubstitutes(input, db); break
       case 'get_family_context':     result = await toolGetFamilyContext(db); break
@@ -1811,6 +1904,7 @@ function statusLabel(name: string, input: Record<string, unknown>): string {
     case 'get_inventory':          return 'Checking your inventory…'
     case 'get_freezer_stash':      return 'Checking the freezer stash…'
     case 'get_expiry_recommendations': return 'Checking what needs using up…'
+    case 'get_overstock_use_up':   return 'Finding ways to use up overstock…'
     case 'get_prepped_components': return 'Checking prepped components…'
     case 'check_substitutes':      return 'Finding substitutes…'
     case 'get_family_context':     return 'Checking family details…'
@@ -1979,7 +2073,7 @@ async function handleAutomatedOrder(body: Record<string, unknown>, db: DB): Prom
 
     try {
       const result = await toolImportGroceryOrder({ raw_text: emailBody }, db) as {
-        error?: string; updated?: number; created?: string[]; freezer_meals_added?: string[]; non_food_added?: string[]; flagged?: string[]; summary?: string
+        error?: string; updated?: number; created?: string[]; freezer_meals_added?: string[]; non_food_added?: string[]; flagged?: string[]; overstock_candidates?: string[]; summary?: string
       }
       if (result.error) {
         // Nothing was written (the tool only errors before writing) — release
@@ -2019,6 +2113,21 @@ async function handleAutomatedOrder(body: Record<string, unknown>, db: DB): Prom
         const confirmContent = `${retailerLabel}order ${orderId} processed into AbsurdChef.\n${result.summary || message}`
         await db.from('chef_outbox')
           .insert({ kind: 'handoff_confirm', content: confirmContent })
+          .then(() => {}, () => {})
+      }
+
+      // Overstock nudge — notify-only via Allie. If this order pushed items well
+      // past their baseline, ask Manasa about it as a SEPARATE outbox row (own
+      // kind, so Allie frames it as a question needing attention, distinct from
+      // the done-confirm). Independent of flagged: overstock is orthogonal to a
+      // parse review. Allie carries the question OUT only — Manasa opens the app
+      // to confirm the ones she agrees with and asks for use-up ideas there
+      // (get_overstock_use_up); no answer is relayed back through Allie.
+      if (result.overstock_candidates?.length) {
+        const names = result.overstock_candidates.join(', ')
+        const overstockContent = `Heads up: after ${retailer ? retailer + ' ' : ''}order ${orderId}, these look overstocked — ${names}. If you want ideas for using them up, open AbsurdChef, mark the ones you agree are overstocked, and ask me for suggestions.`
+        await db.from('chef_outbox')
+          .insert({ kind: 'overstock_query', content: overstockContent })
           .then(() => {}, () => {})
       }
 
