@@ -201,7 +201,26 @@ function isAlwaysFrozen(item) {
 //           never restocked and auto-leaves inventory when out.
 //   null    status = never checked → shows "—", stays null, never auto-assigned.
 const STAPLE_STATUSES = ['out', 'restock', 'enough', 'plenty', 'overstock']
-const STATUS_LABEL = { out: 'Out', restock: 'Restock', enough: 'Enough', plenty: 'Plenty', overstock: 'Overstock', guest: 'Guest' }
+//
+// ⚠️ DISPLAY LABEL ≠ INTERNAL KEY — READ THIS BEFORE RENAMING ANYTHING.
+// The words you see on the pills are NOT the values stored/queried in code.
+// STATUS_LABEL maps the internal KEY → the human text shown on screen. Only the
+// text on the right may change freely; the KEY on the left is load-bearing and
+// must never change, because it's also:
+//   • the value stored in inventory.status (DB rows, migrations, history)
+//   • what every filter checks (e.g. status === 'enough' / HAVE/LOW sets here,
+//     in grocery-snapshot.ts, chat-agent.ts, and index.ts the meal planner)
+//   • the CSS class suffix (.pn-status-opt--enough, .pn-status-pill--plenty …)
+//
+//     KEY (internal, fixed)   →   LABEL (display, free to reword)
+//     'enough'                →   'One More Meal'   (~one meal for 4–5 people)
+//     'plenty'                →   'Many Meals'      (≥ a double batch on hand)
+//
+// So "rename Enough to X" only ever touches the string on the right below. If a
+// request sounds like it wants the *meaning* to change (thresholds, what the
+// planner does with it), that lives in the derivation (see the edit-form save,
+// ~half-of-baseline rule) and in index.ts (stock_level legend + rule 9), NOT here.
+const STATUS_LABEL = { out: 'Out', restock: 'Restock', enough: 'One More Meal', plenty: 'Many Meals', overstock: 'Overstock', guest: 'Guest' }
 
 // A GUEST item (typical_quantity = 0) is a one-off the household doesn't normally
 // stock — "Restock/Enough/Plenty" are meaningless for it. It carries an explicit
@@ -1229,6 +1248,18 @@ function openInventoryForm(id, defaultCat = 'pantry', defaultFood = 'other') {
     if (Number(payload.typical_quantity) === 0) {
       if (payload.quantity == null || Number(payload.quantity) <= 0) { payload.status = 'out'; payload.active = false }
       else { payload.status = 'guest' }
+    }
+    // Staple with a baseline (typical_quantity > 0): derive Enough/Plenty from
+    // stock on hand vs the typical amount. Over half the baseline reads as
+    // Plenty, at-or-under half as Enough. Only when a positive quantity is
+    // given — a blank/zero quantity leaves the status untouched, so Out and
+    // Overstock stay a manual pill choice.
+    // NOTE: the DB trigger inv_quantity_side_effects (migration
+    // 20260730_inventory_auto_status.sql) ALSO derives this on every write path,
+    // so it's the authoritative/universal source — this line just mirrors it so
+    // the pill shows the right value immediately without waiting for a refetch.
+    else if (Number(payload.typical_quantity) > 0 && payload.quantity != null && Number(payload.quantity) > 0) {
+      payload.status = Number(payload.quantity) > Number(payload.typical_quantity) / 2 ? 'plenty' : 'enough'
     }
     saveBtn.disabled = true; saveBtn.textContent = 'Saving…'
     const op = id
