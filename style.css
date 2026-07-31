@@ -3767,6 +3767,15 @@ body {
 .pn-form-col  { flex: 1; }
 .pn-form-col-sm { flex: 0 0 110px; }
 
+/* Inline "This is [food type] stored in the [location]" sentence — the two
+   dropdowns flow within the words instead of sitting as two labelled columns. */
+.pn-sentence {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  margin-bottom: 11px;
+  font-size: 13.8px; color: var(--text);
+}
+.su-select--inline { width: auto; }
+
 /* Linked-ingredient editor row */
 .pn-link { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 30px; }
 .pn-link-name    { font-size: 14.8px; font-weight: 600; color: var(--text); }

@@ -1192,9 +1192,15 @@ function openInventoryForm(id, defaultCat = 'pantry', defaultFood = 'other') {
   qtyRow.className = 'pn-form-row'
   qtyRow.append(mkField('Quantity', qtyInp, 'pn-form-col-sm'), mkField('Unit', unitInp, 'pn-form-col'))
 
+  // "Stored in" + "Food type" read as one plain-English sentence rather than two
+  // bare dropdowns — the selects sit inline within the phrasing they describe.
+  catSel.classList.add('su-select--inline')
+  foodSel.classList.add('su-select--inline')
   const catRow = document.createElement('div')
-  catRow.className = 'pn-form-row'
-  catRow.append(mkField('Stored in', catSel, 'pn-form-col'), mkField('Food type', foodSel, 'pn-form-col'))
+  catRow.className = 'pn-sentence'
+  const w1 = document.createElement('span'); w1.textContent = 'This is'
+  const w2 = document.createElement('span'); w2.textContent = 'stored in the'
+  catRow.append(w1, foodSel, w2, catSel)
 
   // Non-food group selector — only relevant (and only shown) when Food type is
   // Non-food; it drives which section the item appears under on the Non-food tab.
@@ -1723,10 +1729,7 @@ function renderPrepped() {
 
     const right = document.createElement('div')
     right.className = 'pn-row__right'
-    const batches = document.createElement('span')
-    batches.className = 'pn-prepped-batches'
-    batches.textContent = comp.batches_remaining + '×'
-    right.appendChild(batches)
+    right.appendChild(buildBatchesStepper(comp))
     if (comp.storage_notes) {
       const note = document.createElement('span')
       note.className = 'pn-badge pn-badge-note'
@@ -1745,6 +1748,54 @@ function renderPrepped() {
     card.appendChild(row)
   })
   contentEl.appendChild(card)
+}
+
+// Adjust a prepped component's remaining batches. Mirrors setFreezerPortions:
+// writes the new count, keeps the in-memory row in sync, and updates the number
+// in place. A count of 0 stays visible until the next load (loadPrepped filters
+// batches_remaining > 0), same as a used-up freezer stash.
+async function setPreppedBatches(comp, num, newBatches) {
+  const { data, error } = await supabase.from('prepped_components')
+    .update({ batches_remaining: newBatches }).eq('id', comp.id).select('*').single()
+  if (error || !data) { toast('Update failed', { error: true }); return }
+  comp.batches_remaining = data.batches_remaining
+  const idx = preppedData.findIndex(x => x.id === comp.id)
+  if (idx >= 0) preppedData[idx].batches_remaining = data.batches_remaining
+  num.textContent = comp.batches_remaining + '×'
+}
+
+// Batches stepper for the Prepped tab — same − / num / + control as the freezer
+// portions stepper, so bumping a spice mix up or down matches the rest of Pantry.
+function buildBatchesStepper(comp) {
+  const c = document.createElement('div')
+  c.className = 'pn-stepper'
+  const mk = (txt, cls) => { const b = document.createElement('button'); b.className = 'pn-step-btn ' + cls; b.textContent = txt; return b }
+  const minus = mk('−', 'pn-step-btn--minus')
+  const plus  = mk('+', 'pn-step-btn--plus')
+  const num = document.createElement('button')
+  num.className = 'pn-step-num'
+  num.textContent = comp.batches_remaining + '×'
+
+  minus.addEventListener('click', e => { e.stopPropagation(); setPreppedBatches(comp, num, Math.max(0, (Number(comp.batches_remaining) || 0) - 1)) })
+  plus.addEventListener('click',  e => { e.stopPropagation(); setPreppedBatches(comp, num, (Number(comp.batches_remaining) || 0) + 1) })
+  num.addEventListener('click', e => {
+    e.stopPropagation()
+    const inp = document.createElement('input')
+    inp.type = 'number'; inp.className = 'pn-qty-input'; inp.min = 0; inp.step = '1'
+    inp.value = comp.batches_remaining ?? ''
+    num.replaceWith(inp); inp.focus(); inp.select()
+    let done = false
+    const commit = () => { if (done) return; done = true; inp.replaceWith(num); setPreppedBatches(comp, num, inp.value === '' ? 0 : Math.max(0, parseInt(inp.value) || 0)) }
+    const cancel = () => { if (done) return; done = true; inp.replaceWith(num) }
+    inp.addEventListener('click', e2 => e2.stopPropagation())
+    inp.addEventListener('blur', commit)
+    inp.addEventListener('keydown', e2 => {
+      if (e2.key === 'Enter') { e2.preventDefault(); inp.blur() }
+      else if (e2.key === 'Escape') { e2.preventDefault(); cancel() }
+    })
+  })
+  c.append(minus, num, plus)
+  return c
 }
 
 // ═══════════════════════════════════════════════════════════
