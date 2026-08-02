@@ -3659,11 +3659,9 @@ body {
   background: var(--primary); border-color: var(--primary); color: #fff;   /* nearly out — buy */
 }
 .pn-status-pill--enough { color: var(--text); }             /* neutral, one meal */
-.pn-status-pill--plenty {
-  border-color: var(--primary); color: var(--primary); background: var(--primary-bg);   /* 2+ meals */
-}
+.pn-status-pill--plenty { color: var(--text); }             /* 2+ meals — same calm treatment as Enough */
 .pn-status-pill--overstock {
-  border-color: #D4A017; color: #7a5f0d; background: rgba(212, 160, 23, 0.14);   /* draw it down */
+  background: #15803d; border-color: #15803d; color: #fff;   /* too much — draw it down (green mirror of Out) */
 }
 .pn-status-pill--guest {                                    /* one-off, not restocked */
   border: 1.5px solid #D4A017; background: transparent; color: #D4A017;
@@ -3673,10 +3671,14 @@ body {
   border-color: transparent; background: transparent; color: var(--text-muted);
 }
 
+/* Non-food (--nf) 3-state signal reuses the food pills unchanged: Restock =
+   food's Restock, In Stock = the calm Enough look, Overstock = the green pill
+   above. No per-status overrides needed — kept consistent across both tabs. */
+
 /* Grid option accents mirror the pill so the picker reads the same way. */
 .pn-status-opt--out.pn-status-opt--active      { border-color: #b91c1c; background: #fdecec; color: #b91c1c; }
 .pn-status-opt--restock.pn-status-opt--active  { border-color: var(--primary); background: var(--primary-bg); color: var(--primary); }
-.pn-status-opt--overstock.pn-status-opt--active{ border-color: #D4A017; background: rgba(212, 160, 23, 0.14); color: #7a5f0d; }
+.pn-status-opt--overstock.pn-status-opt--active{ border-color: #15803d; background: #eaf6ee; color: #15803d; }
 .pn-status-opt--guest.pn-status-opt--active    { border-color: #D4A017; background: rgba(212, 160, 23, 0.10); color: #b8860b; }
 
 /* Expanded 2×3 status grid below the row */

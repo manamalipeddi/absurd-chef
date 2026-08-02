@@ -222,6 +222,24 @@ const STAPLE_STATUSES = ['out', 'restock', 'enough', 'plenty', 'overstock']
 // ~half-of-baseline rule) and in index.ts (stock_level legend + rule 9), NOT here.
 const STATUS_LABEL = { out: 'Out', restock: 'Restock', enough: 'One More Meal', plenty: 'Many Meals', overstock: 'Overstock', guest: 'Guest' }
 
+// NON-FOOD items (food_category='non_food') carry a simpler 3-state signal — no
+// Enough/Plenty nuance, no Guest one-offs: Restock · In Stock · Overstock. The
+// KEYS reuse the food vocabulary so the rest of the app keeps working unchanged:
+//   • 'restock'          → "Restock"  (buy it; still lands on the grocery list)
+//   • 'enough'/'plenty'  → "In Stock" (have it; the DB trigger may flip between
+//                                      the two on a count change — both read the
+//                                      same here, so it doesn't matter)
+//   • 'overstock'        → "Overstock" (too much)
+// Picker offers three buttons; 'enough' is the canonical "In Stock" write.
+const NONFOOD_STATUSES = [['restock', 'Restock'], ['enough', 'In Stock'], ['overstock', 'Overstock']]
+function isNonFood(item) { return item.food_category === 'non_food' }
+function nonFoodStatusLabel(cur) {
+  if (cur === 'restock') return 'Restock'
+  if (cur === 'overstock') return 'Overstock'
+  if (cur === 'enough' || cur === 'plenty') return 'In Stock'
+  return null
+}
+
 // A GUEST item (typical_quantity = 0) is a one-off the household doesn't normally
 // stock — "Restock/Enough/Plenty" are meaningless for it. It carries an explicit
 // 'guest' status while it has stock and auto-deactivates when used up.
@@ -932,6 +950,13 @@ async function setInvStatus(wrap, item, ruled, statusKey) {
 // Pill visual class for a status. Guest items always read as the amber "won't
 // restock" outline. A null status is the muted "—" (never checked, no pill).
 function statusPillClass(item, cur) {
+  if (isNonFood(item)) {
+    // 3-state signal: Restock reads like food's Out (red), In Stock reuses the
+    // calm Enough look, Overstock stays the green "draw it down".
+    if (!cur) return ' pn-status-pill--empty'
+    const suffix = (cur === 'enough' || cur === 'plenty') ? 'enough' : cur
+    return ' pn-status-pill--nf pn-status-pill--' + suffix
+  }
   if (isGuest(item)) return ' pn-status-pill--guest'
   if (!cur) return ' pn-status-pill--empty'
   return ' pn-status-pill--' + cur
@@ -943,10 +968,13 @@ function buildStatusControl(wrap, item, ruled) {
   const cur = displayStatus(item)
   const pill = document.createElement('button')
   pill.className = 'pn-status-pill' + statusPillClass(item, cur)
-  pill.textContent = (cur && STATUS_LABEL[cur]) || '—'
+  pill.textContent = isNonFood(item)
+    ? (nonFoodStatusLabel(cur) || '—')
+    : ((cur && STATUS_LABEL[cur]) || '—')
   pill.addEventListener('click', e => {
     e.stopPropagation()
-    if (isGuest(item)) toggleGuestGrid(wrap, item, ruled, pill)
+    if (isNonFood(item)) toggleNonFoodGrid(wrap, item, ruled, pill)
+    else if (isGuest(item)) toggleGuestGrid(wrap, item, ruled, pill)
     else toggleStatusGrid(wrap, item, ruled, pill)
   })
   c.appendChild(pill)
@@ -984,6 +1012,26 @@ function toggleGuestGrid(wrap, item, ruled, pill) {
   ;[['guest', 'Guest'], ['out', 'Out (used up)']].forEach(([k, label]) => {
     const b = document.createElement('button')
     b.className = 'pn-status-opt pn-status-opt--' + k + (k === cur ? ' pn-status-opt--active' : '')
+    b.textContent = label
+    b.addEventListener('click', e => { e.stopPropagation(); setInvStatus(wrap, item, ruled, k) })
+    grid.appendChild(b)
+  })
+  wrap.appendChild(grid)
+}
+
+// NON-FOOD picker: the 3-state Restock / In Stock / Overstock. In Stock writes
+// 'enough' but stays highlighted for a stored 'plenty' too (both read In Stock).
+function toggleNonFoodGrid(wrap, item, ruled, pill) {
+  const open = wrap.querySelector('.pn-status-grid')
+  if (open) { open.remove(); pill.classList.remove('pn-status-pill--open'); return }
+  pill.classList.add('pn-status-pill--open')
+  const cur = item.status || null
+  const grid = document.createElement('div')
+  grid.className = 'pn-status-grid pn-status-grid--nf'
+  NONFOOD_STATUSES.forEach(([k, label]) => {
+    const active = k === cur || (k === 'enough' && (cur === 'enough' || cur === 'plenty'))
+    const b = document.createElement('button')
+    b.className = 'pn-status-opt pn-status-opt--nf pn-status-opt--' + k + (active ? ' pn-status-opt--active' : '')
     b.textContent = label
     b.addEventListener('click', e => { e.stopPropagation(); setInvStatus(wrap, item, ruled, k) })
     grid.appendChild(b)
@@ -1249,9 +1297,14 @@ function openInventoryForm(id, defaultCat = 'pantry', defaultFood = 'other') {
     // Saving an inactive item (reached via search) reactivates it. The atypical
     // reconcile below may still re-hide it if it's a typical=0 item with no stock.
     if (item && item.active === false) payload.active = true
+    // Non-food uses the simple 3-state signal, not Guest/Enough/Plenty: keep an
+    // existing manual Restock/Overstock, otherwise default to In Stock ('enough').
+    if (foodSel.value === 'non_food') {
+      if (!(id && ['restock', 'overstock'].includes(item?.status))) payload.status = 'enough'
+    }
     // Guest reconcile (typical_quantity = 0): stock → 'guest'; emptied → drop it
     // out of inventory (active = false) in the same save.
-    if (Number(payload.typical_quantity) === 0) {
+    else if (Number(payload.typical_quantity) === 0) {
       if (payload.quantity == null || Number(payload.quantity) <= 0) { payload.status = 'out'; payload.active = false }
       else { payload.status = 'guest' }
     }
