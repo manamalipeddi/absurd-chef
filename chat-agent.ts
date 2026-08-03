@@ -959,17 +959,29 @@ function parseOrderLine(rawLine: string): { name: string; qty: number; vat: numb
   const words = line.replace(/\t/g, ' ').split(/\s+/).filter(Boolean)
   if (words.length && words.every(w => HEADER_WORDS.has(w.toLowerCase()))) return null   // header row
 
-  // Primary: tab-separated columns [name][qty][vat][price].
+  // Primary: tab-separated columns. Two real shapes reach here:
+  //   Mathem paste  [name][antal][moms%][pris]     — 4 cols, VAT is its own column
+  //   ICA email     [name][antal "N st"][pris kr]  — 3 cols, NO VAT column
+  // (Allie rebuilds ICA's HTML order table into one tab-separated line per <tr>.)
+  // The quantity cell MUST be a small count ("2" or "1 st"): that's what tells a
+  // product row apart from a two-column summary row like ICA's "Varukostnad:\t
+  // 3 363,31 kr" or "Ordernummer:\t1181145777724", which would otherwise import
+  // as a bogus item with a gigantic quantity.
   const tabs = line.split('\t').map(s => s.trim()).filter(s => s.length)
-  if (tabs.length >= 2) {
+  if (tabs.length >= 2 && tabs[0] && /^-?\d{1,3}(?:\s*st\.?)?$/i.test(tabs[1])) {
     const q = swedishNum(tabs[1])
-    if (q != null && tabs[0]) {
-      const v = tabs[2] ? parseInt(tabs[2], 10) : NaN
+    if (q != null) {
+      // VAT exists only as its own bare-integer column (Mathem's 4-col paste). In
+      // ICA's 3-col table that slot holds the PRICE ("87,95 kr"), never a VAT — so
+      // only read a VAT when there's a dedicated column for it.
+      const vatCell = tabs.length >= 4 ? tabs[2] : ''
+      const v = /^\d{1,3}%?$/.test(vatCell) ? parseInt(vatCell, 10) : NaN
       return { name: tabs[0], qty: Math.round(q), vat: Number.isFinite(v) ? v : null }
     }
   }
-  // Fallback (tabs lost in the paste): trailing "<qty> <vat>% <price> kr".
-  const m = line.match(/^(.*?)[\s\t]+(-?\d+(?:[.,]\d+)?)[\s\t]+(\d{1,3})\s*%[\s\t]+[\d.,\s]+kr\.?$/i)
+  // Fallback (tabs lost in the paste): trailing "<qty> <vat>% <price> kr". The
+  // price may be negative on an adjustment/reduction line, so allow a leading "-".
+  const m = line.match(/^(.*?)[\s\t]+(-?\d+(?:[.,]\d+)?)[\s\t]+(\d{1,3})\s*%[\s\t]+-?[\d.,\s]+kr\.?$/i)
   if (m && m[1].trim()) {
     const q = swedishNum(m[2])
     if (q != null) return { name: m[1].trim(), qty: Math.round(q), vat: parseInt(m[3], 10) }
@@ -979,7 +991,7 @@ function parseOrderLine(rawLine: string): { name: string; qty: number; vat: numb
   // table — prefixes the quantity ("2 stycken …"), puts "Moms" before the VAT,
   // and prices in "SEK". The leading "<n> stycken" also excludes the VAT-summary
   // rows ("Moms 6% 69,90 SEK"), which have no quantity.
-  const em = line.match(/^(-?\d+(?:[.,]\d+)?)\s+st(?:ycken|k|\.)?\s+(.+?)\s+moms\s+(\d{1,3})\s*%\s+[\d.,\s]+(?:sek|kr)\.?$/i)
+  const em = line.match(/^(-?\d+(?:[.,]\d+)?)\s+st(?:ycken|k|\.)?\s+(.+?)\s+moms\s+(\d{1,3})\s*%\s+-?[\d.,\s]+(?:sek|kr)\.?$/i)
   if (em && em[2].trim()) {
     const q = swedishNum(em[1])
     if (q != null) return { name: em[2].trim(), qty: Math.round(q), vat: parseInt(em[3], 10) }
@@ -1074,11 +1086,13 @@ function normalizeOrderId(raw: unknown): string | null {
 
 // Pull the retailer order number out of pasted/emailed order text, so a MANUAL
 // paste dedupes against the same ledger as Allie's hand-offs. Keyword-anchored
-// (ordernummer / beställningsnummer / order no…) and digits-first (Mathem and
-// ICA order numbers are numeric) to avoid matching arbitrary text.
+// (ordernummer / beställningsnummer / order no…). The id may be alphanumeric —
+// Mathem switched from numeric to codes like "ygfug3"; ICA stays numeric — so we
+// accept letters+digits but REQUIRE at least one digit (the `(?=…\d)` lookahead)
+// so the bare "order" branch can't grab a plain word like "delivered".
 function extractOrderId(text: string): string | null {
   const m = String(text || '').match(
-    /(?:best[äa]llningsnummer|best[äa]llningsnr|order(?:nummer|nr|[-\s]*(?:number|no|id))?)\s*[.:#]*\s*(\d[\d-]{4,})/i
+    /(?:best[äa]llningsnummer|best[äa]llningsnr|order(?:nummer|nr|[-\s]*(?:number|no|id))?)\s*[.:#]*\s*(?=[a-z0-9-]*\d)([a-z0-9][a-z0-9-]{3,})/i
   )
   return m ? normalizeOrderId(m[1]) : null
 }
