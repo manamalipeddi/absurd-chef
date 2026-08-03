@@ -829,7 +829,7 @@ function swedishNum(s: string): number | null {
 // Non-food PRODUCTS that must never land in the food inventory — they go to the
 // Non-food list instead. Focused, low false-positive list (Swedish + English);
 // ambiguous words are deliberately out.
-const NON_FOOD_RE = /\b(blöj\w*|diaper\w*|libero|hushållspapper|toapapper|toalettpapper|toilet\s*paper|servett\w*|napkin\w*|aluminiumfolie|plastfilm|gladpack|cling\s*film|vanish|fläckborttag\w*|fläckbort\w*|diskmedel|disktablett\w*|disktabs|maskindisk\w*|dishwash\w*|tvättmedel|sköljmedel|detergent|rengöring\w*|allrengöring|tvål|soap|schampo|shampoo|balsam|conditioner|tandkräm|toothpaste|deodorant|bindor|tampong\w*|batteri\w*|glödlampa|djurfoder|kattmat|hundmat)\b/i
+const NON_FOOD_RE = /\b(blöj\w*|diaper\w*|libero|hushållspapper|toapapper|toalettpapper|toilet\s*paper|servett\w*|napkin\w*|aluminiumfolie|plastfilm|gladpack|cling\s*film|vanish|fläckborttag\w*|fläckbort\w*|diskmedel|disktablett\w*|disktabs|maskindisk\w*|dishwash\w*|tvättmedel|sköljmedel|detergent|rengöring\w*|allrengöring|tvål|soap|schampo|shampoo|balsam|conditioner|tandkräm|toothpaste|\w*tandborst\w*|toothbrush\w*|deodorant|bindor|tampong\w*|batteri\w*|glödlampa|djurfoder|kattmat|hundmat)\b/i
 // Detects non-food so it routes to the Non-food list. Primary signal: 25% VAT
 // (Mathem food is 6–12%, household/hygiene/cleaning is 25%, and Mathem sells no
 // alcohol) — backed by a keyword list for anything mis-rated or when VAT is missing.
