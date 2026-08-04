@@ -175,6 +175,9 @@ async function loadAndRender() {
     'plan_date, meal_type, recipe_id, slot_locked, is_commute_day, is_holiday, is_preschool_closed, guest_count, ' +
     'notes, actually_made, actual_recipe_id, actual_notes, expiry_override, additional_recipes, ' +
     'freezer_stash_id, freezer_portions_used, ' +
+    // A freezer-pick slot has recipe_id = null (the stash item is often not a
+    // linked recipe), so pull its name from freezer_stash for display.
+    'freezer:freezer_stash!meal_plans_freezer_stash_id_fkey(recipe_name), ' +
     'recipes!meal_plans_recipe_id_fkey(id, name, emoji, serves_base, is_placeholder), ' +
     'actual_recipe:recipes!meal_plans_actual_recipe_id_fkey(id, name, emoji, is_placeholder)'
 
@@ -500,6 +503,11 @@ function slotDisplay(entry) {
   if (entry.recipe_id && r) {
     if (r.is_placeholder) return { name: entry.notes || 'Other', nav: null, actual: false }
     return { name: r.name, nav: entry.recipe_id, actual: false }
+  }
+  // Freezer pick with no linked recipe: show the stash item's name so the slot
+  // isn't rendered empty (the ❄️ marker + portion correction live in the row).
+  if (entry.freezer_stash_id) {
+    return { name: entry.freezer?.recipe_name || 'Freezer meal', nav: null, actual: false }
   }
   return null
 }
