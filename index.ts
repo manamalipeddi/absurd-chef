@@ -676,11 +676,16 @@ function buildPrompt(
   // In-stock proteins/mains to build meals AROUND (rule 18b), soonest-to-expire
   // first. This is the fix for "the plan ignores the chicken/pulled pork".
   // (inStockItems + MEAT_FISH_FC + the makeability index are computed near recipeList.)
+  // Only FRIDGE (and pantry) proteins drive the use-it-up prioritisation —
+  // Manasa's rule: Chef should NOT burn down the freezer. Freezer proteins stay
+  // usable (they still count toward makeability) and freezer MEALS still come
+  // via the template / freezer-stash path (Frozen Meaty Meal days); they're just
+  // excluded here so the planner never plans a meal purely to consume the freezer.
   const anchorStock = inStockItems
-    .filter(it => MEAT_FISH_FC.has(it.food_category || ""))
+    .filter(it => MEAT_FISH_FC.has(it.food_category || "") && it.category !== "freezer")
     .map(it => ({
       name: it.name,
-      where: it.category,                                              // fridge | freezer | pantry
+      where: it.category,                                              // fridge | pantry (freezer excluded above)
       quantity: it.quantity,
       // How much is on hand, in meal terms (see legend on the IN-STOCK header):
       // "enough" = one meal for 4–5 people; "plenty" = at least a double batch.
@@ -1007,7 +1012,9 @@ PLANNING RULES
       recipe. Ask the Absurd Chef to suggest one."
     - Every slot not filled for a critical-expiry reason keeps "expiry_override": false.
 18b. USE WHAT'S IN STOCK — AUTONOMY (see IN-STOCK PROTEINS & MAINS): you are
-    given the proteins/mains already in the fridge/freezer/pantry. Treat using
+    given the proteins/mains already in the fridge/pantry. (FREEZER items are
+    deliberately NOT in that list — do NOT plan meals just to use up the freezer;
+    freezer meals come only from the template / freezer-stash path.) Treat using
     these up as a FIRST-CLASS goal, balanced against the template — the template
     is a BROAD GUIDELINE, not a mandate; you MAY deviate from it to cook what's on
     hand. Think for yourself:
@@ -1104,7 +1111,7 @@ ${JSON.stringify(recipeList, null, 2)}
 CRITICAL EXPIRING (meat/fish within 2 days — see rule 18; empty = nothing critical)
 ${JSON.stringify(criticalExpiring, null, 2)}
 
-IN-STOCK PROTEINS & MAINS (build meals AROUND these — see rule 18b; where = fridge/freezer/pantry; days_until = null when undated; soonest first)
+IN-STOCK PROTEINS & MAINS (build meals AROUND these — see rule 18b; where = fridge/pantry, freezer intentionally excluded; days_until = null when undated; soonest first)
 stock_level (when present): "enough" = enough for ONE meal for 4–5 people, so use it in a single dinner and don't plan a batch-cook/double on it. "plenty" = enough for at least a double batch (or more), so it's a good candidate to batch-cook and freeze (rule 9). Absent stock_level = amount unknown; treat as a single meal's worth.
 ${JSON.stringify(anchorStock, null, 2)}
 

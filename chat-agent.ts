@@ -1174,6 +1174,20 @@ function parseGroceryOrder(rawText: string, overrides: Map<string, boolean> = ne
 // Tunable: start at 2×, tighten/loosen from real orders.
 const OVERSTOCK_RATIO = 2
 
+// Frequently-ordered FRIDGE staples that turn over completely between grocery
+// runs. When one of these is IN a new order, assume the previous stock was fully
+// used up: REPLACE the quantity with what just arrived (don't accumulate a stale
+// count) and mark it 'plenty' / "Many Meals" — UNLESS Manasa has tapped Overstock
+// (that wins). Such items are also skipped from overstock-candidate flagging, so
+// they sit at "Many Meals" by default. Only applied to fridge-category rows, so a
+// pantry "coconut milk" is never caught. Note-to-self list — extend by hand.
+const ASSUME_CONSUMED: RegExp[] = [
+  /\bmilk\b/i, /\bmjölk\b/i,                    // milk (English + Swedish)
+  /\beggs?\b/i, /\bägg\b/i,                     // eggs
+  /\byog[h]?urt\b/i,                            // yoghurt (incl. drinking yoghurt)
+]
+const isAssumeConsumed = (name: string) => ASSUME_CONSUMED.some(re => re.test(name || ''))
+
 async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, emit: (label: string) => void = () => {}) {
   const rawText = (input.raw_text as string) || ''
   if (!rawText.trim()) return { error: 'No order text provided to parse.' }
@@ -1258,6 +1272,15 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
         }
         if (wasInactive) upd.active = true                              // buying it → relevant again
         if (Number(row.typical_quantity) === 0) upd.status = 'guest'    // guest one-off has stock again
+        // Assume-consumed fridge staple (milk/eggs/yoghurt): treat the prior
+        // stock as fully used up between orders — REPLACE the quantity with what
+        // just arrived (not old+new) and force 'plenty' ("Many Meals"), unless
+        // Manasa has explicitly marked it Overstock. See ASSUME_CONSUMED.
+        const assumeConsumed = row.category === 'fridge' && isAssumeConsumed(row.name as string)
+        if (assumeConsumed) {
+          upd.quantity = g.net
+          if (row.status !== 'overstock') upd.status = 'plenty'
+        }
         // Inferred shelf life on restock — only when no valid manual date exists.
         const rowFc = (row.food_category as string) || inferFoodCategory(g.name)
         const rowLife = rowFc ? SHELF_LIFE_DAYS[rowFc] : undefined
@@ -1275,7 +1298,7 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
           // anything already confirmed overstock.
           const typ = Number(row.typical_quantity)
           const newQty = Number(upd.quantity)
-          if (row.food_category !== 'non_food' && typ > 0
+          if (row.food_category !== 'non_food' && typ > 0 && !assumeConsumed
               && newQty > OVERSTOCK_RATIO * typ && row.status !== 'overstock') {
             overstockCandidates.push(row.name as string)
           }
