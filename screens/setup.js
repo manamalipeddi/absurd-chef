@@ -1,4 +1,4 @@
-import { navigateTo } from '../app.js'
+import { navigateTo, signOut } from '../app.js'
 
 const SECTIONS = [
   { id: 'setup-family',          emoji: '👨‍👩‍👧‍👦', label: 'Family',          sub: 'Members, allergies & preferences' },
@@ -51,4 +51,12 @@ export function activate({ headerLeft, headerRight }) {
   })
 
   screenEl.appendChild(card)
+
+  // Sign out of the shared household login (rarely needed — the session
+  // persists across launches — but useful for switching accounts / testing).
+  const out = document.createElement('button')
+  out.className = 'su-signout'
+  out.textContent = 'Sign out'
+  out.addEventListener('click', () => { if (confirm('Sign out of Absurd Chef?')) signOut() })
+  screenEl.appendChild(out)
 }

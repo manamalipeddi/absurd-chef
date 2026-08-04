@@ -3968,3 +3968,42 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 .chat-load-more:disabled { opacity: 0.5; cursor: default; }
+
+/* ── Auth gate (shared household login) ─────────────────────────────────── */
+#auth-gate {
+  position: fixed; inset: 0; z-index: 1000;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px; background: var(--page);
+}
+#auth-form {
+  width: 100%; max-width: 320px;
+  display: flex; flex-direction: column; gap: 14px;
+  text-align: center;
+}
+#auth-form h1 {
+  font-family: 'Mouse Memoirs', var(--font);
+  color: var(--text-on-page); font-size: 2.4rem; margin: 0;
+}
+#auth-form .auth-sub { color: var(--text-on-page-muted); margin: -6px 0 6px; }
+#auth-form input {
+  font-family: var(--font); font-size: 1rem;
+  padding: 12px 14px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border); background: var(--bg); color: var(--text);
+}
+#auth-form #auth-submit {
+  font-family: var(--font); font-weight: 600; font-size: 1rem;
+  padding: 12px 14px; border: none; border-radius: var(--radius-sm);
+  background: var(--primary); color: #fff; cursor: pointer;
+}
+#auth-form #auth-submit:disabled { opacity: .6; cursor: default; }
+#auth-form #auth-err { color: var(--accent-warm); min-height: 1.2em; margin: 0; font-size: .9rem; }
+
+/* Sign-out button at the foot of the Setup hub */
+.su-signout {
+  display: block; margin: 28px auto 8px; padding: 10px 20px;
+  font-family: var(--font); font-size: .95rem; font-weight: 600;
+  color: var(--text-on-page-muted); background: transparent;
+  border: 1px solid var(--nav-inactive); border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.su-signout:active { opacity: .7; }

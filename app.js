@@ -231,8 +231,59 @@ export function setProcessing(active, label) {
   updatePill()
 }
 
+// ── Auth gate (single shared household login) ─────────────
+// Every public table now has RLS, and the Class B tables (everything the
+// browser touches) only allow the `authenticated` role. So the anon key alone
+// can read/write nothing — the whole PWA sits behind one shared Supabase Auth
+// login. Server-side callers (edge functions, Allie, backups) use the service
+// role, which bypasses RLS, so they're unaffected by any of this.
+// The session is persisted in localStorage by supabase-js, so this prompts
+// once and then stays signed in across launches.
+export async function signOut() {
+  await supabase.auth.signOut()
+  location.reload()
+}
+
+async function requireAuth() {
+  const { data: { session } } = await supabase.auth.getSession()
+  if (session) return
+
+  await new Promise((resolve) => {
+    const overlay = document.createElement('div')
+    overlay.id = 'auth-gate'
+    overlay.innerHTML = `
+      <form id="auth-form" autocomplete="on">
+        <h1>Absurd Chef</h1>
+        <p class="auth-sub">Sign in to continue</p>
+        <input type="email" id="auth-email" placeholder="Email" autocomplete="username" required>
+        <input type="password" id="auth-pass" placeholder="Password" autocomplete="current-password" required>
+        <button type="submit" id="auth-submit">Sign in</button>
+        <p id="auth-err" role="alert"></p>
+      </form>`
+    document.body.appendChild(overlay)
+    const form = overlay.querySelector('#auth-form')
+    const err  = overlay.querySelector('#auth-err')
+    const btn  = overlay.querySelector('#auth-submit')
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault()
+      err.textContent = ''
+      btn.disabled = true
+      const email    = overlay.querySelector('#auth-email').value.trim()
+      const password = overlay.querySelector('#auth-pass').value
+      const { error } = await supabase.auth.signInWithPassword({ email, password })
+      if (error) { err.textContent = error.message; btn.disabled = false; return }
+      overlay.remove()
+      resolve()
+    })
+  })
+}
+
 // ── Boot ──────────────────────────────────────────────────
 async function boot() {
+  // Gate the whole app behind the shared household login before any screen
+  // (and therefore any RLS-protected query) runs.
+  await requireAuth()
+
   // Seed the initial history entry, then show the first screen without pushing.
   // Landing page = Pantry (opens on its Inventory sub-tab) — the most-used view.
   history.replaceState({ screen: 'pantry' }, '')
