@@ -1181,10 +1181,15 @@ const OVERSTOCK_RATIO = 2
 // (that wins). Such items are also skipped from overstock-candidate flagging, so
 // they sit at "Many Meals" by default. Only applied to fridge-category rows, so a
 // pantry "coconut milk" is never caught. Note-to-self list — extend by hand.
+// Anchored to the START of the name so a leading modifier marks a DIFFERENT
+// item and is excluded — inventory names are "Base - Variant", so "Milk - …"
+// and "Eggs - …" match, but "Condensed milk", "Almond milk", "Coconut yoghurt"
+// (different base items, not weekly-turnover staples) do not.
 const ASSUME_CONSUMED: RegExp[] = [
-  /\bmilk\b/i, /\bmjölk\b/i,                    // milk (English + Swedish)
-  /\beggs?\b/i, /\bägg\b/i,                     // eggs
-  /\byog[h]?urt\b/i,                            // yoghurt (incl. drinking yoghurt)
+  /^milk\b/i, /^mjölk\b/i,                      // milk (English + Swedish)
+  /^eggs?\b/i, /^ägg\b/i,                       // eggs
+  /^yog[h]?urt\b/i,                             // yoghurt / yogurt
+  /^drinking yog[h]?urt\b/i,                    // the kids' drinking yoghurt (a milk-type drink)
 ]
 const isAssumeConsumed = (name: string) => ASSUME_CONSUMED.some(re => re.test(name || ''))
 
