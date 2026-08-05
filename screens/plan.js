@@ -159,6 +159,11 @@ async function getPlanWindow() {
 
 async function loadAndRender() {
   if (!screenEl) return
+  // Preserve scroll across in-place refreshes (e.g. editing/logging a meal down
+  // in History): capture where we are BEFORE the DOM is wiped, and restore it
+  // after re-render. Back-navigation from Recipe Detail uses navState.scrollPlan
+  // instead (the element is fresh at 0 by then), so that takes precedence below.
+  const prevScroll = screenEl.scrollTop
   screenEl.innerHTML = `<div class="loading-row"><div class="spinner"></div>Loading…</div>`
 
   const { startDate, endDate } = await getPlanWindow()
@@ -237,11 +242,12 @@ async function loadAndRender() {
 
   render(days, startDate, computeGenWarning(schedLogRes.data?.[0]), histRes.data || [], noteMap)
 
-  // Restore scroll when returning from Recipe Detail (back navigation).
-  if (navState.scrollPlan != null) {
-    const top = navState.scrollPlan; navState.scrollPlan = null
-    requestAnimationFrame(() => { screenEl.scrollTop = top })
-  }
+  // Restore scroll: back-navigation from Recipe Detail (navState.scrollPlan)
+  // wins; otherwise fall back to the position captured before this refresh so
+  // in-place edits down the page (e.g. logging a History meal) stay put.
+  const restoreTop = navState.scrollPlan != null ? navState.scrollPlan : prevScroll
+  navState.scrollPlan = null
+  if (restoreTop) requestAnimationFrame(() => { screenEl.scrollTop = restoreTop })
 }
 
 // Decide whether to warn about scheduled generation. Returns null (all good),
