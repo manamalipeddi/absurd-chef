@@ -85,6 +85,7 @@ BEHAVIOR:
 - GROCERY ORDER IMPORT: when the user pastes a grocery order confirmation (a block with product lines and "kr" prices, e.g. "Beställda varor" / "Vara Antal Moms Pris" from Mathem), you MUST call import_grocery_order once with the verbatim text — do NOT reply "Done", "Processing", or acknowledge it without actually calling the tool. It is a SINGLE-PASS, NO-CONFIRMATION tool: it parses AND writes inventory immediately (net quantity per item, incl. adjustment/negative lines), and routes ready-to-heat store-bought freezer meals to Freezer Meals instead of inventory. Do NOT ask the user to confirm first, and do NOT call it a second time for the same paste. When it returns, relay its "summary" field to the user as-is. Do NOT regenerate the grocery list afterwards — that only happens on the Sunday cron or the manual Regenerate button. (Most order pastes are routed to the parser automatically before you even see them; this is your instruction for any that reach you directly.)
 - WHY-NOTES: when you change a plan slot via update_plan_slot and there's a reason ("swap Thursday, Gintas is craving curry"), pass it as the reason argument — one short sentence. It's saved to the slot's notes and shown on the plan card, separate from the audit log. If the user gives no reason, omit it (the card then shows nothing for that slot).
 - FINDING A NAMED RECIPE: when the user names a specific dish and you need its id (to slot it, update it, or just confirm it exists), call search_recipes with the "name" argument — do NOT guess protein/style facets and hope they match. A short distinctive word is enough ("tikka", "channa"). Only fall back to category filters when browsing rather than looking up one dish.
+- RECIPE VERSIONS (named tabs, NOT notes): a recipe can hold several full named versions shown as tabs on its screen — e.g. a 'Stovetop' and an 'IP' (Instant Pot) version of Rajma, or a '500g IP' version of Channa Masala. Each version is the COMPLETE recipe (its own ingredients + steps), so the user never reads a wall of notes to find the variation. When the user works out an alternate method or batch size in chat and says "save/add this as a version" (or "make an IP version", "save the 500g version"), use add_recipe_version — do NOT dump it into the recipe notes or original_instructions. ALWAYS confirm the version's NAME first in plain text (propose a short name, wait for a yes or an edit), then find the parent recipe (search_recipes if needed) and call add_recipe_version with the version's FULL ingredient list and full instructions. Re-saving a version with the same name updates it in place. Keep add_recipe for brand-new dishes, update_recipe for a small learning-note on the existing method, and add_recipe_version only for a full named alternate of an existing dish.
 - ACTUAL vs PLANNED: meal_plans records what was planned AND what was actually eaten. When the user says they made something different on a past day ("we ended up ordering pizza Monday", "I made tacos instead of the curry Tuesday"), call update_actual_outcome with that date — actual_recipe_id if it's a tracked recipe, else actual_notes for an untracked meal (takeout, leftovers). Use made_as_planned: true if they confirm they made the plan. This also covers BREAKFAST and SNACK, which are never pre-planned: to log or correct a past breakfast ("we had pancakes yesterday", "fix Tuesday's breakfast to porridge") call update_actual_outcome with meal_type breakfast (or snack) and actual_recipe_id/actual_notes — it creates the history record. get_plan returns actually_made / actual_recipe / actual_notes so you can report what really happened. The recipe actually eaten is what counts for no-repeat — never claim a planned recipe was eaten if actually_made is false.
 - WEEKLY OUTCOME CHECK-IN: on Sundays the planner posts a "🗓️ Quick check on last week" message listing last week's unconfirmed meals. When Manasa replies to it ("all as planned", "all as planned except Wednesday — we ordered pizza", "Tuesday we had the leftover dal instead"), log the WHOLE week in this one turn: call get_plan with start_date 7 days ago and days 7 to see each past slot's confirmation state (actually_made / actual_recipe_id / actual_notes all null = unconfirmed), then call update_actual_outcome once per unconfirmed slot — made_as_planned: true for the confirmed ones, actual_recipe_id (tracked recipe) or actual_notes (free text like takeout) for the exceptions. A slot with no planned recipe (open slot / chef's choice) can't be "made as planned" — log what she says was eaten, or skip it if she doesn't say. Never ask her to confirm day by day; one short summary of what you logged at the end is enough.
 - COOKING LEARNINGS: when a cooking conversation produces a correction or discovery worth keeping (timing, temperature, a substitution that worked), OFFER to save it to the recipe ("want me to note that on the recipe?") and call update_recipe only after she agrees. When she mentions prepped food she has ready ("I have 10 cubes of cooked onion in the freezer"), log it with add_prepped_component.
@@ -319,6 +320,37 @@ const TOOLS: Anthropic.Tool[] = [
           },
         },
       },
+    },
+  },
+  {
+    name: 'add_recipe_version',
+    description: "Save a NAMED, FULL alternate version of an EXISTING recipe as its own tab on the recipe screen (e.g. 'Stovetop' vs 'IP' for Rajma, or '500g IP' for Channa Masala). This is NOT a note — each version holds the COMPLETE recipe (its own full ingredient list and its own cooking steps), so the user never switches tabs to read a whole method. Use it when the user asks to 'save/add this as a version' after working out an alternate method or quantity in chat. ALWAYS CONFIRM THE VERSION NAME with the user in plain text BEFORE calling (propose a short name and wait for a yes or an edit) — never invent-and-save silently. First resolve the parent recipe (search_recipes if you only have the name). Provide the version's FULL ingredients and its full original_instructions (cooking layers are generated from them). Saving with a label that already exists on that recipe REPLACES that version in place (so re-saving a refined version updates it rather than duplicating).",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        recipe_id:   { type: 'string', description: 'UUID of the parent recipe. Preferred.' },
+        recipe_name: { type: 'string', description: 'Exact parent recipe name (case-insensitive) if the id is unknown.' },
+        label:       { type: 'string', description: "The version's tab name, confirmed with the user, e.g. 'Stovetop', 'IP', '500g IP'." },
+        original_instructions: { type: 'string', description: "The version's full cooking instructions (used to generate the ADHD prep layers for this version)." },
+        ingredients: {
+          type: 'array',
+          description: "The version's COMPLETE ingredient list (not just the differences).",
+          items: {
+            type: 'object',
+            properties: {
+              name:     { type: 'string' },
+              quantity: { type: 'number' },
+              unit:     { type: 'string' },
+              notes:    { type: 'string' },
+            },
+            required: ['name'],
+          },
+        },
+        serves:       { type: 'integer', description: 'Servings this version makes. Defaults to the parent recipe.' },
+        about:        { type: 'string', description: "Optional one-liner on what makes this version different (shown as 'About this version')." },
+        make_default: { type: 'boolean', description: 'If true, make this version the default tab shown when the recipe opens.' },
+      },
+      required: ['label', 'original_instructions', 'ingredients'],
     },
   },
   {
@@ -1714,6 +1746,106 @@ async function toolAddRecipe(input: Record<string, unknown>, db: DB) {
   return { success: true, recipe_id: recipeId, name, populated_existing: populatedExisting }
 }
 
+// Save a NAMED, full alternate version of an existing recipe as a recipe_variants
+// row (its own tab). Mirrors the frontend "save as variant" write, but the Chef
+// supplies the whole recipe. Re-saving the same label REPLACES that version in
+// place so a refined version updates rather than duplicating.
+async function toolAddRecipeVersion(input: Record<string, unknown>, db: DB) {
+  type Ingredient = { name: string; quantity?: number; unit?: string; notes?: string }
+  const {
+    recipe_id, recipe_name, label, original_instructions, ingredients,
+    serves, about, make_default,
+  } = input as {
+    recipe_id?: string; recipe_name?: string; label: string
+    original_instructions: string; ingredients: Ingredient[]
+    serves?: number; about?: string; make_default?: boolean
+  }
+
+  const versionLabel = (label || '').trim()
+  if (!versionLabel) return { success: false, error: 'A version name (label) is required.' }
+  if (!Array.isArray(ingredients) || !ingredients.length) {
+    return { success: false, error: 'The version needs its full ingredient list.' }
+  }
+
+  // Resolve the parent recipe (id preferred, else exact name).
+  let parent: { id: string; name: string; serves_base: number | null } | null = null
+  if (recipe_id) {
+    const { data } = await db.from('recipes').select('id, name, serves_base').eq('id', recipe_id).single()
+    parent = data as typeof parent
+  } else if (recipe_name) {
+    const { data } = await db.from('recipes').select('id, name, serves_base')
+      .ilike('name', recipe_name.trim()).eq('active', true).limit(1)
+    parent = (data && data[0]) as typeof parent
+  }
+  if (!parent) return { success: false, error: 'Could not find that recipe. Pass recipe_id or an exact recipe_name.' }
+
+  const servesVal = serves ?? parent.serves_base ?? 4
+
+  // Generate the ADHD cooking layers for this version from its own instructions
+  // + ingredients (same house style as add_recipe). Layers are optional.
+  let nightBefore: string[] | null = null
+  let morningOf:   string[] | null = null
+  let whenCooking: string[] | null = null
+  try {
+    const res = await fetch(`${FUNCTIONS_URL}/recipe-agent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'generate_adhd_layers',
+        recipe_name: `${parent.name} (${versionLabel})`,
+        original_instructions: original_instructions || '',
+        ingredients,
+      }),
+    })
+    const layers = await res.json()
+    if (Array.isArray(layers.when_cooking) || Array.isArray(layers.night_before)) {
+      nightBefore = layers.night_before || null
+      morningOf   = layers.morning_of   || null
+      whenCooking = layers.when_cooking || null
+    }
+  } catch (_) { /* layers optional */ }
+
+  const variantRow = {
+    recipe_id: parent.id, label: versionLabel, serves: servesVal,
+    night_before: nightBefore, morning_of: morningOf, when_cooking: whenCooking,
+    notes: (about || '').trim() || null, created_by: 'ai',
+  }
+
+  // Replace-in-place when a version with the same label already exists.
+  const { data: existing } = await db.from('recipe_variants')
+    .select('id').eq('recipe_id', parent.id).ilike('label', versionLabel).limit(1)
+
+  let variantId: string
+  let replaced = false
+  if (existing && existing.length) {
+    variantId = existing[0].id
+    await db.from('recipe_variants').update(variantRow).eq('id', variantId)
+    await db.from('recipe_variant_ingredients').delete().eq('variant_id', variantId)
+    replaced = true
+  } else {
+    const { data: nv, error } = await db.from('recipe_variants').insert(variantRow).select('id').single()
+    if (error || !nv) return { success: false, error: error?.message }
+    variantId = nv.id
+  }
+
+  await db.from('recipe_variant_ingredients').insert(
+    ingredients.map((ing, i) => ({
+      variant_id: variantId, name: ing.name,
+      quantity: ing.quantity ?? null, unit: ing.unit ?? null,
+      notes: ing.notes ?? null, order_index: i,
+    }))
+  )
+
+  if (make_default) {
+    await db.from('recipes').update({ default_variant_id: variantId }).eq('id', parent.id)
+  }
+
+  return {
+    success: true, recipe_id: parent.id, recipe_name: parent.name,
+    variant_id: variantId, label: versionLabel, replaced,
+  }
+}
+
 async function toolLogPlanEdit(input: Record<string, unknown>, db: DB) {
   const { error } = await db.from('plan_edits').insert({
     plan_date: input.plan_date, meal_type: input.meal_type,
@@ -1923,6 +2055,7 @@ async function dispatch(name: string, input: Record<string, unknown>, db: DB, us
       case 'update_actual_outcome':              result = await toolUpdateActualOutcome(input, db); break
       case 'use_stash_item':         result = await toolUseStashItem(input, db); break
       case 'add_recipe':             result = await toolAddRecipe(input, db); break
+      case 'add_recipe_version':     result = await toolAddRecipeVersion(input, db); break
       case 'update_recipe':          result = await toolUpdateRecipe(input, db); break
       case 'add_prepped_component':  result = await toolAddPreppedComponent(input, db); break
       case 'log_plan_edit':          result = await toolLogPlanEdit(input, db); break
@@ -1959,6 +2092,7 @@ function statusLabel(name: string, input: Record<string, unknown>): string {
     case 'update_actual_outcome':  return 'Logging what you had…'
     case 'use_stash_item':         return 'Updating the freezer stash…'
     case 'add_recipe':             return `Adding ${(input?.name as string) || 'the recipe'}…`
+    case 'add_recipe_version':     return `Saving the "${(input?.label as string) || 'new'}" version…`
     case 'update_recipe':          return 'Saving that to the recipe…'
     case 'add_prepped_component':  return 'Logging your prepped item…'
     case 'log_plan_edit':          return 'Saving the change…'

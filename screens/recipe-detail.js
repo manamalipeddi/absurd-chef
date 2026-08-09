@@ -12,6 +12,7 @@ let subMap           = {}   // `${tabId}:${ingId}` → {loading, message}
 let scaleResult      = null
 let scaleLabelDraft  = ''
 let notesLoading     = false
+let variantEditMode  = false   // true = the active version tab is in inline-edit mode
 let lastRecipeId     = null
 let screenEl         = null
 let ingListRef       = null
@@ -41,6 +42,7 @@ export async function activate({ headerLeft, headerRight }) {
     scaleResult     = null
     scaleLabelDraft = ''
     notesLoading    = false
+    variantEditMode = false
     await loadAll(recipeId)
   }
 
@@ -161,6 +163,7 @@ async function switchTab(tabId) {
   scaleResult     = null
   scaleLabelDraft = ''
   notesLoading    = false
+  variantEditMode = false   // always land on a tab in read mode
   ingListRef      = null
   await loadIngredients()
   const pillsEl   = screenEl.querySelector('.rd-pills')
@@ -236,22 +239,35 @@ function buildContent() {
   const isOriginal = activeTabId === 'original'
   const av         = variants.find(v => v.id === activeTabId) || null
   const layers     = isOriginal ? recipe : av
+  // Inline editing applies to named versions only; the Original tab keeps its
+  // form-based pencil edit. `editing` gates every add/edit/delete affordance.
+  const editing    = !isOriginal && !!av && variantEditMode
+
+  // 1. Version toolbar (variant tabs only): Edit-version toggle → rename + delete.
+  if (!isOriginal && av) wrap.appendChild(buildVersionToolbar(av, editing))
 
   // 3. Ease descriptor (plain-text read mode; tap to edit)
   wrap.appendChild(buildEase(av))
 
   // 4. Ingredients, paired directly with When Cooking
-  wrap.appendChild(buildIngredientsSection())
+  wrap.appendChild(buildIngredientsSection(editing))
   const activePrepped = preppedComponents.filter(p => p.batches_remaining > 0)
   for (const pc of activePrepped) wrap.appendChild(buildPreppedOverlay(pc))
-  if (layers?.when_cooking?.length)  wrap.appendChild(buildLayerList('🍳 When cooking',  layers.when_cooking))
 
-  // 5 / 6. Night before, Morning of
-  if (layers?.night_before?.length)  wrap.appendChild(buildLayerList('🌙 Night before',  layers.night_before))
-  if (layers?.morning_of?.length)    wrap.appendChild(buildLayerList('☀️ Morning of',    layers.morning_of))
+  // 5. Cooking layers. In version edit mode show all three (even empty) so any
+  // can be added to; otherwise show only the populated ones, read-only.
+  if (editing) {
+    wrap.appendChild(buildEditableLayer('🍳 When cooking', 'when_cooking', av))
+    wrap.appendChild(buildEditableLayer('🌙 Night before', 'night_before', av))
+    wrap.appendChild(buildEditableLayer('☀️ Morning of',   'morning_of',   av))
+  } else {
+    if (layers?.when_cooking?.length)  wrap.appendChild(buildLayerList('🍳 When cooking',  layers.when_cooking))
+    if (layers?.night_before?.length)  wrap.appendChild(buildLayerList('🌙 Night before',  layers.night_before))
+    if (layers?.morning_of?.length)    wrap.appendChild(buildLayerList('☀️ Morning of',    layers.morning_of))
+  }
 
   // 7. About this version — variant tabs only (Original has no version to explain)
-  if (!isOriginal && av?.notes) wrap.appendChild(buildVariantNotes(av.notes))
+  if (!isOriginal) wrap.appendChild(buildVariantAbout(av, editing))
 
   // 8. Notes — global, identical on every tab (recipes.notes); user-editable
   wrap.appendChild(buildNotes())
@@ -352,14 +368,20 @@ function buildEase(av) {
   return section
 }
 
+// Rebuild the whole content column in place (keeps the #rd-content anchor).
+function rerenderContent() {
+  const contentEl = document.getElementById('rd-content')
+  if (contentEl) { const nc = buildContent(); nc.id = 'rd-content'; contentEl.replaceWith(nc) }
+}
+
 // ── Ingredients ───────────────────────────────────────────
-function buildIngredientsSection() {
+function buildIngredientsSection(editing) {
   const section = document.createElement('div')
   section.className = 'rd-section'
   const lbl = document.createElement('div')
   lbl.className = 'rd-section__title'
   lbl.textContent = 'Ingredients'
-  section.append(lbl, buildIngredientList())
+  section.append(lbl, editing ? buildIngredientEditList() : buildIngredientList())
   return section
 }
 
@@ -470,11 +492,341 @@ function buildLayerList(title, steps) {
   return section
 }
 
-function buildVariantNotes(notes) {
-  const el = document.createElement('div')
-  el.className = 'rd-section rd-variant-notes'
-  el.innerHTML = `<span class="rd-section__title">About this version</span><p>${notes}</p>`
-  return el
+// ── Version editing (named variants only) ─────────────────
+// The whole edit surface is gated behind an "Edit version" toggle so the read
+// view stays clean. Every save writes straight to recipe_variants /
+// recipe_variant_ingredients — no separate "save" step, matching the notes/ease
+// inline-edit pattern used elsewhere on this screen.
+
+function mkMinInput(placeholder, cls) {
+  const i = document.createElement('input')
+  i.type = 'text'
+  i.className = 'rd-min-input' + (cls ? ' ' + cls : '')
+  i.placeholder = placeholder
+  return i
+}
+
+function mkReorderBtn(glyph, title, disabled) {
+  const b = document.createElement('button')
+  b.className = 'rd-reorder-btn'
+  b.textContent = glyph
+  b.title = title
+  if (disabled) b.disabled = true
+  return b
+}
+
+// Toolbar at the top of a version tab: read mode shows the name + an Edit
+// toggle; edit mode shows a rename field, Done, and a two-tap Delete.
+function buildVersionToolbar(av, editing) {
+  const bar = document.createElement('div')
+  bar.className = 'rd-vtoolbar'
+
+  if (!editing) {
+    const name = document.createElement('span')
+    name.className = 'rd-vtoolbar__name'
+    name.textContent = av.label || 'Version'
+    const editBtn = document.createElement('button')
+    editBtn.className = 'rd-vtoolbar__btn'
+    editBtn.textContent = '✎ Edit version'
+    editBtn.addEventListener('click', () => { variantEditMode = true; rerenderContent() })
+    bar.append(name, editBtn)
+    return bar
+  }
+
+  const nameInput = mkMinInput('Version name', 'rd-vtoolbar__rename')
+  nameInput.value = av.label || ''
+  const commitName = async () => {
+    const v = nameInput.value.trim()
+    if (!v || v === av.label) return
+    const { error } = await supabase.from('recipe_variants').update({ label: v }).eq('id', av.id)
+    if (error) { toast('Rename failed', { error: true }); return }
+    av.label = v
+    const pillsEl = screenEl.querySelector('.rd-pills')
+    if (pillsEl) pillsEl.replaceWith(buildPills())
+  }
+  nameInput.addEventListener('blur', commitName)
+  nameInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); nameInput.blur() } })
+
+  const doneBtn = document.createElement('button')
+  doneBtn.className = 'rd-vtoolbar__btn rd-vtoolbar__btn--done'
+  doneBtn.textContent = 'Done'
+  doneBtn.addEventListener('click', () => { variantEditMode = false; rerenderContent() })
+
+  let armed = false
+  const delBtn = document.createElement('button')
+  delBtn.className = 'rd-vtoolbar__btn rd-vtoolbar__btn--danger'
+  delBtn.textContent = 'Delete version'
+  delBtn.addEventListener('click', () => {
+    if (!armed) { armed = true; delBtn.textContent = 'Tap again to delete'; return }
+    deleteVariant(av)
+  })
+
+  const row = document.createElement('div')
+  row.className = 'rd-vtoolbar__editrow'
+  row.append(nameInput, doneBtn)
+  bar.append(row, delBtn)
+  return bar
+}
+
+async function deleteVariant(av) {
+  await supabase.from('recipe_variant_ingredients').delete().eq('variant_id', av.id)
+  const { error } = await supabase.from('recipe_variants').delete().eq('id', av.id)
+  if (error) { toast('Delete failed', { error: true }); return }
+  if (recipe.default_variant_id === av.id) {
+    await supabase.from('recipes').update({ default_variant_id: null }).eq('id', recipe.id)
+    recipe.default_variant_id = null
+  }
+  variants = variants.filter(v => v.id !== av.id)
+  variantEditMode = false
+  toast('Version deleted')
+  await switchTab('original')
+}
+
+// Editable ingredient list for a version (add / edit / delete / reorder).
+// Operates on the module-level `ingredients` (already loaded for this variant).
+function buildIngredientEditList() {
+  const list = document.createElement('div')
+  list.className = 'rd-ing-edit-list'
+  ingredients.forEach((ing, idx) => list.appendChild(buildIngredientEditRow(ing, idx)))
+
+  const addRow = document.createElement('div')
+  addRow.className = 'rd-ing-add'
+  const qty  = mkMinInput('Qty',  'rd-ing-add__qty')
+  const unit = mkMinInput('Unit', 'rd-ing-add__unit')
+  const name = mkMinInput('Ingredient', 'rd-ing-add__name')
+  const addBtn = document.createElement('button')
+  addBtn.className = 'rd-notes__addbtn'
+  addBtn.textContent = '+ Add'
+  const submit = async () => {
+    const nm = name.value.trim()
+    if (!nm) { name.focus(); return }
+    const qraw = qty.value.trim()
+    const q = qraw === '' ? null : Number(qraw)
+    const order = ingredients.length ? Math.max(...ingredients.map(i => i.order_index ?? 0)) + 1 : 0
+    const { data, error } = await supabase.from('recipe_variant_ingredients')
+      .insert({ variant_id: activeTabId, name: nm, quantity: Number.isFinite(q) ? q : null,
+        unit: unit.value.trim() || null, order_index: order }).select().single()
+    if (error || !data) { toast('Add failed', { error: true }); return }
+    ingredients.push(data)
+    rerenderContent()
+  }
+  addBtn.addEventListener('click', submit)
+  name.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); submit() } })
+  addRow.append(qty, unit, name, addBtn)
+  list.appendChild(addRow)
+  return list
+}
+
+function buildIngredientEditRow(ing, idx) {
+  const row = document.createElement('div')
+
+  const renderRead = () => {
+    row.innerHTML = ''
+    row.className = 'rd-ing-edit-row'
+    const text = document.createElement('span')
+    text.className = 'rd-ing-edit-row__text'
+    text.textContent = `${fmtQty(ing.quantity, ing.unit)} ${ing.name}${ing.notes ? ' (' + ing.notes + ')' : ''}`.trim()
+    text.title = 'Tap to edit'
+    text.addEventListener('click', renderEdit)
+    const up = mkReorderBtn('↑', 'Move up', idx === 0)
+    up.addEventListener('click', () => reorderIngredient(idx, idx - 1))
+    const down = mkReorderBtn('↓', 'Move down', idx === ingredients.length - 1)
+    down.addEventListener('click', () => reorderIngredient(idx, idx + 1))
+    const del = document.createElement('button')
+    del.className = 'rd-notes__del'; del.textContent = '×'; del.title = 'Delete'
+    del.addEventListener('click', () => deleteIngredient(ing))
+    row.append(text, up, down, del)
+  }
+
+  const renderEdit = () => {
+    row.innerHTML = ''
+    row.className = 'rd-ing-edit-row rd-ing-edit-row--editing'
+    const qty   = mkMinInput('Qty',  'rd-ing-e__qty');   qty.value   = ing.quantity ?? ''
+    const unit  = mkMinInput('Unit', 'rd-ing-e__unit');  unit.value  = ing.unit ?? ''
+    const name  = mkMinInput('Ingredient', 'rd-ing-e__name'); name.value = ing.name ?? ''
+    const notes = mkMinInput('Notes (optional)', 'rd-ing-e__notes'); notes.value = ing.notes ?? ''
+    const save = document.createElement('button')
+    save.className = 'rd-notes__addbtn'; save.textContent = 'Save'
+    let done = false
+    const commit = async () => {
+      if (done) return
+      const nm = name.value.trim()
+      if (!nm) { name.focus(); return }
+      done = true
+      const qraw = qty.value.trim()
+      const q = qraw === '' ? null : Number(qraw)
+      const patch = { name: nm, quantity: Number.isFinite(q) ? q : null,
+        unit: unit.value.trim() || null, notes: notes.value.trim() || null }
+      const { error } = await supabase.from('recipe_variant_ingredients').update(patch).eq('id', ing.id)
+      if (error) { toast('Save failed', { error: true }); done = false; return }
+      Object.assign(ing, patch)
+      renderRead()
+    }
+    save.addEventListener('click', commit)
+    name.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); commit() } })
+    const grid = document.createElement('div')
+    grid.className = 'rd-ing-e__grid'
+    grid.append(qty, unit, name, notes)
+    row.append(grid, save)
+    requestAnimationFrame(() => name.focus())
+  }
+
+  renderRead()
+  return row
+}
+
+async function deleteIngredient(ing) {
+  const { error } = await supabase.from('recipe_variant_ingredients').delete().eq('id', ing.id)
+  if (error) { toast('Delete failed', { error: true }); return }
+  ingredients = ingredients.filter(i => i.id !== ing.id)
+  rerenderContent()
+}
+
+async function reorderIngredient(from, to) {
+  if (to < 0 || to >= ingredients.length) return
+  const arr = ingredients.slice()
+  const [moved] = arr.splice(from, 1)
+  arr.splice(to, 0, moved)
+  ingredients = arr
+  rerenderContent()
+  await Promise.all(arr.map((i, idx) =>
+    supabase.from('recipe_variant_ingredients').update({ order_index: idx }).eq('id', i.id)))
+}
+
+// Editable cooking-layer list (when_cooking / night_before / morning_of) for a
+// version. Stored as a text[] on the variant row; add / edit / delete / reorder.
+function buildEditableLayer(title, field, av) {
+  const section = document.createElement('div')
+  section.className = 'rd-section'
+  const lbl = document.createElement('div')
+  lbl.className = 'rd-section__title'
+  lbl.textContent = title
+  section.appendChild(lbl)
+
+  const steps = av[field] || []
+  const ul = document.createElement('ul')
+  ul.className = 'rd-layer-list rd-layer-edit'
+  steps.forEach((s, i) => ul.appendChild(buildStepRow(av, field, s, i)))
+  section.appendChild(ul)
+
+  const addRow = document.createElement('div')
+  addRow.className = 'rd-notes__add'
+  const input = mkMinInput('Add a step…', 'rd-step-add__input')
+  const addBtn = document.createElement('button')
+  addBtn.className = 'rd-notes__addbtn'; addBtn.textContent = '+ Add'
+  const submit = async () => {
+    const v = input.value.trim(); if (!v) return
+    await saveLayer(av, field, [...(av[field] || []), v])
+    rerenderContent()
+  }
+  addBtn.addEventListener('click', submit)
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); submit() } })
+  addRow.append(input, addBtn)
+  section.appendChild(addRow)
+  return section
+}
+
+function buildStepRow(av, field, text, i) {
+  const li = document.createElement('li')
+
+  const renderRead = () => {
+    li.innerHTML = ''
+    li.className = 'rd-step-item'
+    const span = document.createElement('span')
+    span.className = 'rd-step-item__text'
+    span.textContent = text
+    span.title = 'Tap to edit'
+    span.addEventListener('click', renderEdit)
+    const arr = av[field] || []
+    const up = mkReorderBtn('↑', 'Move up', i === 0)
+    up.addEventListener('click', () => moveStep(av, field, i, i - 1))
+    const down = mkReorderBtn('↓', 'Move down', i === arr.length - 1)
+    down.addEventListener('click', () => moveStep(av, field, i, i + 1))
+    const del = document.createElement('button')
+    del.className = 'rd-notes__del'; del.textContent = '×'; del.title = 'Delete step'
+    del.addEventListener('click', async () => {
+      const next = (av[field] || []).slice(); next.splice(i, 1)
+      await saveLayer(av, field, next); rerenderContent()
+    })
+    li.append(span, up, down, del)
+  }
+
+  const renderEdit = () => {
+    li.innerHTML = ''
+    li.className = 'rd-step-item rd-step-item--editing'
+    const inp = mkMinInput('', 'rd-step-item__edit'); inp.value = text
+    let done = false
+    const commit = async () => {
+      if (done) return; done = true
+      const v = inp.value.trim()
+      const next = (av[field] || []).slice()
+      if (!v) next.splice(i, 1); else next[i] = v
+      await saveLayer(av, field, next); rerenderContent()
+    }
+    inp.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); commit() }
+      if (e.key === 'Escape') { done = true; rerenderContent() }
+    })
+    inp.addEventListener('blur', commit)
+    li.appendChild(inp)
+    requestAnimationFrame(() => inp.focus())
+  }
+
+  renderRead()
+  return li
+}
+
+async function saveLayer(av, field, arr) {
+  av[field] = arr
+  const { error } = await supabase.from('recipe_variants').update({ [field]: arr }).eq('id', av.id)
+  if (error) toast('Save failed', { error: true })
+}
+
+async function moveStep(av, field, from, to) {
+  const arr = (av[field] || []).slice()
+  if (to < 0 || to >= arr.length) return
+  const [m] = arr.splice(from, 1); arr.splice(to, 0, m)
+  await saveLayer(av, field, arr); rerenderContent()
+}
+
+// "About this version" — read-only in normal view; an editable textarea in edit
+// mode. Hidden entirely when there's nothing to show and we're not editing.
+function buildVariantAbout(av, editing) {
+  const hasNotes = !!(av && av.notes)
+  if (!editing && !hasNotes) return document.createDocumentFragment()
+
+  const section = document.createElement('div')
+  section.className = 'rd-section rd-variant-notes'
+  const lbl = document.createElement('span')
+  lbl.className = 'rd-section__title'
+  lbl.textContent = 'About this version'
+  section.appendChild(lbl)
+
+  if (!editing) {
+    const p = document.createElement('p')
+    p.textContent = av.notes
+    section.appendChild(p)
+    return section
+  }
+
+  const ta = document.createElement('textarea')
+  ta.className = 'rd-vabout__input'
+  ta.rows = 2
+  ta.placeholder = 'What makes this version different…'
+  ta.value = av.notes || ''
+  let done = false
+  const commit = async () => {
+    if (done) return
+    const v = ta.value.trim() || null
+    if (v === (av.notes || null)) return
+    done = true
+    const { error } = await supabase.from('recipe_variants').update({ notes: v }).eq('id', av.id)
+    if (error) { toast('Save failed', { error: true }); done = false; return }
+    av.notes = v; done = false
+  }
+  ta.addEventListener('blur', commit)
+  section.appendChild(ta)
+  return section
 }
 
 // Collapsed-by-default reference: the raw source text, shown verbatim.

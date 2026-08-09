@@ -1738,6 +1738,66 @@ body {
 }
 .rd-variant-notes p { font-size: 13.8px; color: var(--text); line-height: 1.5; margin-top: 4px; }
 
+/* ── Version editing (named variants) ─────────────────────── */
+/* Toolbar at the top of a version tab */
+.rd-vtoolbar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 12px 16px 4px;
+}
+.rd-vtoolbar__name { flex: 1; font-size: 14.8px; font-weight: 700; color: var(--text); }
+.rd-vtoolbar__editrow { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.rd-vtoolbar__rename { flex: 1; min-width: 0; }
+.rd-vtoolbar__btn {
+  flex-shrink: 0; background: var(--bg); border: 1.5px solid var(--primary);
+  color: var(--primary); border-radius: var(--radius-sm); padding: 7px 12px;
+  font-family: var(--font); font-size: 13px; font-weight: 600; cursor: pointer;
+  -webkit-tap-highlight-color: transparent; white-space: nowrap; min-height: 34px;
+}
+.rd-vtoolbar__btn:active { opacity: 0.8; }
+.rd-vtoolbar__btn--danger { background: none; border-color: #b91c1c; color: #b91c1c; }
+
+/* Editable ingredient rows */
+.rd-ing-edit-row {
+  display: flex; align-items: center; gap: 6px; padding: 4px 0;
+}
+.rd-ing-edit-row__text { flex: 1; font-size: 14.8px; color: var(--text); line-height: 1.3; cursor: text; }
+.rd-ing-edit-row--editing { flex-direction: column; align-items: stretch; gap: 8px; padding: 8px 0; }
+.rd-ing-e__grid {
+  display: grid; grid-template-columns: 64px 72px 1fr; gap: 6px 8px;
+}
+.rd-ing-e__grid .rd-ing-e__notes { grid-column: 1 / -1; }
+.rd-ing-add {
+  display: grid; grid-template-columns: 64px 72px 1fr auto; gap: 6px 8px;
+  align-items: center; margin-top: 8px;
+}
+
+/* Reorder chevrons — shared by ingredients and steps */
+.rd-reorder-btn {
+  flex-shrink: 0; width: 24px; height: 24px; border: 1px solid var(--border);
+  border-radius: 6px; background: none; color: var(--text-muted);
+  font-size: 13px; line-height: 1; cursor: pointer; -webkit-tap-highlight-color: transparent;
+  display: flex; align-items: center; justify-content: center; padding: 0;
+}
+.rd-reorder-btn:active { background: var(--bg); }
+.rd-reorder-btn:disabled { opacity: 0.3; cursor: default; }
+
+/* Editable cooking-layer steps */
+.rd-layer-edit { list-style: none; padding-left: 0; }
+.rd-step-item { display: flex; align-items: flex-start; gap: 6px; padding: 3px 0; }
+.rd-step-item__text { flex: 1; cursor: text; line-height: 1.5; }
+.rd-step-item--editing { align-items: center; }
+.rd-step-item__edit { flex: 1; }
+
+/* About-this-version editor */
+.rd-vabout__input {
+  width: 100%; margin-top: 6px; box-sizing: border-box;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface); font-family: var(--font); font-size: 13.8px;
+  color: var(--text); padding: 8px 10px; line-height: 1.5; resize: vertical;
+  -webkit-appearance: none;
+}
+.rd-vabout__input:focus { outline: none; border-color: var(--primary); }
+
 /* Action buttons */
 .rd-actions {
   padding: 16px;
