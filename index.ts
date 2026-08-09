@@ -298,7 +298,7 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
     // outcomes carry weight — see buildHabitEvidence.
     supabase
       .from("meal_plans")
-      .select("plan_date, meal_type, recipe_id, actually_made, actual_recipe_id, notes, actual_notes, freezer_stash_id, is_commute_day, is_holiday, is_preschool_closed, guest_count")
+      .select("plan_date, meal_type, recipe_id, actually_made, actual_recipe_id, notes, actual_notes, freezer_stash_id, is_commute_day, is_holiday, is_preschool_closed, guest_count, actual:recipes!meal_plans_actual_recipe_id_fkey(is_placeholder)")
       .gte("plan_date", addDays(startDate, -540))
       .lt("plan_date", startDate)
       .in("meal_type", ["dinner", "lunch"]),
@@ -757,6 +757,7 @@ function buildPrompt(
   const habitTotals = new Map<string, number>();                // bucket → confirmed meals
   const habitKeyName = new Map<string, string>();               // key → display name
   const freezerPulls = new Map<string, number>();               // bucket → freezer-pull count
+  const offRecipePulls = new Map<string, number>();             // bucket → off-recipe (leftovers/ad-hoc) count
   // Kids-home/holiday learns from the FULL loaded window (seasonal — must survive
   // the months between vacations); every other context stays on the recent 16
   // weeks so ordinary weeks reflect the current rotation.
@@ -768,12 +769,13 @@ function buildPrompt(
     notes: string | null; actual_notes: string | null; freezer_stash_id: string | null;
     is_commute_day: boolean | null; is_holiday: boolean | null;
     is_preschool_closed: boolean | null; guest_count: number | null;
+    actual: { is_placeholder: boolean | null } | null;
   }[]) {
     const bucket = habitBucketOf(r);
     const isKidsHome = bucket.startsWith("weekday-kids-home");
     if (!isKidsHome && r.plan_date < recentCutoff) continue;   // everyday contexts: recent 16 weeks only
 
-    let key: string | null = null, name: string | null = null, isFreezer = false;
+    let key: string | null = null, name: string | null = null, isFreezer = false, isOffRecipe = false;
     if (r.freezer_stash_id) {
       // A freezer pull on a PAST day is confirmed by the physical portion draw
       // (not an unchallenged AI suggestion). It reads as the "Other" placeholder,
@@ -784,6 +786,17 @@ function buildPrompt(
     } else {
       const eatenId = r.actual_recipe_id || (r.actually_made === true ? r.recipe_id : null);
       if (eatenId && safeNameById.has(eatenId)) { key = eatenId; name = safeNameById.get(eatenId)!; }
+      else if (r.actual?.is_placeholder) {
+        // A logged "Other" actual (not a freezer pull): the family ate something
+        // off-recipe — leftovers, takeout, an ad-hoc meal. The free text they
+        // typed lives in actual_notes. Learn it so recurring leftovers/ad-hoc
+        // fills surface as the real shape of that context. It counts toward the
+        // bucket total (so real-recipe habit ratios aren't overstated) and is
+        // tagged off-recipe so the planner keeps the slot light rather than
+        // trying to cook it (see rule 20).
+        const dish = (r.actual_notes || "").trim();
+        if (dish) { key = "offrecipe:" + normName(dish); name = "♻️ " + dish; isOffRecipe = true; }
+      }
     }
     if (!key) continue;   // unconfirmed / unsafe / retired → no signal
     habitTotals.set(bucket, (habitTotals.get(bucket) || 0) + 1);
@@ -791,6 +804,7 @@ function buildPrompt(
     habitCounts.get(bucket)!.set(key, (habitCounts.get(bucket)!.get(key) || 0) + 1);
     habitKeyName.set(key, name!);
     if (isFreezer) freezerPulls.set(bucket, (freezerPulls.get(bucket) || 0) + 1);
+    if (isOffRecipe) offRecipePulls.set(bucket, (offRecipePulls.get(bucket) || 0) + 1);
   }
   const habitEvidence: { context: string; recipe: string; made: number; of: number }[] = [];
   for (const [bucket, counts] of habitCounts) {
@@ -812,6 +826,17 @@ function buildPrompt(
       freezerLean.push({ context: bucket, freezer_pulls: n, of: total });
   }
   freezerLean.sort((a, b) => b.freezer_pulls - a.freezer_pulls);
+  // Off-recipe lean: contexts where the family routinely eats OFF the plan —
+  // leftovers, takeout, an ad-hoc meal logged as "Other" — even if no single
+  // dish dominates. Surfaced so the planner keeps that slot light or open
+  // rather than committing a fresh cook the family tends to displace.
+  const offRecipeLean: { context: string; off_recipe: number; of: number }[] = [];
+  for (const [bucket, n] of offRecipePulls) {
+    const total = habitTotals.get(bucket) || 0;
+    if (n >= 3 && n / total >= 0.4)
+      offRecipeLean.push({ context: bucket, off_recipe: n, of: total });
+  }
+  offRecipeLean.sort((a, b) => b.off_recipe - a.off_recipe);
 
   // Deterministic rule-18c guard: recipe_id → the key item(s) not in stock. The
   // write site swaps any near-term slot assigned one of these for a makeable
@@ -1072,7 +1097,15 @@ PLANNING RULES
     as a light cook and note that a freezer meal usually fills it. Separately,
     FREEZER LEAN entries mark contexts where the family routinely pulls SOME
     freezer meal (no single dish dominating) — there, prefer scheduling a freezer
-    meal or a batch-cook over a fresh cook. Match a slot to a context by checking
+    meal or a batch-cook over a fresh cook. A habit recipe prefixed with ♻️ is an
+    OFF-RECIPE actual — leftovers, takeout, or an ad-hoc meal the family logged as
+    "Other" in that context. It is NOT a recipe to cook: never assign it. Treat it
+    as evidence the family fills that slot themselves — keep the slot LIGHT or leave
+    it chef's-choice, and note that they usually eat off-recipe there (e.g.
+    "Friday's often leftovers — leaving this light"). OFF-RECIPE LEAN entries mark
+    contexts where the family routinely eats off the plan (no single dish
+    dominating) — there, don't commit a fresh cook the family tends to displace;
+    keep it light or open. Match a slot to a context by checking
     the day's fields IN THIS ORDER (a day has exactly one habit context):
     guest_count > 0 → "guest-day"; is_commute → "commute-day";
     weekday_kids_home → "weekday-kids-home"; special_type = "gintas_away" →
@@ -1133,6 +1166,9 @@ ${JSON.stringify(habits)}
 
 FREEZER LEAN (contexts where the family usually pulls a freezer meal — see rule 20; empty = no signal yet)
 ${JSON.stringify(freezerLean)}
+
+OFF-RECIPE LEAN (contexts where the family routinely eats OFF the plan — leftovers/takeout/ad-hoc logged as "Other"; see rule 20; empty = no signal yet)
+${JSON.stringify(offRecipeLean)}
 
 LOCKED (immovable — keep these exactly; see rule 13)
 ${JSON.stringify(lockedList, null, 2)}
