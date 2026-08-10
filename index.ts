@@ -2040,9 +2040,13 @@ Deno.serve(async (req: Request) => {
       } catch (e) {
         console.error("grocery-snapshot trigger failed (non-fatal):", e);
       }
-      // Weekly outcome check-in: ask about last week's unconfirmed meals so
-      // habit evidence stays grounded in what was actually eaten (non-fatal).
-      await postWeeklyConfirmNudge(supabase);
+      // NOTE: the weekly unlogged-meals list now lives ONLY on the Allie side
+      // (her Sunday 19:00 plan_fit_prompt, timed right before the 19:30 Plan Fit
+      // compute and able to route a reply into logging). Chef used to also enqueue
+      // a `weekly_checkin` here, which double-messaged with Allie's prompt — that
+      // call is intentionally removed. postWeeklyConfirmNudge() is kept unused for
+      // now in case we want to move the list back to Chef's side later.
+      void postWeeklyConfirmNudge;
     }
 
     // Mark the log row succeeded.
