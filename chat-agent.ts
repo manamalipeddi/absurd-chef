@@ -816,7 +816,11 @@ Return ONLY valid JSON, no other text:
   const inserted: string[] = []
   if (newItems.length) {
     const { error } = await db.from('inventory').insert(
-      newItems.map(i => ({ name: i.name, quantity: i.quantity ?? null, unit: i.unit ?? null, category: i.category, active: true }))
+      newItems.map(i => ({
+        name: i.name, quantity: i.quantity ?? null, unit: i.unit ?? null,
+        // A "frozen"-named item always lands in the freezer, regardless of the parse.
+        category: FROZEN_RE.test(i.name) ? 'freezer' : i.category, active: true,
+      }))
     )
     if (!error) inserted.push(...newItems.map(i => i.name))
   }
@@ -915,7 +919,9 @@ function nonFoodGroup(name: string): string {
 const FREEZER_DISH_RE = /(lasagne|gratäng|gratang|gryta|pyttipanna|pytt\s*i\s*panna|wokrätt|wokratt|soppa|pizza|middag|risotto|\bpaj\b|färdigrätt|fardigratt|färdigmat|fardigmat|portionsrätt|portionsratt|pannbiff|köttbullar\s+med|kottbullar\s+med|biff\s+med|pasta\s+med|kyckling\s+med|fisk\s+med)/i
 // Brands that sell ONLY ready meals — classify on the brand alone.
 const FREEZER_READY_BRAND_RE = /\b(dafgårds|dafgards|gordon\s*ramsay|gordonramsay|billys?\s*pan|liva|la\s*cucina)\b/i
-const FROZEN_RE = /\b(fryst|frysta|frozen|djupfryst)\b/i
+// Frozen signal in a product name → the item belongs in the freezer. Catches
+// Swedish inflections (fryst/frysta/djupfryst/djupfrysta) and ice cream (glass).
+const FROZEN_RE = /\b(fryst\w*|djupfryst\w*|frozen|glass|isglass)\b/i
 const CHILLED_RE = /\b(kyld|kylda|färsk|farsk|fresh|chilled)\b/i
 // Clear single-ingredient frozen products that stay in inventory despite the
 // default-to-meal rule: plain veg, fruit/berries, raw fish/seafood, raw meat,
@@ -964,7 +970,7 @@ function inferFoodCategory(name: string): string | null {
 }
 // Storage category (fridge|freezer|pantry) for a NEW row, inferred from name/food.
 function inferStorageCategory(name: string, food: string | null): string {
-  if (/\b(fryst|frozen|glass|djupfryst)\b/i.test(name)) return 'freezer'
+  if (FROZEN_RE.test(name)) return 'freezer'
   if (food === 'dairy' || food === 'eggs' || food === 'meat' || food === 'seafood' || food === 'produce') return 'fridge'
   return 'pantry'
 }
@@ -1328,6 +1334,12 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
         }
         if (wasInactive) upd.active = true                              // buying it → relevant again
         if (Number(row.typical_quantity) === 0) upd.status = 'guest'    // guest one-off has stock again
+        // Self-heal a mislabelled frozen item: a "frozen"-named row not in the
+        // freezer gets corrected on restock (owner rule; keeps it out of expiry
+        // reminders). Computed once so the shelf-life stamp below respects it too.
+        const isFreezerRow = row.category === 'freezer'
+          || FROZEN_RE.test(row.name as string) || FROZEN_RE.test(g.name)
+        if (isFreezerRow && row.category !== 'freezer') upd.category = 'freezer'
         // Assume-consumed fridge staple (milk/eggs/yoghurt): treat the prior
         // stock as fully used up between orders — REPLACE the quantity with what
         // just arrived (not old+new) and force 'plenty' ("Many Meals"), unless
@@ -1340,7 +1352,7 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
         // Inferred shelf life on restock — only when no valid manual date exists.
         const rowFc = (row.food_category as string) || inferFoodCategory(g.name)
         const rowLife = rowFc ? SHELF_LIFE_DAYS[rowFc] : undefined
-        if (rowLife && row.category !== 'freezer' && (!row.expiry_date || (row.expiry_date as string) < todayDate)) {
+        if (rowLife && !isFreezerRow && (!row.expiry_date || (row.expiry_date as string) < todayDate)) {
           upd.expiry_date = addDays(todayDate, rowLife)
         }
         const { error } = await db.from('inventory').update(upd).eq('id', row.id as string)
@@ -1364,11 +1376,15 @@ async function toolImportGroceryOrder(input: Record<string, unknown>, db: DB, em
         // regex on the raw name as fallback — this is the fix for perishables
         // (a whole chicken, pulled pork) landing as null/pantry and going unseen.
         const fc = newFc || inferFoodCategory(g.name)
-        const storage = newStorage || inferStorageCategory(g.name, fc)
-        // Inferred shelf life for a NEW perishable row (never for freezer items).
-        const life = fc ? SHELF_LIFE_DAYS[fc] : undefined
         // English name from the AI pass; deterministic Swedish-stripped fallback.
         const cleanName = (newName && newName.trim()) || cleanProductName(g.name)
+        // A "frozen"-labelled item ALWAYS lands in the freezer, overriding the AI's
+        // storage guess — freezer items skip expiry reminders (owner rule). Check the
+        // raw Swedish name AND the cleaned name (the frozen word may be in either).
+        const looksFrozen = FROZEN_RE.test(g.name) || FROZEN_RE.test(cleanName)
+        const storage = looksFrozen ? 'freezer' : (newStorage || inferStorageCategory(g.name, fc))
+        // Inferred shelf life for a NEW perishable row (never for freezer items).
+        const life = fc ? SHELF_LIFE_DAYS[fc] : undefined
         const { error } = await db.from('inventory').insert({
           name: cleanName, quantity: g.net, status: 'enough',
           food_category: fc, category: storage,
