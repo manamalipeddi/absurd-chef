@@ -503,6 +503,19 @@ async function toolGetInventory(input: Record<string, unknown>, db: DB) {
 // the agent proposes, the user approves, then update_plan_slot applies it. It
 // does NOT auto-assign. Critical meat/fish within 2 days is already auto-slotted
 // by the plan-generator (flagged here so the agent doesn't double-handle it).
+// Staples we never surface for expiry action: rebought every order and near-empty
+// by their date, so flagging them is noise wherever stored (fridge / uncategorised
+// / shelf-stable pantry). Start-anchored to avoid false hits ("buttermilk" ≠ milk,
+// "butternut" ≠ butter). Expiry-only — NOT the grocery ASSUME_CONSUMED list above
+// (butter must not trigger the restock reset). KEEP IN SYNC with index.ts.
+const NO_EXPIRY_REMINDER: RegExp[] = [
+  /^milk\b/i, /^mjölk\b/i,
+  /^eggs?\b/i, /^ägg\b/i,
+  /^yog[h]?urt\b/i, /^drinking yog[h]?urt\b/i,
+  /^butter\b/i, /^smör\b/i,
+]
+const skipExpiryReminder = (name: string) => NO_EXPIRY_REMINDER.some(re => re.test(name || ''))
+
 async function toolGetExpiryRecommendations(input: Record<string, unknown>, db: DB) {
   const start = today()
   const windowDays = Number(input.days) || 14
@@ -510,11 +523,17 @@ async function toolGetExpiryRecommendations(input: Record<string, unknown>, db: 
   const dayDiff = (iso: string) => Math.round((new Date(iso + 'T00:00:00Z').getTime() - new Date(start + 'T00:00:00Z').getTime()) / 86400000)
 
   const { data: inv } = await db.from('inventory')
-    .select('name, food_category, expiry_date, quantity, status, master_ingredient_id')
+    .select('name, food_category, category, expiry_date, quantity, status, master_ingredient_id')
     .eq('active', true).not('expiry_date', 'is', null)
     .gte('expiry_date', start).lte('expiry_date', end)
     .order('expiry_date')
-  const items = (inv || []).filter((it: Record<string, unknown>) => !(Number(it.quantity) === 0 || it.status === 'out'))
+  const items = (inv || [])
+    .filter((it: Record<string, unknown>) => !(Number(it.quantity) === 0 || it.status === 'out'))
+    // Freezer items don't meaningfully expire (freezing preserves them); replenished
+    // staples (milk/eggs/yoghurt/butter) are near-empty and rebought by expiry.
+    // Neither is worth an expiry recommendation wherever stored (owner rule).
+    .filter((it: Record<string, unknown>) => it.category !== 'freezer')
+    .filter((it: Record<string, unknown>) => !skipExpiryReminder(it.name as string))
   if (!items.length) return { expiring: [], note: 'Nothing is expiring in the window — no recommendation needed.' }
 
   const [{ data: recipes }, { data: ings }, { data: slots }] = await Promise.all([

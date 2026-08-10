@@ -1635,6 +1635,21 @@ async function enqueueOutbox(
 // rots unnoticed (the polenta failure). Critical meat/fish within 2 days is
 // EXCLUDED — the generator already slotted those (rule 18). Deduped to at most
 // one heads-up per ~20h so repeated regenerations don't spam. Never throws.
+// Staples we NEVER send expiry reminders about: rebought every order and run
+// near-empty by their date, so "X is expiring" is pure noise wherever they live
+// (fridge, uncategorised, or a shelf-stable pantry/long-life version). Names are
+// start-anchored to avoid false hits (e.g. "buttermilk"/"butternut" ≠ butter).
+// Expiry-reminder-only — deliberately NOT the grocery ASSUME_CONSUMED list in
+// chat-agent.ts (butter must NOT trigger the restock quantity reset). KEEP IN
+// SYNC with the matching NO_EXPIRY_REMINDER list in chat-agent.ts.
+const NO_EXPIRY_REMINDER: RegExp[] = [
+  /^milk\b/i, /^mjölk\b/i,                       // milk (English + Swedish)
+  /^eggs?\b/i, /^ägg\b/i,                        // eggs
+  /^yog[h]?urt\b/i, /^drinking yog[h]?urt\b/i,   // yoghurt (incl. kids' drinking yoghurt)
+  /^butter\b/i, /^smör\b/i,                      // butter (English + Swedish)
+];
+const skipExpiryReminder = (name: string) => NO_EXPIRY_REMINDER.some((re) => re.test(name || ""));
+
 async function postExpiryNudge(
   supabase: ReturnType<typeof createClient>,
   startDate: string,
@@ -1643,15 +1658,21 @@ async function postExpiryNudge(
   try {
     const { data: inv } = await supabase
       .from("inventory")
-      .select("name, food_category, expiry_date, quantity, status")
+      .select("name, food_category, category, expiry_date, quantity, status")
       .eq("active", true)
       .not("expiry_date", "is", null)
       .gte("expiry_date", startDate)
       .lte("expiry_date", endDate)
       .order("expiry_date");
     const FISH_RE = /\b(fish|salmon|tuna|cod|prawn|shrimp|seafood|haddock|mackerel|sardine)\b/i;
-    const items = ((inv as { name: string; food_category: string | null; expiry_date: string; quantity: number | null; status: string | null }[]) || [])
+    const items = ((inv as { name: string; food_category: string | null; category: string | null; expiry_date: string; quantity: number | null; status: string | null }[]) || [])
       .filter((it) => !(Number(it.quantity) === 0 || it.status === "out"))
+      // Freezer items don't meaningfully expire — freezing preserves them — so
+      // never nudge about a freezer-stored item's date (owner rule).
+      .filter((it) => it.category !== "freezer")
+      // Replenished staples (milk/eggs/yoghurt/butter) are noise to flag wherever
+      // stored — including shelf-stable pantry/long-life versions (owner rule).
+      .filter((it) => !skipExpiryReminder(it.name))
       .filter((it) => {
         const isMeatFish = it.food_category === "meat" || FISH_RE.test(it.name || "");
         return !(isMeatFish && daysBetween(startDate, it.expiry_date) <= 2);   // critical → already slotted
