@@ -1759,10 +1759,10 @@ async function postWeeklyConfirmNudge(supabase: ReturnType<typeof createClient>)
       .from("chat_history")
       .select("id")
       .eq("role", "assistant")
-      .ilike("content", "🗓️ Quick check%")
+      .ilike("content", "🗓️ Last week%")
       .gte("created_at", since)
       .limit(1);
-    if (recent && recent.length) return;   // already asked this week
+    if (recent && recent.length) return;   // already nudged this week
 
     const dayName = (d: string) =>
       ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][new Date(d + "T00:00:00Z").getUTCDay()];
@@ -1773,7 +1773,11 @@ async function postWeeklyConfirmNudge(supabase: ReturnType<typeof createClient>)
       const slot = r.meal_type === "lunch" ? " lunch" : "";
       return `${dayName(r.plan_date)}${slot}: ${nm}`;
     }).join(" · ");
-    const content = `🗓️ Quick check on last week — did these go as planned? ${list}. Reply "all as planned", or tell me what changed (e.g. "all as planned except Wednesday — we ordered pizza") and I'll log it. Knowing what you really ate is how I learn your habits.`;
+    // No-pressure heads-up, NOT a confirm chore: anything still unlogged is
+    // deemed made-as-planned when Plan Fit scores the week (see plan-fit.ts), so
+    // she only needs to reply if something was actually different. She logs the
+    // rest as she goes via Allie's nightly reminder.
+    const content = `🗓️ Last week — these slots are still unlogged: ${list}. No need to reply: I'll count them as made-as-planned when I score the week. Just tell me if any were actually different (e.g. "Wednesday we ordered pizza") and I'll fix it.`;
     await supabase.from("chat_history").insert({ role: "assistant", content });
     await enqueueOutbox(supabase, "weekly_checkin", content);
   } catch (_e) {

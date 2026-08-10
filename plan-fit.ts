@@ -10,28 +10,33 @@
 // Deploy: supabase functions deploy plan-fit --no-verify-jwt
 //
 // SCORING (per planned slot in the window):
-//   3 — planned recipe made in its exact slot (same date + meal_type)
-//   2 — planned recipe made the same date, different meal slot
-//   1 — planned recipe made elsewhere in the window (different date)
-//   0 — planned recipe not made at all in the window
-// Matches against actual_recipe_id, made-as-planned (actually_made + null
-// actual), and the additional_recipes tracking field. Freezer-assigned slots
-// score identically. Denominator = 3 × scorable slots, where a slot is dropped
-// if the day was is_vacation, or a weekday lunch whose kids_home later flipped
-// off (the slot stopped existing through no fault of the plan).
+//   3 — made as planned in its exact slot: the owner logged "all good", OR never
+//       edited the slot at all (see UNEDITED below), OR the planned recipe was
+//       recorded as actually made in that exact slot.
+//   2 — a LOGGED deviation, but the planned recipe was made the same date in the
+//       other meal slot.
+//   1 — a LOGGED deviation, but the planned recipe was made elsewhere that week.
+//   0 — a LOGGED deviation and the planned recipe never happened that week.
+// Partial credit (2/1) matches against the made-index: actual_recipe_id,
+// made-as-planned recipes, and additional_recipes. Denominator = 3 × scorable
+// slots; a slot is dropped if the day was is_vacation, a weekday lunch whose
+// kids_home later flipped off, or the slot was planned as "Other" (a self-defined
+// flexible slot — picnic/leftovers/eating-out — not a real plan to grade).
 //
-// UNCONFIRMED SLOTS (owner directive): the household logs DEVIATIONS, not every
-// meal — a week often reaches Sunday with no outcome logged at all. A slot with
-// NO actual signal (no actual_recipe_id / actually_made / actual_notes /
-// additional_recipes) is therefore assumed to have been made as planned and
-// scores 3 (tagged where:"assumed"), rather than being read as "not made" (0).
-// The count of assumed slots is stored so the metric stays honest. A slot only
-// loses points when the owner actually LOGGED a deviation from the plan.
+// UNEDITED SLOTS (owner directive): the household logs DEVIATIONS, not every
+// meal — a week often reaches Sunday with slots never touched. Per the owner,
+// an unedited slot (no actual_recipe_id / actually_made / actual_notes /
+// additional_recipes) is DEEMED made as planned — "I didn't update it because
+// the AI got that one right" — so it scores a full 3 (tagged where:"deemed")
+// and counts as a genuine success, NOT a neutral unknown. Only a LOGGED
+// deviation can cost points. The deemed count is stored (assumed_slots column).
 //
-// "OTHER" ENTRIES: when the logged actual is the "Other" placeholder, the free
-// text the owner typed (actual_notes, e.g. "leftover rajma") is what's recorded
-// in slot_detail — not the bare word "Other" — so the diagnosis sees the real
-// shape of the week (leftovers, eating out, ad-hoc meals).
+// "OTHER" PLACEHOLDER: a single shared recipe id every free-text entry rides.
+// It is kept out of the made-index (matching one "Other" against another is
+// meaningless and used to leak phantom points), and slots planned as "Other" are
+// dropped from scoring. When a logged actual is "Other", slot_detail records the
+// typed free text (actual_notes, e.g. "leftover quesadillas") — not the bare word
+// "Other" — so the diagnosis sees the real shape of the week.
 
 import Anthropic from 'npm:@anthropic-ai/sdk'
 import { createClient } from 'npm:@supabase/supabase-js@2'
@@ -112,21 +117,22 @@ Deno.serve(async (req: Request) => {
       madeWin.add(id)
     }
     for (const r of rows) {
-      if (r.actual_recipe_id) record(r.plan_date, r.meal_type, r.actual_recipe_id)
-      else if (r.actually_made === true && r.recipe_id) record(r.plan_date, r.meal_type, r.recipe_id)
+      // The "Other" placeholder is a SINGLE shared recipe id that every free-text
+      // entry rides (leftovers, takeout, "sandwich out"). It must NEVER enter the
+      // made-index: matching one "Other" slot against another is meaningless and
+      // used to hand out phantom same-day/window points (e.g. a planned "Other"
+      // lunch scoring 1 just because an unrelated "Other" was eaten that week).
+      if (r.actual_recipe_id && !r.actual?.is_placeholder) record(r.plan_date, r.meal_type, r.actual_recipe_id)
+      else if (r.actually_made === true && r.recipe_id && !r.planned?.is_placeholder) record(r.plan_date, r.meal_type, r.recipe_id)
       for (const a of (r.additional_recipes || [])) record(r.plan_date, r.meal_type, a?.recipe_id)
     }
 
     // ── Score each planned, scorable slot ──
-    let earned = 0, scorable = 0, excluded = 0, assumed = 0
+    let earned = 0, scorable = 0, excluded = 0, deemed = 0
     const slotDetail: Array<Record<string, unknown>> = []
     for (const r of rows) {
       if (!r.recipe_id) continue                       // only slots with a planned recipe
-      // A slot planned as "Other" carries its free text in notes — show that,
-      // not the bare "Other" placeholder name.
-      const plannedName = r.planned?.is_placeholder
-        ? ((r.notes || '').trim() || 'Other')
-        : (r.planned?.name || null)
+      const plannedName = r.planned?.name || null
       const ds  = daySettings.get(r.plan_date)
       const dow = new Date(r.plan_date + 'T00:00:00Z').getUTCDay()
       if (ds?.is_vacation) {
@@ -137,22 +143,35 @@ Deno.serve(async (req: Request) => {
       if (r.meal_type === 'lunch' && dow >= 1 && dow <= 5 && ds && ds.kids_home === false) {
         excluded++; slotDetail.push({ date: r.plan_date, meal_type: r.meal_type, planned: plannedName, excluded: 'kids_home_off' }); continue
       }
+      // A slot the owner planned as "Other" is a self-defined flexible slot
+      // (picnic / leftovers / eating out), not a real recipe whose fit can be
+      // measured — drop it from scoring rather than always counting it right.
+      if (r.planned?.is_placeholder) {
+        excluded++; slotDetail.push({ date: r.plan_date, meal_type: r.meal_type, planned: (r.notes || '').trim() || 'Other', excluded: 'planned_other' }); continue
+      }
       scorable++
-      // Did the owner log ANY outcome for this slot? If not, the week went
-      // unconfirmed and we assume the plan was made (see header note).
-      const confirmed = r.actual_recipe_id !== null || r.actually_made !== null ||
-        (r.actual_notes || '').trim() !== '' ||
-        (Array.isArray(r.additional_recipes) && r.additional_recipes.length > 0)
       const k = r.plan_date + '|' + r.meal_type
+      // MADE AS PLANNED — the owner logged "all good" (actually_made true, no
+      // different recipe or note). UNTOUCHED — never logged at all; per the
+      // owner's rule an unedited slot is ALSO deemed made as planned (an unedited
+      // slot means the plan got it right, it just wasn't confirmed by hand).
+      // Both are a full 3-point exact fit. Only a LOGGED DEVIATION can lose
+      // points, and then the planned recipe still earns partial credit if it
+      // turned up elsewhere that week.
+      const madeAsPlanned = r.actually_made === true && !r.actual_recipe_id && (r.actual_notes || '').trim() === ''
+      const untouched = r.actually_made === null && r.actual_recipe_id === null &&
+        (r.actual_notes || '').trim() === '' &&
+        !(Array.isArray(r.additional_recipes) && r.additional_recipes.length > 0)
       let score = 0, where = 'none'
-      if (madeSlot.get(k)?.has(r.recipe_id))      { score = 3; where = 'exact' }
+      if (madeAsPlanned)                                   { score = 3; where = 'exact' }
+      else if (untouched)                                  { score = 3; where = 'deemed'; deemed++ }
+      else if (madeSlot.get(k)?.has(r.recipe_id))          { score = 3; where = 'exact' }
       else if (madeDay.get(r.plan_date)?.has(r.recipe_id)) { score = 2; where = 'same_day' }
-      else if (madeWin.has(r.recipe_id))          { score = 1; where = 'window' }
-      else if (!confirmed)                        { score = 3; where = 'assumed'; assumed++ }
+      else if (madeWin.has(r.recipe_id))                   { score = 1; where = 'window' }
       earned += score
-      // What was actually eaten. An "Other" actual shows the typed free text
-      // (e.g. "leftover rajma"); an assumed slot shows the planned recipe.
-      const actualName = where === 'assumed'
+      // What was actually eaten. Made-as-planned / deemed show the planned recipe;
+      // an "Other" deviation shows the typed free text (e.g. "leftover quesadillas").
+      const actualName = (madeAsPlanned || untouched)
         ? plannedName
         : r.actual?.is_placeholder
           ? ((r.actual_notes || '').trim() || 'Other')
@@ -179,7 +198,7 @@ Deno.serve(async (req: Request) => {
       const prompt = `You are analysing "Plan Fit" for a household meal planner. Plan Fit measures how well THE PLAN fit the household's actual week — NEVER how well the family followed the plan. A low score means THE PLAN should change, never that the family failed. Write every observation as a plan-improvement note; never phrase anything as the household failing to comply.
 
 This week (${weekStart} to ${weekEnd}): ${fitPercent}% (${earned} of ${maxScore} points across ${scorable} slots).
-Per-slot results (score: 3 = made as planned in its slot, 2 = same day but a different meal, 1 = made later that week, 0 = not made in the window). where:"assumed" means the owner logged no outcome for that slot, so the plan is assumed made — treat assumed slots as neutral (no evidence either way), NOT as a success or a misfit. ${assumed} of ${scorable} slots this week were assumed (unlogged). An "actual" that is free text (e.g. "leftover rajma", "takeout") is an off-recipe meal the family had instead — a real signal about the shape of the week:
+Per-slot results (score: 3 = made as planned in its slot, 2 = same day but a different meal, 1 = made later that week, 0 = a logged deviation that never happened that week). where:"deemed" means the owner never edited that slot — which the household treats as "the plan got it right, so I didn't need to touch it": count these as genuine successes, NOT as unknowns. ${deemed} of ${scorable} slots this week were deemed (unedited = plan was right). Points are ONLY lost where the owner LOGGED a deviation (where:"same_day"/"window"/"none"). An "actual" that is free text (e.g. "leftover quesadillas", "takeout") is an off-recipe meal the family had instead — a real signal about the shape of the week:
 ${JSON.stringify(slotDetail.filter(s => !s.excluded), null, 2)}
 
 Recent prior weeks (for spotting misfits that recur):
@@ -201,7 +220,7 @@ Write a SHORT diagnosis (2-4 sentences, no preamble). Cover briefly what fit wel
       .upsert({
         week_start: weekStart, week_end: weekEnd,
         scorable_slots: scorable, max_score: maxScore, earned_score: earned,
-        assumed_slots: assumed,
+        assumed_slots: deemed,
         fit_percent: fitPercent, slot_detail: slotDetail, diagnosis,
       }, { onConflict: 'week_start' })
       .select().single()
