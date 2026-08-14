@@ -182,7 +182,7 @@ async function loadAndRender() {
     'freezer_stash_id, freezer_portions_used, ' +
     // A freezer-pick slot has recipe_id = null (the stash item is often not a
     // linked recipe), so pull its name from freezer_stash for display.
-    'freezer:freezer_stash!meal_plans_freezer_stash_id_fkey(recipe_name), ' +
+    'freezer:freezer_stash!meal_plans_freezer_stash_id_fkey(recipe_name, location), ' +
     'recipes!meal_plans_recipe_id_fkey(id, name, emoji, serves_base, is_placeholder), ' +
     'actual_recipe:recipes!meal_plans_actual_recipe_id_fkey(id, name, emoji, is_placeholder)'
 
@@ -222,7 +222,7 @@ async function loadAndRender() {
     // fully used, still active. Store-bought and homemade alike (no distinction).
     supabase
       .from('freezer_stash')
-      .select('id, recipe_name, recipe_id, portions, source')
+      .select('id, recipe_name, recipe_id, portions, source, location')
       .eq('active', true).eq('used', false).gt('portions', 0)
       .order('recipe_name'),
   ])
@@ -628,10 +628,11 @@ function buildSlotRow(date, slot, entry, dayMeta, isPast = false) {
     // correct how many portions were actually used (reopens the quantity prompt).
     if (entry.freezer_stash_id) {
       const used = Number(entry.freezer_portions_used) || 0
+      const isFridge = entry.freezer?.location === 'fridge'
       const fz = document.createElement('button')
       fz.className = 'day-slot__freezer'
-      fz.textContent = '❄️'
-      fz.title = `From freezer${used ? ` — ${used} portion${used === 1 ? '' : 's'}` : ''} · tap to adjust`
+      fz.textContent = isFridge ? '🍱' : '❄️'
+      fz.title = `${isFridge ? 'Ready-to-eat meal' : 'From freezer'}${used ? ` — ${used} portion${used === 1 ? '' : 's'}` : ''} · tap to adjust`
       fz.addEventListener('click', (e) => {
         e.stopPropagation()
         openFreezerCorrection(date, slot.type, entry.freezer_stash_id, entry.freezer_portions_used, date <= todayStr())
@@ -843,23 +844,32 @@ function showPicker(date, slotType, opts = {}) {
     const lq = q.toLowerCase()
     const hits = lq ? pool.filter(r => r.name.toLowerCase().includes(lq)) : pool
     list.innerHTML = ''
-    // ── Freezer ── group first: pickable freezer_stash items (portions>0, unused).
-    // Not offered in "Also served" mode — that only appends untracked extras and
-    // carries no freezer linkage/decrement.
+    // ── Freezer + Ready ── groups first: pickable freezer_stash items (portions>0,
+    // unused). Split by storage: location='fridge' rows are ready-to-eat meals
+    // (shown as "Ready"), everything else is the freezer. Both share the same row
+    // treatment + the portion decrement/restore path. Not offered in "Also served"
+    // mode — that only appends untracked extras and carries no linkage/decrement.
     if (!additional) {
       const fHits = lq ? freezerStash.filter(f => (f.recipe_name || '').toLowerCase().includes(lq)) : freezerStash
-      if (fHits.length) {
-        list.appendChild(groupHeader('Freezer'))
-        for (const f of fHits) {
-          const emoji = f.source === 'store_bought' ? '🛒' : '❄️'
-          const label = `<span class="picker-row__cat">Freezer</span>${f.recipe_name} <span class="picker-row__portions">(${f.portions} portion${Number(f.portions) === 1 ? '' : 's'})</span>`
+      const stashGroups = [
+        { header: 'Ready',   isFridge: true,  items: fHits.filter(f => f.location === 'fridge') },
+        { header: 'Freezer', isFridge: false, items: fHits.filter(f => f.location !== 'fridge') },
+      ]
+      let anyStash = false
+      for (const g of stashGroups) {
+        if (!g.items.length) continue
+        anyStash = true
+        list.appendChild(groupHeader(g.header))
+        for (const f of g.items) {
+          const emoji = f.source === 'store_bought' ? '🛒' : (g.isFridge ? '🍱' : '❄️')
+          const label = `<span class="picker-row__cat">${g.header}</span>${f.recipe_name} <span class="picker-row__portions">(${f.portions} portion${Number(f.portions) === 1 ? '' : 's'})</span>`
           list.appendChild(pickRow(emoji, label, () => {
             closeModal(overlay)
             openFreezerQtyPrompt(f, date, slotType, isActual)
           }, 'picker-row--freezer'))
         }
-        list.appendChild(groupHeader('Recipes'))
       }
+      if (anyStash) list.appendChild(groupHeader('Recipes'))
     }
     for (const r of hits) {
       // Prefix the displayed label with the meal-type category. Display-only —

@@ -1,0 +1,18 @@
+-- ════════════════════════════════════════════════════════════════════════
+-- Ready-to-eat meals (fridge-stored) reuse the freezer_stash machinery
+-- ════════════════════════════════════════════════════════════════════════
+-- A ready-to-eat meal (gnocchi, pulled pork in the fridge) is functionally the
+-- same as a Freezer Meal: a portioned, ready-to-heat dish that gets picked into
+-- a slot and decremented as it's eaten. The only difference is where it lives.
+-- Rather than build a parallel table + picker + decrement/restore path, we tag
+-- freezer_stash rows with a storage LOCATION and split the two views by it:
+--
+--   location = 'freezer' → shown in the Pantry ▸ Freezer Meals tab (unchanged)
+--   location = 'fridge'  → a Ready-to-eat meal, shown in Pantry ▸ Prepped under
+--                          its own section, and offered in the Plan picker as a
+--                          "Ready" pick (same portion decrement/restore as a
+--                          freezer pick — meal_plans.freezer_stash_id still links it).
+--
+-- Existing rows backfill to 'freezer' via the default, so nothing changes for
+-- the Freezer Meals tab.
+alter table freezer_stash add column if not exists location text not null default 'freezer';

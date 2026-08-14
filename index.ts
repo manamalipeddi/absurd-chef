@@ -241,6 +241,10 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
       .from("freezer_stash")
       .select("id, recipe_name, recipe_id, portions, notes, source, typically_restocked")
       .eq("used", false).eq("active", true)
+      // Only true freezer meals are auto-planning candidates. Fridge ready-to-eat
+      // meals (location='fridge') are perishable and stay a MANUAL pick — the AI
+      // plans 2 weeks out and shouldn't schedule a fridge meal to spoil.
+      .eq("location", "freezer")
       // include 0-portion items that are typically restocked (week-2 eligible)
       .or("portions.gt.0,typically_restocked.eq.true"),
     // recently_used reads ACTUAL outcome: when a past day was made differently

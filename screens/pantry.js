@@ -10,6 +10,7 @@ let activeTab = 'inventory'
 let inventoryData = []
 let freezerData   = []
 let preppedData   = []
+let readyMealData = []   // ready-to-eat meals (freezer_stash rows with location='fridge')
 let recipeList    = []   // for freezer link-to-recipe select
 let masterList    = []   // active master_ingredients (for the Linked-ingredient editor)
 let groceryData   = { lowStock: [], snapshot: null }
@@ -155,6 +156,51 @@ async function moveToFreezerSection(item) {
     .eq('id', item.id)
   if (error) return false
   item.category = 'freezer'
+  return true
+}
+
+// Reclassify an inventory item as a READY-TO-EAT MEAL (gnocchi, pulled pork —
+// a cooked dish that just needs heating/serving). It lands in the Prepped tab's
+// "Ready-to-eat meals" section and becomes pickable into a plan slot, decrementing
+// as it's eaten — the exact freezer-meal machinery, just fridge-stored, so it's a
+// freezer_stash row tagged location='fridge'. Insert-before-delete safety so the
+// item can never be lost. Returns true on success. (No freezer override recorded —
+// that learning is only for the frozen auto-sort.)
+async function moveToReadyMeal(item) {
+  const today = new Date().toISOString().slice(0, 10)
+  const { error: insErr } = await supabase.from('freezer_stash').insert({
+    recipe_name: item.name,
+    recipe_id: null,
+    portions: Math.max(1, Math.round(Number(item.quantity) || 1)),
+    typically_restocked: !!item.typically_restocked,
+    frozen_date: today,          // reused as the "made/prepped" date
+    notes: item.notes || null,
+    location: 'fridge',
+    active: true,
+  })
+  if (insErr) return false
+  await supabase.from('inventory').delete().eq('id', item.id)
+  return true
+}
+
+// Reclassify an inventory item as a PREPPED INGREDIENT (a made-ahead component:
+// a spice mix, a sauce base). Lands in the Prepped tab's "Prepped ingredients"
+// section with a batches count. Not a standalone meal, so it is NOT offered in
+// the plan picker. Insert-before-delete safety. Returns true on success.
+async function moveToPrepped(item) {
+  const today = new Date().toISOString().slice(0, 10)
+  const batches = Math.max(1, Math.round(Number(item.quantity) || 1))
+  const { error: insErr } = await supabase.from('prepped_components').insert({
+    recipe_id: null,
+    name: item.name,
+    batches_made: batches,
+    batches_remaining: batches,
+    made_date: today,
+    storage_notes: item.notes || null,
+    active: true,
+  })
+  if (insErr) return false
+  await supabase.from('inventory').delete().eq('id', item.id)
   return true
 }
 
@@ -813,6 +859,28 @@ function openDeactivateSheet(item) {
     sheet.append(toFreezer)
   }
 
+  // Move into the Prepped tab — a made-ahead ingredient or a ready-to-eat meal.
+  const toPrepped = document.createElement('button')
+  toPrepped.className = 'act-sheet__btn'
+  toPrepped.textContent = 'Move to Prepped'
+  toPrepped.addEventListener('click', async () => {
+    if (!pressInside) return
+    close()
+    if (await moveToPrepped(item)) { toast(`Moved “${item.name}” to Prepped ingredients`); showListForActiveTab() }
+    else toast('Move failed', { error: true })
+  })
+
+  const toReady = document.createElement('button')
+  toReady.className = 'act-sheet__btn'
+  toReady.textContent = 'Move to Ready Meals'
+  toReady.addEventListener('click', async () => {
+    if (!pressInside) return
+    close()
+    if (await moveToReadyMeal(item)) { toast(`Moved “${item.name}” to Ready-to-eat meals`); showListForActiveTab() }
+    else toast('Move failed', { error: true })
+  })
+  sheet.append(toPrepped, toReady)
+
   sheet.append(deact, cancelBtn)
   overlay.appendChild(sheet)
   overlay.addEventListener('click', e => { if (e.target === overlay && pressInside) close() })
@@ -1365,6 +1433,29 @@ function openInventoryForm(id, defaultCat = 'pantry', defaultFood = 'other') {
       danger.appendChild(toFreezerBtn)
     }
 
+    // Reclassify into the Prepped tab: a made-ahead ingredient (batches) or a
+    // ready-to-eat meal (portioned, pickable into a plan slot). Available for any
+    // inventory item, whatever its storage category.
+    const toPreppedBtn = document.createElement('button')
+    toPreppedBtn.className = 'pn-danger-btn'
+    toPreppedBtn.textContent = 'Move to Prepped'
+    toPreppedBtn.addEventListener('click', async () => {
+      toPreppedBtn.disabled = true
+      if (await moveToPrepped(item)) { toast(`Moved “${item.name}” to Prepped ingredients`); closeInventoryForm() }
+      else { toPreppedBtn.disabled = false; toast('Move failed', { error: true }) }
+    })
+    danger.appendChild(toPreppedBtn)
+
+    const toReadyMealBtn = document.createElement('button')
+    toReadyMealBtn.className = 'pn-danger-btn'
+    toReadyMealBtn.textContent = 'Move to Ready Meals'
+    toReadyMealBtn.addEventListener('click', async () => {
+      toReadyMealBtn.disabled = true
+      if (await moveToReadyMeal(item)) { toast(`Moved “${item.name}” to Ready-to-eat meals`); closeInventoryForm() }
+      else { toReadyMealBtn.disabled = false; toast('Move failed', { error: true }) }
+    })
+    danger.appendChild(toReadyMealBtn)
+
     const hideBtn = document.createElement('button')
     hideBtn.className = 'pn-danger-btn'
     hideBtn.textContent = 'Hide this item'
@@ -1387,8 +1478,10 @@ function openInventoryForm(id, defaultCat = 'pantry', defaultFood = 'other') {
 
 async function loadFreezer() {
   const [stashRes, recipeRes] = await Promise.all([
+    // Only true freezer meals here — fridge ready-to-eat meals (location='fridge')
+    // live in the Prepped tab, not this one.
     supabase.from('freezer_stash').select('*')
-      .eq('used', false).eq('active', true)
+      .eq('used', false).eq('active', true).eq('location', 'freezer')
       .order('frozen_date', { ascending: false }),
     supabase.from('recipes').select('id, name, meal_type, emoji, is_placeholder').eq('active', true).order('name'),
   ])
@@ -1415,7 +1508,7 @@ function renderFreezer() {
 }
 
 async function loadHiddenFreezerToggle() {
-  const { data: hidden } = await supabase.from('freezer_stash').select('*').eq('active', false)
+  const { data: hidden } = await supabase.from('freezer_stash').select('*').eq('active', false).eq('location', 'freezer')
   if (!hidden?.length) return
 
   const toggle = document.createElement('button')
@@ -1456,13 +1549,17 @@ async function loadHiddenFreezerToggle() {
 
 // Compact freezer item — same row + stepper treatment as Inventory (portions
 // are small discrete counts, so a numeric stepper alone; no status pill).
-function buildFreezerRow(entry, ruled) {
+// ctx lets the same row serve two tabs: { backing } is the in-memory array to keep
+// in sync on a portions change (freezerData for the Freezer Meals tab, readyMealData
+// for the Prepped tab); { noTap } drops the tap-to-edit so a ready meal in Prepped
+// doesn't open the freezer-form (which would swap the visible tab).
+function buildFreezerRow(entry, ruled, ctx = {}) {
   const wrap = document.createElement('div')
-  renderFreezerItem(wrap, entry, ruled)
+  renderFreezerItem(wrap, entry, ruled, ctx)
   return wrap
 }
 
-function renderFreezerItem(wrap, entry, ruled) {
+function renderFreezerItem(wrap, entry, ruled, ctx = {}) {
   wrap.innerHTML = ''
   wrap.className = 'pn-inv-item' + (ruled ? ' pn-row--ruled' : '')
 
@@ -1477,10 +1574,13 @@ function renderFreezerItem(wrap, entry, ruled) {
 
   const sub = document.createElement('div')
   sub.className = 'pn-inv-sub'
+  const isFridge = entry.location === 'fridge'
   const stor = document.createElement('span')
-  stor.textContent = entry.source === 'store_bought' ? '🛒 Store-bought' : 'Freezer'
+  stor.textContent = entry.source === 'store_bought'
+    ? '🛒 Store-bought'
+    : (isFridge ? '🍱 Ready to eat' : 'Freezer')
   sub.appendChild(stor)
-  if (entry.frozen_date) sub.appendChild(document.createTextNode(' · frozen ' + fmtShortDate(entry.frozen_date)))
+  if (entry.frozen_date) sub.appendChild(document.createTextNode((isFridge ? ' · made ' : ' · frozen ') + fmtShortDate(entry.frozen_date)))
   if (entry.use_by_date) {
     sub.appendChild(document.createTextNode(' · '))
     const status = expiryStatus(entry.use_by_date)
@@ -1494,23 +1594,24 @@ function renderFreezerItem(wrap, entry, ruled) {
     sub.appendChild(r)
   }
   tap.append(name, sub)
-  tap.addEventListener('click', () => openFreezerForm(entry.id))
+  if (!ctx.noTap) tap.addEventListener('click', () => openFreezerForm(entry.id))
   row.appendChild(tap)
 
-  row.appendChild(buildPortionsStepper(wrap, entry, ruled))
+  row.appendChild(buildPortionsStepper(wrap, entry, ruled, ctx))
   wrap.appendChild(row)
 }
 
-async function setFreezerPortions(wrap, entry, ruled, newPortions) {
+async function setFreezerPortions(wrap, entry, ruled, newPortions, ctx = {}) {
   const { data, error } = await supabase.from('freezer_stash').update({ portions: newPortions }).eq('id', entry.id).select('*').single()
   if (error || !data) { toast('Update failed', { error: true }); return }
   Object.assign(entry, data)
-  const idx = freezerData.findIndex(x => x.id === entry.id)
-  if (idx >= 0) freezerData[idx] = { ...freezerData[idx], ...data }
-  renderFreezerItem(wrap, entry, ruled)
+  const backing = ctx.backing || freezerData
+  const idx = backing.findIndex(x => x.id === entry.id)
+  if (idx >= 0) backing[idx] = { ...backing[idx], ...data }
+  renderFreezerItem(wrap, entry, ruled, ctx)
 }
 
-function buildPortionsStepper(wrap, entry, ruled) {
+function buildPortionsStepper(wrap, entry, ruled, ctx = {}) {
   const c = document.createElement('div')
   c.className = 'pn-stepper'
   const mk = (txt, cls) => { const b = document.createElement('button'); b.className = 'pn-step-btn ' + cls; b.textContent = txt; return b }
@@ -1520,8 +1621,8 @@ function buildPortionsStepper(wrap, entry, ruled) {
   num.className = 'pn-step-num'
   num.textContent = fmtQty(entry.portions)
 
-  minus.addEventListener('click', e => { e.stopPropagation(); setFreezerPortions(wrap, entry, ruled, Math.max(0, (Number(entry.portions) || 0) - 1)) })
-  plus.addEventListener('click',  e => { e.stopPropagation(); setFreezerPortions(wrap, entry, ruled, (Number(entry.portions) || 0) + 1) })
+  minus.addEventListener('click', e => { e.stopPropagation(); setFreezerPortions(wrap, entry, ruled, Math.max(0, (Number(entry.portions) || 0) - 1), ctx) })
+  plus.addEventListener('click',  e => { e.stopPropagation(); setFreezerPortions(wrap, entry, ruled, (Number(entry.portions) || 0) + 1, ctx) })
   num.addEventListener('click', e => {
     e.stopPropagation()
     const inp = document.createElement('input')
@@ -1529,8 +1630,8 @@ function buildPortionsStepper(wrap, entry, ruled) {
     inp.value = entry.portions ?? ''
     num.replaceWith(inp); inp.focus(); inp.select()
     let done = false
-    const commit = () => { if (done) return; done = true; const v = inp.value === '' ? 0 : Math.max(0, parseInt(inp.value) || 0); setFreezerPortions(wrap, entry, ruled, v) }
-    const cancel = () => { if (done) return; done = true; renderFreezerItem(wrap, entry, ruled) }
+    const commit = () => { if (done) return; done = true; const v = inp.value === '' ? 0 : Math.max(0, parseInt(inp.value) || 0); setFreezerPortions(wrap, entry, ruled, v, ctx) }
+    const cancel = () => { if (done) return; done = true; renderFreezerItem(wrap, entry, ruled, ctx) }
     inp.addEventListener('click', e2 => e2.stopPropagation())
     inp.addEventListener('blur', commit)
     inp.addEventListener('keydown', e2 => {
@@ -1743,64 +1844,123 @@ function openFreezerForm(id) {
 // ═══════════════════════════════════════════════════════════
 
 async function loadPrepped() {
-  const { data } = await supabase
-    .from('prepped_components')
-    .select('*, recipes(id, name, emoji)')
-    .eq('active', true)
-    .gt('batches_remaining', 0)
-    .order('made_date', { ascending: false })
-  preppedData = data || []
+  const [pcRes, rmRes] = await Promise.all([
+    supabase
+      .from('prepped_components')
+      .select('*, recipes(id, name, emoji)')
+      .eq('active', true)
+      .gt('batches_remaining', 0)
+      .order('made_date', { ascending: false }),
+    // Ready-to-eat meals: freezer_stash rows filed under the fridge, with portions
+    // left. Like prepped ingredients (batches>0), a used-up meal drops off on reload.
+    supabase.from('freezer_stash').select('*')
+      .eq('location', 'fridge').eq('used', false).eq('active', true).gt('portions', 0)
+      .order('frozen_date', { ascending: false }),
+  ])
+  preppedData   = pcRes.data || []
+  readyMealData = rmRes.data || []
+}
+
+// Collapsible section matching the Inventory tab's treatment (pn-section header +
+// chevron + card body). rowEls are pre-built row elements. key drives catOpenState.
+function buildPnSection(key, label, rowEls) {
+  const wrap = document.createElement('div')
+  wrap.className = 'pn-section'
+
+  const header = document.createElement('div')
+  header.className = 'pn-section-header'
+  const toggleBtn = document.createElement('button')
+  toggleBtn.className = 'pn-section-toggle'
+  const isOpen = catOpenState[key] ?? true
+  toggleBtn.setAttribute('aria-expanded', String(isOpen))
+  toggleBtn.innerHTML = `
+    <span class="pn-section-label">${label}</span>
+    <span class="pn-section-count">(${rowEls.length})</span>
+    <svg class="pn-section-chev${isOpen ? ' pn-section-chev--open' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="m19 9-7 7-7-7"/>
+    </svg>`
+  header.append(toggleBtn)
+
+  const body = document.createElement('div')
+  body.className = 'pn-section-body' + (isOpen ? '' : ' pn-section-body--hidden')
+  const card = document.createElement('div')
+  card.className = 'card pn-section-card'
+  rowEls.forEach(el => card.appendChild(el))
+  body.appendChild(card)
+
+  toggleBtn.addEventListener('click', () => {
+    catOpenState[key] = !(catOpenState[key] ?? true)
+    toggleBtn.setAttribute('aria-expanded', String(catOpenState[key]))
+    body.classList.toggle('pn-section-body--hidden', !catOpenState[key])
+    toggleBtn.querySelector('.pn-section-chev').classList.toggle('pn-section-chev--open', catOpenState[key])
+  })
+
+  wrap.append(header, body)
+  return wrap
+}
+
+// One prepped-INGREDIENT row (a made-ahead component with a batches count).
+function buildPreppedRow(comp, ruled) {
+  const row = document.createElement('div')
+  row.className = 'pn-row' + (ruled ? ' pn-row--ruled' : '')
+
+  const centre = document.createElement('div')
+  centre.className = 'pn-row__centre'
+  const main = document.createElement('div')
+  main.className = 'pn-row__main'
+  main.textContent = comp.name
+  const meta = document.createElement('div')
+  meta.className = 'pn-row__meta'
+  const parts = []
+  if (comp.recipes) parts.push((comp.recipes.emoji || '') + ' ' + comp.recipes.name)
+  if (comp.made_date) parts.push('made ' + fmtShortDate(comp.made_date))
+  meta.textContent = parts.join(' · ')
+  centre.append(main, meta)
+  row.appendChild(centre)
+
+  const right = document.createElement('div')
+  right.className = 'pn-row__right'
+  right.appendChild(buildBatchesStepper(comp))
+  if (comp.storage_notes) {
+    const note = document.createElement('span')
+    note.className = 'pn-badge pn-badge-note'
+    note.textContent = '📝'; note.title = comp.storage_notes
+    right.appendChild(note)
+  }
+  row.appendChild(right)
+
+  if (comp.recipe_id) {
+    row.style.cursor = 'pointer'
+    row.addEventListener('click', () => {
+      navState.recipeId = comp.recipe_id
+      navigateTo('recipe-detail')
+    })
+  }
+  return row
 }
 
 function renderPrepped() {
   contentEl.innerHTML = ''
 
-  if (!preppedData.length) {
-    contentEl.appendChild(mkEmpty('No prepped components. Add them from a recipe\'s detail screen.'))
+  if (!preppedData.length && !readyMealData.length) {
+    contentEl.appendChild(mkEmpty('Nothing prepped yet. Move an inventory item to Ready Meals or Prepped, or add prepped components from a recipe.'))
     return
   }
 
-  const card = document.createElement('div')
-  card.className = 'card su-card'
-  preppedData.forEach((comp, i) => {
-    const row = document.createElement('div')
-    row.className = 'pn-row' + (i < preppedData.length - 1 ? ' pn-row--ruled' : '')
+  // Prepped ingredients — made-ahead components (batches stepper).
+  if (preppedData.length) {
+    const rows = preppedData.map((comp, i) => buildPreppedRow(comp, i < preppedData.length - 1))
+    contentEl.appendChild(buildPnSection('prepped_ing', '🧩 Prepped ingredients', rows))
+  }
 
-    const centre = document.createElement('div')
-    centre.className = 'pn-row__centre'
-    const main = document.createElement('div')
-    main.className = 'pn-row__main'
-    main.textContent = comp.name
-    const meta = document.createElement('div')
-    meta.className = 'pn-row__meta'
-    const parts = []
-    if (comp.recipes) parts.push((comp.recipes.emoji || '') + ' ' + comp.recipes.name)
-    if (comp.made_date) parts.push('made ' + fmtShortDate(comp.made_date))
-    meta.textContent = parts.join(' · ')
-    centre.append(main, meta)
-    row.appendChild(centre)
-
-    const right = document.createElement('div')
-    right.className = 'pn-row__right'
-    right.appendChild(buildBatchesStepper(comp))
-    if (comp.storage_notes) {
-      const note = document.createElement('span')
-      note.className = 'pn-badge pn-badge-note'
-      note.textContent = '📝'; note.title = comp.storage_notes
-      right.appendChild(note)
-    }
-    row.appendChild(right)
-
-    if (comp.recipe_id) {
-      row.style.cursor = 'pointer'
-      row.addEventListener('click', () => {
-        navState.recipeId = comp.recipe_id
-        navigateTo('recipe-detail')
-      })
-    }
-    card.appendChild(row)
-  })
-  contentEl.appendChild(card)
+  // Ready-to-eat meals — freezer_stash (location='fridge'); reuse the freezer row so
+  // the portions stepper + look match. noTap keeps the freezer-form off this tab;
+  // readyMealData is the backing array the stepper keeps in sync.
+  if (readyMealData.length) {
+    const rows = readyMealData.map((entry, i) =>
+      buildFreezerRow(entry, i < readyMealData.length - 1, { backing: readyMealData, noTap: true }))
+    contentEl.appendChild(buildPnSection('ready_meals', '🍱 Ready-to-eat meals', rows))
+  }
 }
 
 // Adjust a prepped component's remaining batches. Mirrors setFreezerPortions:
