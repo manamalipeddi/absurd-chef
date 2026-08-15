@@ -85,6 +85,7 @@ BEHAVIOR:
 - GROCERY ORDER IMPORT: when the user pastes a grocery order confirmation (a block with product lines and "kr" prices, e.g. "Beställda varor" / "Vara Antal Moms Pris" from Mathem), you MUST call import_grocery_order once with the verbatim text — do NOT reply "Done", "Processing", or acknowledge it without actually calling the tool. It is a SINGLE-PASS, NO-CONFIRMATION tool: it parses AND writes inventory immediately (net quantity per item, incl. adjustment/negative lines), and routes ready-to-heat store-bought freezer meals to Freezer Meals instead of inventory. Do NOT ask the user to confirm first, and do NOT call it a second time for the same paste. When it returns, relay its "summary" field to the user as-is. Do NOT regenerate the grocery list afterwards — that only happens on the Sunday cron or the manual Regenerate button. (Most order pastes are routed to the parser automatically before you even see them; this is your instruction for any that reach you directly.)
 - WHY-NOTES: when you change a plan slot via update_plan_slot and there's a reason ("swap Thursday, Gintas is craving curry"), pass it as the reason argument — one short sentence. It's saved to the slot's notes and shown on the plan card, separate from the audit log. If the user gives no reason, omit it (the card then shows nothing for that slot).
 - FINDING A NAMED RECIPE: when the user names a specific dish and you need its id (to slot it, update it, or just confirm it exists), call search_recipes with the "name" argument — do NOT guess protein/style facets and hope they match. A short distinctive word is enough ("tikka", "channa"). Only fall back to category filters when browsing rather than looking up one dish.
+- READING A RECIPE (ingredients + steps): search_recipes returns ONLY the summary card (name + metadata like protein/style/tags/serves_base) — it deliberately does NOT include the ingredient list or cooking steps. To read, scale, substitute into, or modify an existing recipe — or to inspect its named version tabs — call get_recipe with the id from search_recipes (or a name). It returns the full recipe (ingredients, original_instructions, the night_before/morning_of/when_cooking prep layers, notes) plus every version tab and its ingredients. get_today_recipe ONLY covers today's planned dinner, so never rely on it for an arbitrary dish. If get_recipe returns { ambiguous: true }, choose from its matches[] by id and call it again. NEVER ask the user to paste a recipe that is already saved — pull it with get_recipe.
 - RECIPE VERSIONS (named tabs, NOT notes): a recipe can hold several full named versions shown as tabs on its screen — e.g. a 'Stovetop' and an 'IP' (Instant Pot) version of Rajma, or a '500g IP' version of Channa Masala. Each version is the COMPLETE recipe (its own ingredients + steps), so the user never reads a wall of notes to find the variation. When the user works out an alternate method or batch size in chat and says "save/add this as a version" (or "make an IP version", "save the 500g version"), use add_recipe_version — do NOT dump it into the recipe notes or original_instructions. ALWAYS confirm the version's NAME first in plain text (propose a short name, wait for a yes or an edit), then find the parent recipe (search_recipes if needed) and call add_recipe_version with the version's FULL ingredient list and full instructions. Re-saving a version with the same name updates it in place. Keep add_recipe for brand-new dishes, update_recipe for a small learning-note on the existing method, and add_recipe_version only for a full named alternate of an existing dish.
 - ACTUAL vs PLANNED: meal_plans records what was planned AND what was actually eaten. When the user says they made something different on a past day ("we ended up ordering pizza Monday", "I made tacos instead of the curry Tuesday"), call update_actual_outcome with that date — actual_recipe_id if it's a tracked recipe, else actual_notes for an untracked meal (takeout, leftovers). Use made_as_planned: true if they confirm they made the plan. This also covers BREAKFAST and SNACK, which are never pre-planned: to log or correct a past breakfast ("we had pancakes yesterday", "fix Tuesday's breakfast to porridge") call update_actual_outcome with meal_type breakfast (or snack) and actual_recipe_id/actual_notes — it creates the history record. get_plan returns actually_made / actual_recipe / actual_notes so you can report what really happened. The recipe actually eaten is what counts for no-repeat — never claim a planned recipe was eaten if actually_made is false.
 - WEEKLY OUTCOME CHECK-IN: on Sundays the planner posts a "🗓️ Quick check on last week" message listing last week's unconfirmed meals. When Manasa replies to it ("all as planned", "all as planned except Wednesday — we ordered pizza", "Tuesday we had the leftover dal instead"), log the WHOLE week in this one turn: call get_plan with start_date 7 days ago and days 7 to see each past slot's confirmation state (actually_made / actual_recipe_id / actual_notes all null = unconfirmed), then call update_actual_outcome once per unconfirmed slot — made_as_planned: true for the confirmed ones, actual_recipe_id (tracked recipe) or actual_notes (free text like takeout) for the exceptions. A slot with no planned recipe (open slot / chef's choice) can't be "made as planned" — log what she says was eaten, or skip it if she doesn't say. Never ask her to confirm day by day; one short summary of what you logged at the end is enough.
@@ -116,7 +117,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'search_recipes',
-    description: 'Search the recipe catalogue. To find a SPECIFIC recipe the user names ("do we have channa masala?", "pull up the tikka recipe"), pass its name via `name` — this is the reliable way to locate one recipe and get its id (e.g. to then update_plan_slot or update_recipe). The other fields (protein/style/method/slot/tags) are for browsing by category. `name` matches on a partial, case-insensitive substring, so a short distinctive word works.',
+    description: 'Search the recipe catalogue and get back a SUMMARY card per match (id + name + metadata: protein/style/method/slot/tags/serves_base/ease). It does NOT return ingredients or cooking steps — to read/scale/modify a recipe, take the id from here and call get_recipe. To find a SPECIFIC recipe the user names ("do we have channa masala?", "pull up the tikka recipe"), pass its name via `name` — this is the reliable way to locate one recipe and get its id (e.g. to then update_plan_slot, update_recipe, or get_recipe). The other fields (protein/style/method/slot/tags) are for browsing by category. `name` matches on a partial, case-insensitive substring, so a short distinctive word works.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -128,6 +129,17 @@ const TOOLS: Anthropic.Tool[] = [
         cooking_method: { type: 'string' },
         tags:           { type: 'array', items: { type: 'string' } },
         exclude_used_days: { type: 'integer', description: 'Exclude recipes used in the past N days.' },
+      },
+    },
+  },
+  {
+    name: 'get_recipe',
+    description: "Get ONE recipe in FULL: its ingredient list, original_instructions, the night_before / morning_of / when_cooking prep layers, notes, and every named version tab (each with its own ingredients + prep layers). This is how you read the actual contents of a saved recipe — search_recipes only returns a summary card. Use it whenever the user wants to read, scale, substitute into, or modify an existing recipe, or wants a version made from an existing dish. Pass `id` (from search_recipes — preferred) or a `name` (partial, case-insensitive). If a name matches more than one recipe it returns { ambiguous: true, matches: [...] } — pick by id and call again. Never ask the user to paste a recipe that's already saved; pull it with this tool.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        id:   { type: 'string', description: 'Recipe id (preferred — get it from search_recipes).' },
+        name: { type: 'string', description: 'Partial, case-insensitive recipe name. Used only when id is not supplied.' },
       },
     },
   },
@@ -486,6 +498,64 @@ async function toolSearchRecipes(input: Record<string, unknown>, db: DB) {
     )
   }
   return { recipes: results, count: results.length }
+}
+
+// Full detail for ONE recipe: the base recipe (ingredients + original_instructions
+// + the ADHD prep layers + notes) PLUS every named version tab with its own
+// ingredients + layers. This is the counterpart to search_recipes (metadata only) —
+// what the agent uses to actually READ a saved recipe before scaling/modifying it.
+const RECIPE_FULL_SELECT =
+  'id, name, emoji, cuisine, meal_type, template_slot, protein, style, cooking_method, ' +
+  'prep_time_min, cook_time_min, serves_base, serves_note, is_freezable, can_double, ' +
+  'ease_descriptor, contains_allergen, allergen_notes, source_type, source_detail, tags, ' +
+  'last_made, default_variant_id, original_instructions, night_before, morning_of, when_cooking, notes, ' +
+  'recipe_ingredients(name, quantity, unit, category, notes, order_index)'
+
+async function toolGetRecipe(input: Record<string, unknown>, db: DB) {
+  const id   = input.id   ? String(input.id).trim()   : ''
+  const name = input.name ? String(input.name).trim() : ''
+  if (!id && !name) return { error: 'Provide a recipe id (preferred) or a name.' }
+
+  let recipe: Record<string, unknown> | null = null
+  if (id) {
+    const { data } = await db.from('recipes').select(RECIPE_FULL_SELECT).eq('id', id).maybeSingle()
+    recipe = data as Record<string, unknown> | null
+    if (!recipe) return { error: `No recipe with id ${id}.` }
+  } else {
+    const { data } = await db.from('recipes').select(RECIPE_FULL_SELECT)
+      .ilike('name', `%${name}%`).eq('active', true).order('name')
+    const rows = (data || []) as Record<string, unknown>[]
+    if (!rows.length) return { error: `No active recipe matching "${name}".` }
+    if (rows.length > 1) {
+      // Prefer an exact (case-insensitive) name hit before asking to disambiguate.
+      const exact = rows.find(r => String(r.name).toLowerCase() === name.toLowerCase())
+      if (exact) recipe = exact
+      else return {
+        ambiguous: true,
+        matches: rows.map(r => ({ id: r.id, name: r.name })),
+        note: `"${name}" matches ${rows.length} recipes — call get_recipe again with the exact id.`,
+      }
+    } else {
+      recipe = rows[0]
+    }
+  }
+
+  // Version tabs: each is a COMPLETE alternate (own ingredients + prep layers).
+  const { data: variants } = await db.from('recipe_variants')
+    .select('id, label, serves, prep_time_min, cook_time_min, ease_descriptor, ' +
+            'night_before, morning_of, when_cooking, notes, created_by, created_at, ' +
+            'recipe_variant_ingredients(name, quantity, unit, category, notes, order_index)')
+    .eq('recipe_id', recipe.id as string).order('created_at')
+
+  const versions = (variants || []) as Record<string, unknown>[]
+  return {
+    recipe,
+    versions,
+    default_variant_id: recipe.default_variant_id || null,
+    ...(versions.length ? {
+      note: 'This recipe has named version tabs in versions[] — each is a complete alternate (its own ingredients + prep layers). default_variant_id (if set) is the version shown by default.',
+    } : {}),
+  }
 }
 
 async function toolGetInventory(input: Record<string, unknown>, db: DB) {
@@ -1968,6 +2038,7 @@ function collectVerifiedFacts(results: ToolResult[]): Record<string, unknown> {
     if (tool === 'get_family_context')  facts.family_context = result
     if (tool === 'get_weekly_template') facts.weekly_template = result
     if (tool === 'search_recipes')      facts.recipe_search_results = result
+    if (tool === 'get_recipe')          facts.recipe_detail = result
   }
   return facts
 }
@@ -2074,6 +2145,7 @@ async function dispatch(name: string, input: Record<string, unknown>, db: DB, us
       case 'get_plan':               result = await toolGetPlan(input, db); break
       case 'get_today_recipe':       result = await toolGetTodayRecipe(db); break
       case 'search_recipes':         result = await toolSearchRecipes(input, db); break
+      case 'get_recipe':             result = await toolGetRecipe(input, db); break
       case 'get_inventory':          result = await toolGetInventory(input, db); break
       case 'get_freezer_stash':      result = await toolGetFreezerStash(db); break
       case 'get_expiry_recommendations': result = await toolGetExpiryRecommendations(input, db); break
@@ -2111,6 +2183,7 @@ function statusLabel(name: string, input: Record<string, unknown>): string {
     case 'get_plan':               return 'Checking the plan…'
     case 'get_today_recipe':       return "Looking up today's recipe…"
     case 'search_recipes':         return 'Searching recipes…'
+    case 'get_recipe':             return 'Pulling up the full recipe…'
     case 'get_inventory':          return 'Checking your inventory…'
     case 'get_freezer_stash':      return 'Checking the freezer stash…'
     case 'get_expiry_recommendations': return 'Checking what needs using up…'
