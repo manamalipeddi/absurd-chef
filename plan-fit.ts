@@ -123,7 +123,14 @@ Deno.serve(async (req: Request) => {
       // used to hand out phantom same-day/window points (e.g. a planned "Other"
       // lunch scoring 1 just because an unrelated "Other" was eaten that week).
       if (r.actual_recipe_id && !r.actual?.is_placeholder) record(r.plan_date, r.meal_type, r.actual_recipe_id)
-      else if (r.actually_made === true && r.recipe_id && !r.planned?.is_placeholder) record(r.plan_date, r.meal_type, r.recipe_id)
+      // The planned recipe counts as "made" ONLY on a genuine made-as-planned:
+      // actually_made true with NO logged deviation. An "Other" free-text deviation
+      // sets actual_recipe_id to the Other PLACEHOLDER (so the first branch above is
+      // skipped) — it must NOT fall through here and credit the planned recipe as
+      // eaten, or every "Waffles instead of Rajma" slot scores a phantom 3. This
+      // mirrors the madeAsPlanned test used by the scorer below (keep them in sync).
+      else if (r.actually_made === true && !r.actual_recipe_id && (r.actual_notes || '').trim() === '' &&
+               r.recipe_id && !r.planned?.is_placeholder) record(r.plan_date, r.meal_type, r.recipe_id)
       for (const a of (r.additional_recipes || [])) record(r.plan_date, r.meal_type, a?.recipe_id)
     }
 
