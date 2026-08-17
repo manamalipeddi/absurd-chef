@@ -208,7 +208,7 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
     recipeIngRes,
     planEditsRes,
     mealHistoryRes,
-    historyDaysRes,
+    historyDaySettingsRes,
   ] = await Promise.all([
     supabase
       .from("recipes")
@@ -306,13 +306,20 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
       .gte("plan_date", addDays(startDate, -540))
       .lt("plan_date", startDate)
       .in("meal_type", ["dinner", "lunch"]),
-    // gintas_away isn't denormalized onto meal_plans — join via day_settings.
+    // LIVE per-day context for the whole habit window. The context flags stamped
+    // onto meal_plans (is_preschool_closed / guest_count / is_commute_day) are
+    // frozen at plan-GENERATION time and go STALE whenever a day's kids_home /
+    // guests / commute is set or changed AFTER the plan was made — e.g. a weekday
+    // Lara ends up home. Habit-learning must bucket by day_settings (the single
+    // source of truth), NOT the frozen stamp, or a late-marked kids-home day gets
+    // mis-learned as a regular weekday. (is_preschool_closed is itself just a
+    // denormalised copy of kids_home — there is no preschool calendar.) Full -540
+    // window so the long-memory kids-home context buckets correctly too.
     supabase
       .from("day_settings")
-      .select("day, gintas_away")
-      .gte("day", addDays(startDate, -112))
-      .lt("day", startDate)
-      .eq("gintas_away", true),
+      .select("day, kids_home, guest_count, is_commute_day, gintas_away")
+      .gte("day", addDays(startDate, -540))
+      .lt("day", startDate),
   ]);
 
   return {
@@ -330,7 +337,7 @@ async function fetchContext(supabase: ReturnType<typeof createClient>, startDate
     recipeIngredients: recipeIngRes.data || [],
     planEdits: planEditsRes.data || [],
     mealHistory: mealHistoryRes.data || [],
-    historyGintasAwayDays: historyDaysRes.data || [],
+    historyDaySettings: historyDaySettingsRes.data || [],
   };
 }
 
@@ -739,22 +746,32 @@ function buildPrompt(
   //    them). Names resolve via safeRecipes, so an allergen-unsafe or retired
   //    recipe can never surface as a habit.
   const safeNameById = new Map(safeRecipes.map((r: Recipe) => [r.id, r.name]));
-  const gintasAwayDays = new Set(
-    ((ctx.historyGintasAwayDays || []) as { day: string }[]).map((d) => d.day)
-  );
+  // LIVE per-day context, keyed by date — the single source of truth for which
+  // circumstance a past day was, replacing the STALE flags denormalised onto the
+  // meal row (which freeze at plan time and miss a kids-home/guest/commute set
+  // afterwards). Read-time defaults match the rest of the app: with no row,
+  // kids_home is true on weekends only, everything else off.
+  const histDayCtx = new Map<string, { kids_home: boolean; guest_count: number; is_commute_day: boolean; gintas_away: boolean }>();
+  for (const d of (ctx.historyDaySettings || []) as { day: string; kids_home: boolean | null; guest_count: number | null; is_commute_day: boolean | null; gintas_away: boolean | null }[]) {
+    histDayCtx.set(d.day, {
+      kids_home: !!d.kids_home, guest_count: d.guest_count || 0,
+      is_commute_day: !!d.is_commute_day, gintas_away: !!d.gintas_away,
+    });
+  }
   const DOW_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  const habitBucketOf = (r: {
-    plan_date: string; meal_type: string; is_commute_day: boolean | null;
-    is_holiday: boolean | null; is_preschool_closed: boolean | null; guest_count: number | null;
-  }): string => {
+  const habitBucketOf = (r: { plan_date: string; meal_type: string }): string => {
     const dow = dayOfWeek(r.plan_date);
-    if ((r.guest_count || 0) > 0) return `guest-day ${r.meal_type}`;
-    if (r.is_commute_day) return `commute-day ${r.meal_type}`;
-    // Same historical kids-home read the Plan tab uses: holiday or preschool
-    // closed, on a weekday (weekends fold into plain day-of-week buckets).
-    if ((r.is_holiday || r.is_preschool_closed) && dow >= 1 && dow <= 5)
-      return `weekday-kids-home ${r.meal_type}`;
-    if (gintasAwayDays.has(r.plan_date)) return `gintas-away ${r.meal_type}`;
+    const ds = histDayCtx.get(r.plan_date);
+    const kidsHome = ds ? ds.kids_home : (dow === 0 || dow === 6);
+    const guests   = ds ? ds.guest_count : 0;
+    const commute  = ds ? ds.is_commute_day : false;
+    const gintas   = ds ? ds.gintas_away : false;
+    if (guests > 0) return `guest-day ${r.meal_type}`;
+    if (commute)    return `commute-day ${r.meal_type}`;
+    // Weekday kids-home is its own context (weekends fold into plain day-of-week
+    // buckets — kids home on a weekend is the normal rhythm, not a distinct case).
+    if (kidsHome && dow >= 1 && dow <= 5) return `weekday-kids-home ${r.meal_type}`;
+    if (gintas) return `gintas-away ${r.meal_type}`;
     return `${DOW_NAMES[dow]} ${r.meal_type}`;
   };
   const habitCounts = new Map<string, Map<string, number>>();   // bucket → key → n
