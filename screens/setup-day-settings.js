@@ -259,9 +259,21 @@ async function saveAll() {
   const { error } = await supabase.from('day_settings').upsert(payload, { onConflict: 'day' })
   if (error) { toast('Save failed', { error: true }); saving = false; renderSaveBar(); return }
 
-  // Saved dates within the planned range can be regenerated; future-week dates
-  // don't need it (the generator will pick up the settings when it plans them).
-  for (const d of dates) if (isPlanned(d)) regenDates.add(d)
+  // Split the saved-and-planned dates by week:
+  //  • CURRENT WEEK (today … this Sunday) → auto-replan NOW. This week's grocery
+  //    order is already placed, so the planner cooks strictly from on-hand stock
+  //    (rule 16 week 1 + the near-term makeability guard); locked/manual/cooked
+  //    slots are still protected. This is the case the weekly Sunday reconcile
+  //    can't help — by Sunday these days have passed.
+  //  • LATER PLANNED WEEKS → queue for the optional Regenerate button (the Sunday
+  //    reconcile, which runs before the grocery snapshot, also picks them up).
+  //  • Beyond the planned range → nothing to do; the generator reads their
+  //    settings when it first plans them.
+  const today = todayStr()
+  const weekEnd = addDays(today, dow(today) === 0 ? 0 : 7 - dow(today))   // Sunday of this week
+  const currentWeek = dates.filter(d => isPlanned(d) && d >= today && d <= weekEnd)
+  const laterPlanned = dates.filter(d => isPlanned(d) && d > weekEnd)
+  for (const d of laterPlanned) regenDates.add(d)
   dirty = new Set()
   saving = false
   // Day-card context (badges/notes) is read live from day_settings, so refresh
@@ -269,9 +281,44 @@ async function saveAll() {
   document.dispatchEvent(new Event('plan-updated'))
   render()
   const n = dates.length
-  toast(regenDates.size > 0
-    ? `Saved ${n} day${n !== 1 ? 's' : ''} — regenerate to update the planned weeks`
-    : `Saved ${n} day${n !== 1 ? 's' : ''}`)
+  if (currentWeek.length) {
+    await autoReplanCurrentWeek(currentWeek)
+  } else {
+    toast(regenDates.size > 0
+      ? `Saved ${n} day${n !== 1 ? 's' : ''} — regenerate to update the planned weeks`
+      : `Saved ${n} day${n !== 1 ? 's' : ''}`)
+  }
+}
+
+// A current-week day-settings change → replan those days immediately, planned
+// from what's on hand (this week's order is done). targeted mode anchors "week 1"
+// at the changed date, so the planner treats it as current-stock-only, and the
+// write guard preserves locked/manual/cooked slots. On failure, fall back to the
+// manual Regenerate queue so a change is never silently dropped. We deliberately
+// do NOT navigate away — a Save can span current + later weeks, and the later
+// ones still need the Regenerate button on this screen.
+async function autoReplanCurrentWeek(dates) {
+  regenerating = true
+  renderSaveBar()
+  const n = dates.length
+  toast(`Replanning ${n} day${n !== 1 ? 's' : ''} from what's on hand…`)
+  try {
+    const res = await fetch(`${FUNCTIONS_URL}/plan-generator`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'targeted', target_dates: dates, triggered_by: 'manual' }),
+    })
+    const json = await res.json()
+    if (!json.success) throw new Error(json.error)
+    regenerating = false
+    document.dispatchEvent(new Event('plan-updated'))
+    render()
+    toast(`Plan updated — ${n} day${n !== 1 ? 's' : ''} replanned from stock`)
+  } catch {
+    for (const d of dates) regenDates.add(d)   // don't lose them — offer a manual retry
+    regenerating = false
+    renderSaveBar()
+    toast('Auto-replan failed — tap Regenerate to retry', { error: true })
+  }
 }
 
 // ── Optional regenerate: replan just the saved dates that touch planned weeks ──
