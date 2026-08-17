@@ -34,7 +34,7 @@ const TOTAL_ROLLING_BATCHES = ROLLING_BATCHES.length;
 // ── Types ──────────────────────────────────────────────────────────────────
 
 interface PlanRequest {
-  mode: "full_14" | "rolling_7" | "targeted";
+  mode: "full_14" | "rolling_7" | "targeted" | "reconcile";
   start_date?: string;
   days?: number;
   triggered_by?: "scheduled" | "manual";
@@ -168,6 +168,63 @@ function dayOfWeek(dateStr: string): number {
 function getMondayOf(dateStr: string): string {
   const dow = dayOfWeek(dateStr); // 0=Sun
   return addDays(dateStr, dow === 0 ? -6 : 1 - dow);
+}
+
+// Reconcile support: which already-planned days in [fromISO, toISO] have gone
+// STALE — i.e. their day_settings changed AFTER the plan was made. Every meal row
+// carries the context that was live when it was planned (is_preschool_closed =
+// kids_home at plan time, plus guest_count / is_commute_day); comparing that
+// STAMP against LIVE day_settings tells us exactly which days changed since. A
+// day now flagged is_vacation while it still holds a plan is also stale (it must
+// be cleared). today/past rows are protected by writePlan anyway, so the caller
+// passes fromISO = today. Returns the sorted list of stale dates.
+async function computeStaleDates(
+  supabase: ReturnType<typeof createClient>, fromISO: string, toISO: string,
+): Promise<string[]> {
+  const MEALS = ["dinner", "lunch"];
+  const [planRes, dsRes] = await Promise.all([
+    supabase.from("meal_plans")
+      .select("plan_date, is_preschool_closed, guest_count, is_commute_day, slot_locked, actually_made, actual_recipe_id, actual_notes, additional_recipes")
+      .gte("plan_date", fromISO).lte("plan_date", toISO)
+      .in("meal_type", MEALS),
+    supabase.from("day_settings")
+      .select("day, kids_home, guest_count, is_commute_day, is_vacation")
+      .gte("day", fromISO).lte("day", toISO),
+  ]);
+  const live = new Map<string, { kids_home: boolean; guest_count: number; is_commute_day: boolean; is_vacation: boolean }>();
+  for (const d of (dsRes.data || []) as Record<string, unknown>[]) {
+    live.set(d.day as string, {
+      kids_home: !!d.kids_home, guest_count: (d.guest_count as number) || 0,
+      is_commute_day: !!d.is_commute_day, is_vacation: !!d.is_vacation,
+    });
+  }
+  const changed = new Set<string>();       // context stamp ≠ live (or now vacation)
+  const replannable = new Set<string>();    // has ≥1 future, unlocked, un-cooked slot
+  for (const r of (planRes.data || []) as Record<string, unknown>[]) {
+    const date = r.plan_date as string;
+    const dow = dayOfWeek(date);
+    const ds = live.get(date);
+    // Read-time defaults match the rest of the app: with no row, kids_home is
+    // true on weekends only, everything else off.
+    const liveKids    = ds ? ds.kids_home      : (dow === 0 || dow === 6);
+    const liveGuests  = ds ? ds.guest_count    : 0;
+    const liveCommute = ds ? ds.is_commute_day : false;
+    const liveVac     = ds ? ds.is_vacation    : false;
+    if (liveVac ||
+        liveKids    !== !!r.is_preschool_closed ||
+        liveGuests  !== ((r.guest_count as number) || 0) ||
+        liveCommute !== !!r.is_commute_day) {
+      changed.add(date);
+    }
+    // A slot writePlan would actually touch: strictly future (today/past are
+    // protected), not locked, and carrying no logged reality. If a changed day
+    // has none of these, replanning it is a no-op — skip it so we don't burn a
+    // generation re-flagging the same fully-protected day every Sunday.
+    const cooked = r.actually_made !== null || r.actual_recipe_id != null ||
+      r.actual_notes != null || (Array.isArray(r.additional_recipes) && r.additional_recipes.length > 0);
+    if (date > fromISO && r.slot_locked !== true && !cooked) replannable.add(date);
+  }
+  return [...changed].filter((d) => replannable.has(d)).sort();
 }
 
 function isoWeek(dateStr: string): string {
@@ -1873,6 +1930,38 @@ Deno.serve(async (req: Request) => {
       await extendDaySettings(supabase);
     } catch (e) {
       console.error("day_settings extension failed (non-fatal):", e);
+    }
+
+    // mode "reconcile" (weekly Sunday sweep, fired by its own cron BEFORE the
+    // rolling batches): find already-planned days whose day_settings changed
+    // SINCE they were planned (stamp ≠ live) and replan just those — a targeted
+    // regen that preserves locked/manual/cooked slots and re-stamps fresh
+    // context. Rolling generation is additive and never re-plans an existing day,
+    // so without this a change to an already-planned day (e.g. a weekday marked
+    // kids-home after the fact) would never take effect on its own. NOTE: a change
+    // made mid-week is only caught if the day is still in the FUTURE on Sunday —
+    // today/past rows are protected, and by Sunday the current week has passed.
+    if (mode === "reconcile") {
+      const todayISO = new Date().toISOString().slice(0, 10);
+      const stale = await computeStaleDates(supabase, todayISO, addDays(todayISO, 13));
+      if (logId) await supabase.from("plan_generation_log")
+        .update({ success: true, completed_at: new Date().toISOString() }).eq("id", logId);
+      if (!stale.length) {
+        console.log("reconcile: no stale days — nothing to replan");
+        return new Response(JSON.stringify({ success: true, reconciled: 0 }),
+          { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
+      }
+      // Replan the stale days through the normal targeted path (self-call keeps the
+      // whole protection/write/re-stamp pipeline in one place). verify_jwt is off,
+      // so no auth header is needed — same as how the cron posts.
+      console.log(`reconcile: replanning ${stale.length} changed day(s): ${stale.join(", ")}`);
+      const rr = await fetch(`${SUPABASE_URL}/functions/v1/plan-generator`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "targeted", target_dates: stale, triggered_by: "scheduled" }),
+      });
+      const rj = await rr.json().catch(() => ({}));
+      return new Response(JSON.stringify({ success: true, reconciled: stale.length, dates: stale, targeted: rj }),
+        { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
     }
 
     // targeted: scoped replan of specific dates only (from the Day Settings
